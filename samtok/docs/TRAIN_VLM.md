@@ -7,8 +7,8 @@ We have collected the following datasets, which collectively cover two major cat
 ### Tokenizing 2D mask
 Here we provide two examples to illustrate how to tokenize samples from the GRES dataset and samples from the DAM dataset.
 
-- GRES: [datasets/tokenize_2d_mask/tokenize_gres.py](projects/samtok/datasets/tokenize_2d_mask/tokenize_gres.py)
-- DAM: [datasets/tokenize_2d_mask/tokenize_dam.py](projects/samtok/datasets/tokenize_2d_mask/tokenize_dam.py)
+- GRES: [datasets/tokenize_2d_mask/tokenize_gres.py](../datasets/tokenize_2d_mask/tokenize_gres.py)
+- DAM: [datasets/tokenize_2d_mask/tokenize_dam.py](../datasets/tokenize_2d_mask/tokenize_dam.py)
 
 ### Convert to conversations
 You need to convert all mask-related datasets into a unified VQA format. Here is an example, and you can download it from [here](https://huggingface.co/datasets/zhouyik/SAMTok_Training_Data/blob/main/mask_generation_gres209k.json) for subsequent training and debugging.
@@ -31,7 +31,7 @@ You need to convert all mask-related datasets into a unified VQA format. Here is
 ## Launch Training
 
 ### Adding new tokens
-Before launch training, you need to add new tokens to the base model's vocabulary. You can refer to [this script](projects/samtok/utils/add_special_tokens.py).
+Before launch training, you need to add new tokens to the base model's vocabulary. You can refer to [this script](../utils/add_special_tokens.py).
 ```python
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from tokenizers import AddedToken
@@ -72,9 +72,9 @@ print("Saved to", save_dir)
 
 ### Training with Xtuner
 We provide three example configurations for different base models:
-- PLM: [configs/perceptionlm_1b_mt256x2.py](projects/samtok/configs/perceptionlm_1b_mt256x2.py)
-- Qwen2.5VL: [configs/qwen25vl_3b_mt256x2.py](projects/samtok/configs/qwen25vl_3b_mt256x2.py)
-- Qwen3VL: [configs/qwen3vl_4b_mt256x2.py](projects/samtok/configs/qwen3vl_4b_mt256x2.py)
+- PLM: [configs/perceptionlm_1b_mt256x2.py](../configs/perceptionlm_1b_mt256x2.py)
+- Qwen2.5VL: [configs/qwen25vl_3b_mt256x2.py](../configs/qwen25vl_3b_mt256x2.py)
+- Qwen3VL: [configs/qwen3vl_4b_mt256x2.py](../configs/qwen3vl_4b_mt256x2.py)
 
 To launch training, run
 ```

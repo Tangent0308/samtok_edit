@@ -32,4 +32,4 @@ Here is an example to launch to training of the mask tokenizer using SA1B data:
 ```
 bash tools/dist.sh train projects/samtok/configs/vq_sam2_256x2_unshare.py 8
 ```
-Note: You can first download the SA1B dataset from [here](https://ai.meta.com/datasets/segment-anything-downloads/), then organize it into [this folder structure](projects/samtok/data/sam_full). Then download the data information from [here](https://huggingface.co/datasets/zhouyik/SAMTok_Training_Data/blob/main/sam_info.json) and place it in the [./data](projects/samtok/data) folder. During actual training, we use all the aforementioned data and set the global batch size to 1024.
+Note: You can first download the SA1B dataset from [here](https://ai.meta.com/datasets/segment-anything-downloads/), then organize it into [this folder structure](../data/sam_full). Then download the data information from [here](https://huggingface.co/datasets/zhouyik/SAMTok_Training_Data/blob/main/sam_info.json) and place it in the [./data](data) folder. During actual training, we use all the aforementioned data and set the global batch size to 1024.

@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="https://scholar.google.com/citations?user=dZikW2YAAAAJ&hl=en&oi=ao">Yikang Zhou</a><sup>1,2</sup>, <a href="https://scholar.google.com/citations?hl=zh-CN&user=3xu4a5oAAAAJ">Tao Zhang</a><sup>1</sup>, <a>Dengxian Gong</a><sup>1</sup>, <a>Yuanzheng Wu</a><sup>1</sup>, <a>Haochen Wang</a><sup>2</sup>, <a>Ye Tian</a><sup>2</sup>, <a>Haobo Yuan</a><sup>1</sup>, <a>Jiacong Wang</a><sup>2</sup>,  <a>Lu Qi</a><sup>1</sup>, <a>Hao Fei</a><sup>1</sup>, <a href="https://scholar.google.com/citations?hl=zh-CN&user=FjoRmF4AAAAJ">Shunping Ji</a><sup>1,✉️</sup>, <a>Anran Wang</a><sup>2</sup>, <a>Zhuochen Wang</a><sup>2</sup>, <a>Yujing Wang</a><sup>2</sup>, <a>Cheng CHEN</a><sup>2</sup>, <a>Xiangtai Li</a><sup>2</sup>
+  <a href="https://scholar.google.com/citations?user=dZikW2YAAAAJ&hl=en&oi=ao">Yikang Zhou</a><sup>1,2</sup>, <a href="https://scholar.google.com/citations?hl=zh-CN&user=3xu4a5oAAAAJ">Tao Zhang</a><sup>1</sup>, <a>Dengxian Gong</a><sup>1</sup>, <a>Yuanzheng Wu</a><sup>1</sup>, <a>Haochen Wang</a><sup>2</sup>, <a>Ye Tian</a><sup>2</sup>, <a>Haobo Yuan</a><sup>1</sup>, <a>Jiacong Wang</a><sup>2</sup>,  <a>Lu Qi</a><sup>1</sup>, <a>Hao Fei</a><sup>1</sup>, <a href="https://scholar.google.com/citations?hl=zh-CN&user=FjoRmF4AAAAJ">Shunping Ji</a><sup>1,✉️</sup>, <a>Anran Wang</a><sup>2</sup>, <a>Zhuochen Wang</a><sup>2</sup>, <a>Yujing Wang</a><sup>2</sup>, <a>Cheng CHEN</a><sup>2</sup>, <a href="https://lxtgh.github.io/">Xiangtai Li</a><sup>2</sup>
   <p align="center"><sup>1</sup>Wuhan University <sup>2</sup>ByteDance</p>
 </p>
 
@@ -58,7 +58,7 @@ hf download zhouyik/Qwen3-VL-8B-SAMTok --local-dir zhouyik/Qwen3-VL-8B-SAMTok
 ```
 3. **Mask Generation.**
 Mask generation means the VLM outputs responses containing mask tokens, and SAMTok decodes these textual mask tokens into 2D arrays.
-[Please refer to this script.](projects/samtok/demo/qwen3vl_samtok_infer.py)
+[Please refer to this script.](demo/qwen3vl_samtok_infer.py)
 ```python
 import re
 import numpy as np
@@ -201,17 +201,17 @@ text_token_2d_mask_mapping = {tag: _pred_mask for tag, _pred_mask in zip(tags, _
 ```
 
 4. **Mask Understanding.**
-Mask understanding means encoding 2D masks into mask tokens using SAMTok and incorporating them into user instructions, requiring the VLM to understand the specific image regions referred to by the mask tokens and answer the user's questions. Region captioning is a typical task of mask understanding. [Please refer to this script.](projects/samtok/evaluation/qwen3vl/qwen3vl_dam_infer.py)
+Mask understanding means encoding 2D masks into mask tokens using SAMTok and incorporating them into user instructions, requiring the VLM to understand the specific image regions referred to by the mask tokens and answer the user's questions. Region captioning is a typical task of mask understanding. [Please refer to this script.](evaluation/qwen3vl/qwen3vl_dam_infer.py)
 
 ## 🕹️ Gradio Demo
 
 ## 🤖 Training
-Please refer to [TRAIN_TOKENIZER.md](projects/samtok/docs/TRAIN_TOKENIZER.md) for training tokenizer.
+Please refer to [TRAIN_TOKENIZER.md](docs/TRAIN_TOKENIZER.md) for training tokenizer.
 
-Please refer to [TRAIN_VLM.md](projects/samtok/docs/TRAIN_VLM.md) for training VLM.
+Please refer to [TRAIN_VLM.md](docs/TRAIN_VLM.md) for training VLM.
 
 ## 🔬 Evaluation
-[Please refer to this folder](projects/samtok/evaluation)
+[Please refer to this folder](evaluation)
 
 ## 📖 Citation
 
