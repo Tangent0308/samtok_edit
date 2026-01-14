@@ -14,7 +14,7 @@
 <p align="center">
   <a href="https://scholar.google.com/citations?user=dZikW2YAAAAJ&hl=en&oi=ao">Yikang Zhou</a><sup>1,2</sup>, 
   <a href="https://scholar.google.com/citations?hl=zh-CN&user=3xu4a5oAAAAJ">Tao Zhang</a><sup>1</sup>, 
-  <a href=“https://openreview.net/profile?id=~Dengxian_Gong1”>Dengxian Gong</a><sup>1</sup>, 
+  <a href="https://scholar.google.com/citations?user=51nzC3EAAAAJ&hl=en">Dengxian Gong</a><sup>1</sup>, 
   <a href="https://openreview.net/profile?id=~Yuanzheng_Wu1">Yuanzheng Wu</a><sup>1</sup>, 
   <a href="https://haochen-wang409.github.io/"> Haochen Wang</a><sup>2</sup>,
   <a href="https://tyfeld.github.io/">Ye Tian</a><sup>2</sup>, 
