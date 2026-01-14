@@ -16,8 +16,8 @@ import spaces
 import gradio as gr
 
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
-from .sam2 import VQ_SAM2, VQ_SAM2Config, SAM2Config
-from .visualizer import sample_color, draw_mask
+from sam2 import VQ_SAM2, VQ_SAM2Config, SAM2Config
+from visualizer import sample_color, draw_mask
 
 class DirectResize:
     def __init__(self, target_length: int) -> None:
