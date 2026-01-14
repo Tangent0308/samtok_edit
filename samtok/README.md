@@ -12,8 +12,23 @@
 </p>
 
 <p align="center">
-  <a href="https://scholar.google.com/citations?user=dZikW2YAAAAJ&hl=en&oi=ao">Yikang Zhou</a><sup>1,2</sup>, <a href="https://scholar.google.com/citations?hl=zh-CN&user=3xu4a5oAAAAJ">Tao Zhang</a><sup>1</sup>, <a>Dengxian Gong</a><sup>1</sup>, <a>Yuanzheng Wu</a><sup>1</sup>, <a>Haochen Wang</a><sup>2</sup>, <a>Ye Tian</a><sup>2</sup>, <a>Haobo Yuan</a><sup>1</sup>, <a>Jiacong Wang</a><sup>2</sup>,  <a>Lu Qi</a><sup>1</sup>, <a>Hao Fei</a><sup>1</sup>, <a href="https://scholar.google.com/citations?hl=zh-CN&user=FjoRmF4AAAAJ">Shunping Ji</a><sup>1,✉️</sup>, <a>Anran Wang</a><sup>2</sup>, <a>Zhuochen Wang</a><sup>2</sup>, <a>Yujing Wang</a><sup>2</sup>, <a>Cheng CHEN</a><sup>2</sup>, <a>Xiangtai Li</a><sup>2</sup>
-  <p align="center"><sup>1</sup>Wuhan University <sup>2</sup>ByteDance</p>
+  <a href="https://scholar.google.com/citations?user=dZikW2YAAAAJ&hl=en&oi=ao">Yikang Zhou</a><sup>1,2</sup>, 
+  <a href="https://scholar.google.com/citations?hl=zh-CN&user=3xu4a5oAAAAJ">Tao Zhang</a><sup>1</sup>, 
+  <a href=“https://openreview.net/profile?id=~Dengxian_Gong1”>Dengxian Gong</a><sup>1</sup>, 
+  <a href="https://openreview.net/profile?id=~Yuanzheng_Wu1">Yuanzheng Wu</a><sup>1</sup>, 
+  <a href="https://haochen-wang409.github.io/"> Haochen Wang</a><sup>2</sup>,
+  <a href="https://tyfeld.github.io/">Ye Tian</a><sup>2</sup>, 
+  <a href="https://yuanhaobo.me/">Haobo Yuan</a><sup>1</sup>, 
+  <a href="https://scholar.google.com/citations?user=rzYgLkgAAAAJ&hl=zh-CN">Jiacong Wang</a><sup>2</sup>, 
+  <a href="https://luqi.info/">Lu Qi</a><sup>1</sup>, 
+  <a href="https://haofei.vip/">Hao Fei</a><sup>3</sup>,
+  <a href="https://scholar.google.com/citations?hl=zh-CN&user=FjoRmF4AAAAJ">Shunping Ji</a><sup>1,✉️</sup>,
+  <a href="https://scholar.google.com/citations?user=LpSrdBwAAAAJ&hl=en">Anran Wang</a><sup>2</sup>, 
+  <a href="https://openreview.net/profile?id=~Zhuochen_Wang1">Zhuochen Wang</a><sup>2</sup>, 
+  <a href="https://scholar.google.com/citations?user=YgL4rywAAAAJ&hl=en">Yujing Wang</a><sup>2</sup>, 
+  <a href="https://openreview.net/profile?id=~Cheng_CHEN53">Cheng Chen</a><sup>2</sup>, 
+  <a href="https://lxtgh.github.io/">Xiangtai Li</a><sup>2</sup>
+  <p align="center"><sup>1</sup>Wuhan University <sup>2</sup>ByteDance <sup>3</sup>NUS</p> 
 </p>
 
 <p align="center"><img width="750" src="figs/teaser.png"></p>
