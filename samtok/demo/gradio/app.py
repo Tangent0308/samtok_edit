@@ -1,5 +1,5 @@
 # Modified from https://huggingface.co/spaces/PolyU-ChenLab/UniPixel/blob/main/app.py
-
+import os
 import random
 import re
 import colorsys
@@ -93,11 +93,12 @@ function init() {
 
 device = torch.device('cuda')
 
+CACHE_DIR = "./models_cache"
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    MODEL, torch_dtype="auto"
+    MODEL, torch_dtype="auto", cache_dir=CACHE_DIR
 ).cuda().eval()
-print("model_path: ", model.config._name_or_path)
-exit(0)
 
 processor = AutoProcessor.from_pretrained(MODEL)
 
@@ -105,7 +106,7 @@ processor = AutoProcessor.from_pretrained(MODEL)
 CODEBOOK_SIZE = 256
 CODEBOOK_DEPTH = 2
 sam2_config = SAM2Config(
-    ckpt_path=MODEL+"/sam2.1_hiera_large.pt",
+    ckpt_path=CACHE_DIR + "/" + MODEL+"/sam2.1_hiera_large.pt",
 )
 vq_sam2_config = VQ_SAM2Config(
     sam2_config=sam2_config,
@@ -115,7 +116,7 @@ vq_sam2_config = VQ_SAM2Config(
     latent_dim=256,
 )
 vq_sam2 = VQ_SAM2(vq_sam2_config).cuda().eval()
-state = torch.load(MODEL+"/mask_tokenizer_256x2.pth", map_location="cpu")
+state = torch.load(CACHE_DIR + "/" + MODEL+"/mask_tokenizer_256x2.pth", map_location="cpu")
 vq_sam2.load_state_dict(state)
 sam2_image_processor = DirectResize(1024)
 
