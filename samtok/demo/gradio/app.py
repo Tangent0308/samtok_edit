@@ -96,6 +96,8 @@ device = torch.device('cuda')
 model = Qwen3VLForConditionalGeneration.from_pretrained(
     MODEL, torch_dtype="auto"
 ).cuda().eval()
+print("model_path: ", model.config._name_or_path)
+exit(0)
 
 processor = AutoProcessor.from_pretrained(MODEL)
 
