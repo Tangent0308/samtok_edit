@@ -59,8 +59,8 @@ class VQ_SAM2Model(BaseModel):
         
         self.hf_model = BUILDER.build(hf_model)
 
-        if sam2_pretrained_weights is not None:
-            self.hf_model.model.load_pretrained_weights(sam2_pretrained_weights, strict=False)
+        # if sam2_pretrained_weights is not None:
+        #     self.hf_model.model.load_pretrained_weights(sam2_pretrained_weights, strict=False)
         
         if pretrained_pth is not None:
             pretrained_state_dict = guess_load_checkpoint(pretrained_pth)
