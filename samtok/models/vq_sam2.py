@@ -77,6 +77,16 @@ class VQ_SAM2Model(BaseModel):
 
         self.box_input = box_input
         self.freeze_codebook = freeze_codebook
+    
+    def state_dict(self, *args, **kwargs):
+        from collections import OrderedDict
+
+        to_return = OrderedDict()
+
+        for n, p in self.hf_model.state_dict().items():
+            to_return.update({n: p})
+
+        return to_return
 
     def init_weights(self):
         pass

@@ -688,6 +688,8 @@ class PromptEncoder(nn.Module):
             sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
 
         if masks is not None:
+            weight_dtype = next(self.mask_downscaling.parameters()).dtype
+            masks = masks.to(weight_dtype)
             dense_embeddings = self._embed_masks(masks)
         else:
             dense_embeddings = self.no_mask_embed.weight.reshape(1, -1, 1, 1).expand(
@@ -3917,7 +3919,7 @@ class VQEmebedding(nn.Embedding):
         embeds = self.embed(embed_idxs)
 
         if self.ema and self.training and not freeze_codebook:
-            print("================>here: self._update_embedding()")
+            # print("================>here: self._update_embedding()")
             # exit(0)
             self._update_embedding()
         # print("================>self.ema and self.training and not freeze_codebook: ", self.ema and self.training and not freeze_codebook)
