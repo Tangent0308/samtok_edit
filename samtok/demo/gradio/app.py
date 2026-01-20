@@ -11,6 +11,7 @@ import imageio.v3 as iio
 
 import torch
 from torchvision.transforms.functional import to_pil_image
+from huggingface_hub import hf_hub_download
 
 import spaces
 import gradio as gr
@@ -93,20 +94,19 @@ function init() {
 
 device = torch.device('cuda')
 
-CACHE_DIR = "./models_cache"
-os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
-
 model = Qwen3VLForConditionalGeneration.from_pretrained(
-    MODEL, torch_dtype="auto", cache_dir=CACHE_DIR
+    MODEL, torch_dtype="auto"
 ).cuda().eval()
 
 processor = AutoProcessor.from_pretrained(MODEL)
 
 # build vq-sam2 model
+sam2_ckpt_local = hf_hub_download(repo_id=MODEL, filename="sam2.1_hiera_large.pt")
+mask_tokenizer_local = hf_hub_download(repo_id=MODEL, filename="mask_tokenizer_256x2.pth")
 CODEBOOK_SIZE = 256
 CODEBOOK_DEPTH = 2
 sam2_config = SAM2Config(
-    ckpt_path=CACHE_DIR + "/" + MODEL+"/sam2.1_hiera_large.pt",
+    ckpt_path=sam2_ckpt_local,
 )
 vq_sam2_config = VQ_SAM2Config(
     sam2_config=sam2_config,
@@ -116,7 +116,7 @@ vq_sam2_config = VQ_SAM2Config(
     latent_dim=256,
 )
 vq_sam2 = VQ_SAM2(vq_sam2_config).cuda().eval()
-state = torch.load(CACHE_DIR + "/" + MODEL+"/mask_tokenizer_256x2.pth", map_location="cpu")
+state = torch.load(mask_tokenizer_local, map_location="cpu")
 vq_sam2.load_state_dict(state)
 sam2_image_processor = DirectResize(1024)
 
@@ -155,7 +155,7 @@ def infer_seg(media, query):
         gr.Warning('Please provide a text prompt.')
         return None, None, None
 
-    image = Image.open(path).convert('RGB')
+    image = Image.open(media).convert('RGB')
     ori_width, ori_height = image.size
     messages = [
         {
