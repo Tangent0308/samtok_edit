@@ -95,10 +95,8 @@ function init() {
         document.querySelector('main').style.maxWidth = '1536px'
     }
     document.getElementById('query_1').addEventListener('keydown', function f1(e) { if (e.key === 'Enter') { document.getElementById('submit_1').click() } })
-    document.getElementById('query_2').addEventListener('keydown', function f2(e) { if (e.key === 'Enter') { document.getElementById('submit_2').click() } })
-    document.getElementById('query_3').addEventListener('keydown', function f3(e) { if (e.key === 'Enter') { document.getElementById('submit_3').click() } })
-    document.getElementById('query_4').addEventListener('keydown', function f4(e) { if (e.key === 'Enter') { document.getElementById('submit_4').click() } })
 }
+window.addEventListener('load', init);
 """
 
 device = torch.device('cuda')
@@ -138,19 +136,19 @@ color_map_light = {
 }
 
 def enable_btns():
-    return (gr.Button(interactive=True), ) * 4
+    return (gr.update(interactive=True), ) * 4
 
 
 def disable_btns():
-    return (gr.Button(interactive=False), ) * 4
+    return (gr.update(interactive=False), ) * 4
 
 
 def reset_seg():
-    return 16, gr.Button(interactive=False)
+    return 16, gr.update(interactive=False)
 
 
 def reset_reg():
-    return 1, gr.Button(interactive=False)
+    return 1, gr.update(interactive=False)
 
 @spaces.GPU
 def infer_seg(media, query):
@@ -302,4 +300,4 @@ if __name__ == '__main__':
     demo = build_demo()
 
     demo.queue()
-    demo.launch(server_name='0.0.0.0')
+    demo.launch(server_name='0.0.0.0', debug=True)
