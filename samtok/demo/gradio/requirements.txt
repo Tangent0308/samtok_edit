@@ -25,6 +25,7 @@ torchvision==0.22.1
 transformers>=4.57.0
 triton==3.3.1
 wandb==0.21.0
+opencv-python-headless<4.10
 
 # https://github.com/Dao-AILab/flash-attention/pull/1751
 # flash_attn==2.8.2
