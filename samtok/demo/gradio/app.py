@@ -152,6 +152,7 @@ def reset_reg():
 
 @spaces.GPU
 def infer_seg(media, query):
+    print("=======>>>enter infer seg")
     global model
 
     if not media:
