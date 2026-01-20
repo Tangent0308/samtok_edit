@@ -302,4 +302,4 @@ if __name__ == '__main__':
     demo = build_demo()
 
     demo.queue()
-    demo.launch(server_name='::')
+    demo.launch(server_name='0.0.0.0')
