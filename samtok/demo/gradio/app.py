@@ -287,6 +287,7 @@ def build_demo():
         # with gr.Tab('Mask Understanding'):
         #     pass
 
+    return demo
 
 if __name__ == '__main__':
     demo = build_demo()
