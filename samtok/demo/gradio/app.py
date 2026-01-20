@@ -200,6 +200,9 @@ def infer_seg(media, query):
     output_text = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
+
+    print("========>>>>output_text", output_text)
+    exit(0)
     
     quant_ids = extract_mt_token_ids_v1(output_text)
     if len(quant_ids) % CODEBOOK_DEPTH != 0:
