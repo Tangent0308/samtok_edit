@@ -1,5 +1,6 @@
 # Modified from https://huggingface.co/spaces/PolyU-ChenLab/UniPixel/blob/main/app.py
 import os
+from pathlib import Path
 import random
 import re
 import colorsys
@@ -15,6 +16,14 @@ from huggingface_hub import hf_hub_download
 
 import spaces
 import gradio as gr
+
+GRADIO_TMP = os.path.join(os.path.dirname(__file__), ".gradio_tmp")
+Path(GRADIO_TMP).mkdir(parents=True, exist_ok=True)
+
+os.environ["GRADIO_TEMP_DIR"] = GRADIO_TMP
+os.environ["TMPDIR"] = GRADIO_TMP
+os.environ["TEMP"] = GRADIO_TMP
+os.environ["TMP"] = GRADIO_TMP
 
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from sam2 import VQ_SAM2, VQ_SAM2Config, SAM2Config
