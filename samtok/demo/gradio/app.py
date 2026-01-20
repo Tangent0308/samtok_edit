@@ -303,5 +303,5 @@ def build_demo():
 if __name__ == '__main__':
     demo = build_demo()
 
-    # demo.queue()
-    demo.launch(server_name='0.0.0.0', debug=True, share=True)
+    demo.queue()
+    demo.launch(server_name='0.0.0.0')
