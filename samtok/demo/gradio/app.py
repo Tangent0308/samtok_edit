@@ -69,7 +69,6 @@ def fix_mt_format_comprehensive(text):
     text = re.sub(pattern_too_few_no_end, replacement_too_few_no_end, text)
     return text
 
-
 MODEL = 'zhouyik/Qwen3-VL-8B-SAMTok'
 
 TITLE = 'SAMTok: Representing Any Mask with Two Words'
@@ -153,7 +152,6 @@ def get_sam():
         _sam = SamModel.from_pretrained("facebook/sam-vit-huge").to("cuda").eval()
     return _sam
 
-
 colors = sample_color()
 color_map = {f'Target {i + 1}': f'#{int(c[0]):02x}{int(c[1]):02x}{int(c[2]):02x}' for i, c in enumerate(colors * 255)}
 color_map_light = {
@@ -164,14 +162,11 @@ color_map_light = {
 def enable_btns():
     return (gr.update(interactive=True), ) * 4
 
-
 def disable_btns():
     return (gr.update(interactive=False), ) * 4
 
-
 def reset_seg():
     return 16, gr.update(interactive=False)
-
 
 def reset_reg():
     return 1, gr.update(interactive=False)
@@ -249,14 +244,13 @@ def mu_predict_mask_from_state(mu_state):
     # postprocess needs lists/tensors on CPU
     original_sizes = torch.tensor([mu_state["original_sizes"]], dtype=torch.long)
     reshaped_sizes = torch.tensor([mu_state["reshaped_input_sizes"]], dtype=torch.long)
-
     masks = sam_processor.post_process_masks(
         outputs.pred_masks.detach().cpu(),
         original_sizes,
         reshaped_sizes,
     )
-    mask = masks[0][0].numpy()
-    mask = (mask > 0).astype(np.uint8)
+    mask = masks[0][0][0].numpy()
+    mask = (mask > 0).astype(np.float32)
     return mask
 
 @spaces.GPU
@@ -272,12 +266,32 @@ def mu_add_point(evt: gr.SelectData, mu_state, is_positive: bool):
     mu_state["cur_mask"] = mask
     return mu_state, mask
 
+@spaces.GPU
+def mu_add_point_xy(xy, mu_state, is_positive: bool):
+    if mu_state["image_path"] is None:
+        return mu_state, None
+
+    if xy is None:
+        return mu_state, mu_state.get("cur_mask")
+
+    x, y = xy  # xy is a tuple/list of two ints
+    mu_state["points"].append([float(x), float(y)])
+    mu_state["labels"].append(1 if is_positive else 0)
+
+    mask = mu_predict_mask_from_state(mu_state)
+    mu_state["cur_mask"] = mask
+    return mu_state, mask
+
+def mu_evt_to_xy(evt: gr.SelectData):
+    # return plain python types only (picklable)
+    x, y = evt.index
+    return (int(x), int(y))
+
 def mu_clear_prompts(mu_state):
     mu_state["points"] = []
     mu_state["labels"] = []
     mu_state["cur_mask"] = None
     return mu_state, None
-
 
 @spaces.GPU
 def mu_save_region(mu_state):
@@ -468,9 +482,17 @@ def infer_understanding(mu_media, mu_query, mu_state):
     inputs = processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True,
         return_dict=True, return_tensors="pt"
-    ).to(device)
+    ).to(model.device)
 
-    generated_ids = model.generate(**inputs, max_new_tokens=1024)
+    generated_ids = model.generate(
+        **inputs,
+        max_new_tokens=1024,
+        do_sample=True,
+        top_p=0.8,
+        top_k=20,
+        temperature=0.7,
+        repetition_penalty=1.0,
+    )
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
@@ -518,8 +540,11 @@ def infer_seg(media, query):
     generated_ids = model.generate(
         **inputs, 
         max_new_tokens=1024,
-        # do_sample=False,
-        # top_p=1.0,
+        do_sample=True,
+        top_p=0.8,
+        top_k=20,
+        temperature=0.7,
+        repetition_penalty=1.0,
     )
     generated_ids_trimmed = [
         out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
@@ -553,11 +578,9 @@ def infer_seg(media, query):
     batch_size = len(quant_ids) // CODEBOOK_DEPTH
     remap_quant_ids = []
     tags = []
-    short_tags = []
     for bs_id in range(batch_size):
         chunk_quant_ids = quant_ids[bs_id*CODEBOOK_DEPTH:(bs_id+1)*CODEBOOK_DEPTH]
-        tags.append(f'<|mt_start|><|mt_{str(chunk_quant_ids[0]).zfill(4)}|><|mt_{str(chunk_quant_ids[1]).zfill(4)}|><|mt_end|>')
-        short_tags.append(short_tag_from_codes(chunk_quant_ids[0], chunk_quant_ids[1]))
+        tags.append(f'<|mt_{str(chunk_quant_ids[0]).zfill(4)}|><|mt_{str(chunk_quant_ids[1]).zfill(4)}|>')
         remap_chunk_quant_ids = [quant_id - book_id*CODEBOOK_SIZE for book_id, quant_id in enumerate(chunk_quant_ids)]
         code1 = remap_chunk_quant_ids[0]
         code2 = remap_chunk_quant_ids[1]
@@ -579,15 +602,12 @@ def infer_seg(media, query):
         _pred_masks = vq_sam2.forward_with_codes(sam2_pixel_values, quant_ids)
     _pred_masks = torch.nn.functional.interpolate(_pred_masks, size=(ori_height, ori_width), mode='bilinear')
     _pred_masks = _pred_masks > 0.5
-    # _pred_masks = _pred_masks[:, 0, :, :].cpu().numpy().astype(np.uint8)
     _pred_masks = _pred_masks.long().unsqueeze(2).cpu() # n, 1, 1, h, w 
 
     tag_to_mask_idx = {}
-    tag_to_short = {}
-    for i, (tag, stag) in enumerate(zip(tags, short_tags)):
+    for i, tag in enumerate(tags):
         if tag not in tag_to_mask_idx:
             tag_to_mask_idx[tag] = i
-            tag_to_short[tag] = stag
     unique_tags = list(tag_to_mask_idx.keys())
 
     entities = []
@@ -597,56 +617,25 @@ def infer_seg(media, query):
 
     answer = dict(text=output_text, entities=entities)
 
-    # entities = []
-    # unique_tags = list(set(tags))
-    # entity_names = []
-    # for i, tag in enumerate(unique_tags):
-    #     for m in re.finditer(re.escape(tag), output_text):
-    #         entities.append(dict(entity=f'Target {i + 1}', start=m.start(), end=m.end()))
-    #         entity_names.append(f'Target {i + 1}')
-    
-    # answer = dict(text=output_text, entities=entities)
-
     frames = torch.from_numpy(np.array(image)).unsqueeze(0)
     imgs = draw_mask(frames, _pred_masks, colors=colors)
 
     path = f"/tmp/{uuid.uuid4().hex}.png"
     iio.imwrite(path, imgs, duration=100, loop=0)
 
-    # masks_value = (media, [(m[0, 0].numpy(), entity_names[i]) for i, m in enumerate(_pred_masks)])
-    # masks_value = (
-    #     media,
-    #     [( _pred_masks[tag_to_mask_idx[tag]][0, 0].numpy(), tag ) for tag in unique_tags]
-    # )
-
-    entity_names = [f"Target {i+1}" for i in range(len(unique_tags))]
-    masks_value = (
-        media,
-        [(_pred_masks[tag_to_mask_idx[tag]][0, 0].numpy().astype(np.uint8) * 255, entity_names[i]) for i, tag in enumerate(unique_tags)]
-    )
-
-    lines = []
+    mask_items = []
+    entity_names = unique_tags
     for i, tag in enumerate(unique_tags):
-        short_tag = tag_to_short[tag]
-        lines.append(f"- **{entity_names[i]}** → `{short_tag}`")
-    tag_map_text = "### Mask-Token Mapping\n" + "\n".join(lines)
-
-    # dynamic color maps keyed by tag
-    dyn_color_map = {}
-    dyn_color_map_light = {}
-    for i, tag in enumerate(unique_tags):
-        c = colors[i % len(colors)]
-        dyn_color_map[tag] = f'#{int(c[0]):02x}{int(c[1]):02x}{int(c[2]):02x}'
-        dyn_color_map_light[tag] = f'#{int(c[0] * 127.5 + 127.5):02x}{int(c[1] * 127.5 + 127.5):02x}{int(c[2] * 127.5 + 127.5):02x}'
+        m = _pred_masks[tag_to_mask_idx[tag]][0, 0].numpy()
+        mask_items.append((m, entity_names[i]))
+    masks_value = (media, mask_items)
 
     # return answer, masks, path
     return (
-        gr.update(value=answer, color_map=dyn_color_map_light, visible=True),  # ans_1
+        gr.update(value=answer, visible=True),  # ans_1
         gr.update(value=masks_value, visible=True),   # msk_1
         gr.update(value=path, interactive=True, visible=True),                 # download
-        gr.update(value=tag_map_text, visible=True)
     )
-
 
 def build_demo():
     with gr.Blocks(title=TITLE, js=JS, theme=gr.themes.Soft()) as demo:
@@ -657,14 +646,12 @@ def build_demo():
             msk_1 = gr.AnnotatedImage(label='De-tokenized 2D masks', color_map=color_map, render=False)
             ans_1 = gr.HighlightedText(
                 label='Model Response', color_map=color_map_light, show_inline_category=False, render=False)
-            tag_map_md = gr.Markdown(label="Mask-Token Mapping", value="", visible=False)
             with gr.Row():
                 with gr.Column():
                     media_1 = gr.Image(type='filepath')
 
                     sample_frames_1 = gr.Slider(1, 32, value=16, step=1, visible=False)
 
-                    # query_1 = gr.Textbox(label='Text Prompt', placeholder='Please segment the...', elem_id='query_1')
                     query_1 = gr.Textbox(
                         label='Text Prompt',
                         placeholder='Please segment the...',
@@ -676,7 +663,7 @@ def build_demo():
                     with gr.Row():
                         random_btn_1 = gr.Button(value='🔮 Random', visible=False)
 
-                        reset_btn_1 = gr.ClearButton([media_1, query_1, msk_1, ans_1, tag_map_md], value='🗑️ Reset')
+                        reset_btn_1 = gr.ClearButton([media_1, query_1, msk_1, ans_1], value='🗑️ Reset')
                         reset_btn_1.click(reset_seg, None, [sample_frames_1, download_btn_1])
 
                         download_btn_1.render()
@@ -685,11 +672,10 @@ def build_demo():
                 
                 with gr.Column():
                     msk_1.render()
-                    tag_map_md
                     ans_1.render()
 
             ctx_1 = submit_btn_1.click(disable_btns, None, [random_btn_1, reset_btn_1, download_btn_1, submit_btn_1])
-            ctx_1 = ctx_1.then(infer_seg, [media_1, query_1], [ans_1, msk_1, download_btn_1, tag_map_md])
+            ctx_1 = ctx_1.then(infer_seg, [media_1, query_1], [ans_1, msk_1, download_btn_1])
             ctx_1.then(enable_btns, None, [random_btn_1, reset_btn_1, download_btn_1, submit_btn_1])
 
             EXAMPLES = [
@@ -698,7 +684,7 @@ def build_demo():
                 ["examples/example3.png", "Find all the people who are currently standing and response with segmentation masks."],
                 ["examples/example4.jpg", "Segment every instance that belongs to the following categories: person, bicycle, car, motorcycle, airplane, bus, train, truck, boat, traffic light, fire hydrant, stop sign, parking meter, bench, bird, cat, dog, horse, sheep, cow, elephant, bear, zebra, giraffe, backpack, umbrella, handbag, tie, suitcase, frisbee, skis, snowboard, sports ball, kite, baseball bat, baseball glove, skateboard, surfboard, tennis racket, bottle, wine glass, cup, fork, knife, spoon, bowl, banana, apple, sandwich, orange, broccoli, carrot, hot dog, pizza, donut, cake, chair, couch, potted plant, bed, dining table, toilet, tv, laptop, mouse, remote, keyboard, cell phone, microwave, oven, toaster, sink, refrigerator, book, clock, vase, scissors, teddy bear, hair drier, toothbrush, banner, blanket, bridge, cardboard, counter, curtain, door-stuff, floor-wood, flower, fruit, gravel, house, light, mirror-stuff, net, pillow, platform, playingfield, railroad, river, road, roof, sand, sea, shelf, snow, stairs, tent, towel, wall-brick, wall-stone, wall-tile, wall-wood, water-other, window-blind, window-other, tree-merged, fence-merged, ceiling-merged, sky-other-merged, cabinet-merged, table-merged, floor-other-merged, pavement-merged, mountain-merged, grass-merged, dirt-merged, paper-merged, food-other-merged, building-other-merged, rock-merged, wall-other-merged, rug-merged"],
                 ["examples/example5.jpg", "Generate a scene graph for this image. Identify the main objects and describe their relationships to each other."],
-                ["examples/example6.jpg", "Which person, wearing a shirt of a primary color, is positioned between the individual in athletic attire and the one in a uniform? A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>"]
+                ["examples/example6.jpg", "What item for sale indicates that the primary product is also offered in a ready-to-eat form? A conversation between User and Assistant. The user asks a question, and the Assistant solves it. The assistant first thinks about the reasoning process in the mind and then provides the user with the answer. The reasoning process and answer are enclosed within <think> </think> and <answer> </answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>"]
             ]
             gr.Markdown("## Examples")
             gr.Examples(
@@ -707,6 +693,24 @@ def build_demo():
                 label="Click an example to load the image and prompt",
             )
         with gr.Tab("Mask Understanding"):
+            MU_INSTRUCTIONS = """
+            ### Mask Understanding — Instructions
+
+            1. **Upload an image.**
+            2. **Create a region mask**
+            - Click **Clear Prompts**
+            - Click **Positive Point**, then click on the target region in the image.
+            - The **Current Mask** preview updates after each click. Add more clicks to refine the mask.
+            - Click **Save Region** to store the current mask. A new region ID (e.g., `region1`) will be created.
+            3. *(Optional)* Repeat Step 2 to add more regions.
+            4. **Enter a text prompt.** When referring to a saved region, use its exact auto-generated ID (e.g., `region1`), e.g. `Given a detailed description of region1.`
+            You can reference multiple regions, e.g. `Compare region1 and region2 and describe their differences.`
+
+            **Tips:** Use **Negative Point** to remove unwanted parts; use **Clear Prompts** to reset points.
+            """
+            with gr.Accordion("Instructions (click to expand)", open=False):
+                gr.Markdown(MU_INSTRUCTIONS)
+            mu_click_xy = gr.State(None)
             mu_state = gr.State(new_mu_state())
             mu_point_is_pos = gr.State(True)
 
@@ -739,9 +743,20 @@ def build_demo():
             mu_pos_btn.click(lambda: True, None, mu_point_is_pos)
             mu_neg_btn.click(lambda: False, None, mu_point_is_pos)
 
+            # mu_click_img.select(
+            #     fn=mu_add_point,
+            #     inputs=[mu_state, mu_point_is_pos],
+            #     outputs=[mu_state, mu_mask_preview],
+            # )
+
             mu_click_img.select(
-                fn=mu_add_point,
-                inputs=[mu_state, mu_point_is_pos],
+                fn=mu_evt_to_xy,
+                inputs=None,
+                outputs=mu_click_xy,
+                queue=False,
+            ).then(
+                fn=mu_add_point_xy,
+                inputs=[mu_click_xy, mu_state, mu_point_is_pos],
                 outputs=[mu_state, mu_mask_preview],
             )
 
@@ -777,4 +792,4 @@ if __name__ == '__main__':
     demo = build_demo()
 
     demo.queue()
-    demo.launch(server_name='0.0.0.0')
+    demo.launch()

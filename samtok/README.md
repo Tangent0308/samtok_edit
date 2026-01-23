@@ -5,7 +5,7 @@
 <h2 align="center">SAMTok: Representing Any Mask with Two Words</h2>
 
 <p align="center">
-  <a href="https://github.com/bytedance/Sa2VA/tree/main" target="_blank"><img src="https://img.shields.io/badge/arXiv-2509.18094-red"></a>
+  <a href="https://arxiv.org/abs/2601.16093" target="_blank"><img src="https://img.shields.io/badge/arXiv-2601.16093-red"></a>
   <a href="https://zhouyiks.github.io/projects/SAMTok/" target="_blank"><img src="https://img.shields.io/badge/Project-Page-brightgreen"></a>
   <a href="https://huggingface.co/collections/zhouyik/samtok" target="_blank"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Collection-orange"></a>
   <a href="https://huggingface.co/spaces/insomnia7/SAMTok" target="_blank"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-sm-dark.svg"></a>
