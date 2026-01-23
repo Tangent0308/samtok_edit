@@ -27,7 +27,7 @@
 - ✅ Release SAMTok training instruction.
 - ✅ Release evaluation codes.
 - ✅ Release demo codes.
-- ⏳ Release gradio demo.
+- ✅ Release gradio demo.
 - ⏳ Release RL codes & instruction.
 
 
