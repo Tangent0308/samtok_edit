@@ -96,7 +96,7 @@ def ltx2_parser():
     parser = add_general_config(parser)
     parser = add_video_size_config(parser)
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer.")
-    parser.add_argument("--frame_rate", type=float, default=24, help="frame rate of the training videos. If not specified, it will be determined by the dataset.")
+    parser.add_argument("--frame_rate", type=float, default=24, help="frame rate of the training videos.")
     parser.add_argument("--initialize_model_on_cpu", default=False, action="store_true", help="Whether to initialize models on CPU.")
     return parser
 

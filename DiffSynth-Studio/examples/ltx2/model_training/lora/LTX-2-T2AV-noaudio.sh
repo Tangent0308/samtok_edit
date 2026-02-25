@@ -22,8 +22,8 @@
 accelerate launch examples/ltx2/model_training/train.py \
   --dataset_base_path data/example_video_dataset/ltx2 \
   --dataset_metadata_path data/example_video_dataset/ltx2_t2av.csv \
-  --height 256 \
-  --width 384 \
+  --height 512 \
+  --width 768 \
   --num_frames 49\
   --dataset_repeat 1 \
   --model_id_with_origin_paths "DiffSynth-Studio/LTX-2-Repackage:text_encoder_post_modules.safetensors,DiffSynth-Studio/LTX-2-Repackage:video_vae_encoder.safetensors,DiffSynth-Studio/LTX-2-Repackage:audio_vae_encoder.safetensors,google/gemma-3-12b-it-qat-q4_0-unquantized:model-*.safetensors" \
@@ -40,8 +40,8 @@ accelerate launch examples/ltx2/model_training/train.py \
 
 accelerate launch examples/ltx2/model_training/train.py \
   --dataset_base_path ./models/train/LTX2-T2AV-noaudio_lora-splited-cache \
-  --height 256 \
-  --width 384 \
+  --height 512 \
+  --width 768 \
   --num_frames 49\
   --dataset_repeat 100 \
   --model_id_with_origin_paths "DiffSynth-Studio/LTX-2-Repackage:transformer.safetensors" \
