@@ -490,7 +490,6 @@ class LTX2AudioVideoUnit_InputAudioEmbedder(PipelineUnit):
             pipe.load_models_to_device(self.onload_model_names)
             input_audio = pipe.audio_processor.waveform_to_mel(input_audio.unsqueeze(0), waveform_sample_rate=sample_rate).to(dtype=pipe.torch_dtype)
             audio_input_latents = pipe.audio_vae_encoder(input_audio)
-            audio_noise = torch.randn_like(audio_input_latents)
             audio_latent_shape = AudioLatentShape.from_torch_shape(audio_input_latents.shape)
             audio_positions = pipe.audio_patchifier.get_patch_grid_bounds(audio_latent_shape, device=pipe.device)
             if pipe.scheduler.training:
