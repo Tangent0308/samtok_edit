@@ -18,7 +18,7 @@ from ..diffusion.base_pipeline import BasePipeline, PipelineUnit
 from ..models.ltx2_text_encoder import LTX2TextEncoder, LTX2TextEncoderPostModules, LTXVGemmaTokenizer
 from ..models.ltx2_dit import LTXModel
 from ..models.ltx2_video_vae import LTX2VideoEncoder, LTX2VideoDecoder, VideoLatentPatchifier
-from ..models.ltx2_audio_vae import LTX2AudioEncoder, LTX2AudioDecoder, LTX2Vocoder, AudioPatchifier
+from ..models.ltx2_audio_vae import LTX2AudioEncoder, LTX2AudioDecoder, LTX2Vocoder, AudioPatchifier, AudioProcessor
 from ..models.ltx2_upsampler import LTX2LatentUpsampler
 from ..models.ltx2_common import VideoLatentShape, AudioLatentShape, VideoPixelShape, get_pixel_coords, VIDEO_SCALE_FACTORS
 from ..utils.data.media_io_ltx2 import ltx2_preprocess
@@ -50,6 +50,7 @@ class LTX2AudioVideoPipeline(BasePipeline):
 
         self.video_patchifier: VideoLatentPatchifier = VideoLatentPatchifier(patch_size=1)
         self.audio_patchifier: AudioPatchifier = AudioPatchifier(patch_size=1)
+        self.audio_processor: AudioProcessor = AudioProcessor()
 
         self.in_iteration_models = ("dit",)
         self.units = [
@@ -57,6 +58,7 @@ class LTX2AudioVideoPipeline(BasePipeline):
             LTX2AudioVideoUnit_ShapeChecker(),
             LTX2AudioVideoUnit_PromptEmbedder(),
             LTX2AudioVideoUnit_NoiseInitializer(),
+            LTX2AudioVideoUnit_InputAudioEmbedder(),
             LTX2AudioVideoUnit_InputVideoEmbedder(),
             LTX2AudioVideoUnit_InputImagesEmbedder(),
         ]
@@ -95,7 +97,7 @@ class LTX2AudioVideoPipeline(BasePipeline):
             stage2_lora_config.download_if_necessary()
             pipe.stage2_lora_path = stage2_lora_config.path
         # Optional, currently not used
-        # pipe.audio_vae_encoder = model_pool.fetch_model("ltx2_audio_vae_encoder")
+        pipe.audio_vae_encoder = model_pool.fetch_model("ltx2_audio_vae_encoder")
 
         # VRAM Management
         pipe.vram_management_enabled = pipe.check_vram_management_state()
@@ -157,7 +159,6 @@ class LTX2AudioVideoPipeline(BasePipeline):
         num_frames=121,
         # Classifier-free guidance
         cfg_scale: Optional[float] = 3.0,
-        cfg_merge: Optional[bool] = False,
         # Scheduler
         num_inference_steps: Optional[int] = 40,
         # VAE tiling
@@ -186,7 +187,7 @@ class LTX2AudioVideoPipeline(BasePipeline):
             "input_images": input_images, "input_images_indexes": input_images_indexes, "input_images_strength": input_images_strength,
             "seed": seed, "rand_device": rand_device,
             "height": height, "width": width, "num_frames": num_frames,
-            "cfg_scale": cfg_scale, "cfg_merge": cfg_merge,
+            "cfg_scale": cfg_scale,
             "tiled": tiled, "tile_size_in_pixels": tile_size_in_pixels, "tile_overlap_in_pixels": tile_overlap_in_pixels,
             "tile_size_in_frames": tile_size_in_frames, "tile_overlap_in_frames": tile_overlap_in_frames,
             "use_two_stage_pipeline": use_two_stage_pipeline, "use_distilled_pipeline": use_distilled_pipeline,
@@ -422,7 +423,7 @@ class LTX2AudioVideoUnit_NoiseInitializer(PipelineUnit):
 
     def process_stage(self, pipe: LTX2AudioVideoPipeline, height, width, num_frames, seed, rand_device, frame_rate=24.0):
         video_pixel_shape = VideoPixelShape(batch=1, frames=num_frames, width=width, height=height, fps=frame_rate)
-        video_latent_shape = VideoLatentShape.from_pixel_shape(shape=video_pixel_shape, latent_channels=pipe.video_vae_encoder.latent_channels)
+        video_latent_shape = VideoLatentShape.from_pixel_shape(shape=video_pixel_shape, latent_channels=128)
         video_noise = pipe.generate_noise(video_latent_shape.to_torch_shape(), seed=seed, rand_device=rand_device)
 
         latent_coords = pipe.video_patchifier.get_patch_grid_bounds(output_shape=video_latent_shape, device=pipe.device)
@@ -455,17 +456,47 @@ class LTX2AudioVideoUnit_NoiseInitializer(PipelineUnit):
 class LTX2AudioVideoUnit_InputVideoEmbedder(PipelineUnit):
     def __init__(self):
         super().__init__(
-            input_params=("input_video", "video_noise", "audio_noise", "tiled", "tile_size", "tile_stride"),
-            output_params=("video_latents", "audio_latents"),
+            input_params=("input_video", "video_noise", "tiled", "tile_size_in_pixels", "tile_overlap_in_pixels"),
+            output_params=("video_latents", "input_latents"),
             onload_model_names=("video_vae_encoder")
         )
 
-    def process(self, pipe: LTX2AudioVideoPipeline, input_video, video_noise, audio_noise, tiled, tile_size, tile_stride):
+    def process(self, pipe: LTX2AudioVideoPipeline, input_video, video_noise, tiled, tile_size_in_pixels, tile_overlap_in_pixels):
         if input_video is None:
-            return {"video_latents": video_noise, "audio_latents": audio_noise}
+            return {"video_latents": video_noise}
         else:
-            # TODO: implement video-to-video
-            raise NotImplementedError("Video-to-video not implemented yet.")
+            pipe.load_models_to_device(self.onload_model_names)
+            input_video = pipe.preprocess_video(input_video)
+            input_latents = pipe.video_vae_encoder.encode(input_video, tiled, tile_size_in_pixels, tile_overlap_in_pixels).to(dtype=pipe.torch_dtype, device=pipe.device)
+            if pipe.scheduler.training:
+                return {"video_latents": input_latents, "input_latents": input_latents}
+            else:
+                # TODO: implement video-to-video
+                raise NotImplementedError("Video-to-video not implemented yet.")
+
+class LTX2AudioVideoUnit_InputAudioEmbedder(PipelineUnit):
+    def __init__(self):
+        super().__init__(
+            input_params=("input_audio", "audio_noise"),
+            output_params=("audio_latents", "audio_input_latents", "audio_positions", "audio_latent_shape"),
+            onload_model_names=("audio_vae_encoder",)
+        )
+
+    def process(self, pipe: LTX2AudioVideoPipeline, input_audio, audio_noise):
+        if input_audio is None:
+            return {"audio_latents": audio_noise}
+        else:
+            input_audio, sample_rate = input_audio
+            pipe.load_models_to_device(self.onload_model_names)
+            input_audio = pipe.audio_processor.waveform_to_mel(input_audio.unsqueeze(0), waveform_sample_rate=sample_rate).to(dtype=pipe.torch_dtype)
+            audio_input_latents = pipe.audio_vae_encoder(input_audio)
+            audio_latent_shape = AudioLatentShape.from_torch_shape(audio_input_latents.shape)
+            audio_positions = pipe.audio_patchifier.get_patch_grid_bounds(audio_latent_shape, device=pipe.device)
+            if pipe.scheduler.training:
+                return {"audio_latents": audio_input_latents, "audio_input_latents": audio_input_latents, "audio_positions": audio_positions, "audio_latent_shape": audio_latent_shape}
+            else:
+                # TODO: implement video-to-video
+                raise NotImplementedError("Video-to-video not implemented yet.")
 
 class LTX2AudioVideoUnit_InputImagesEmbedder(PipelineUnit):
     def __init__(self):
@@ -530,9 +561,12 @@ def model_fn_ltx2(
     video_timesteps = timestep.repeat(1, video_latents.shape[1], 1)
     if denoise_mask_video is not None:
         video_timesteps = video_patchifier.patchify(denoise_mask_video) * video_timesteps
-    _, c_a, _, mel_bins  = audio_latents.shape
-    audio_latents = audio_patchifier.patchify(audio_latents)
-    audio_timesteps = timestep.repeat(1, audio_latents.shape[1], 1)
+    if audio_latents is not None:
+        _, c_a, _, mel_bins  = audio_latents.shape
+        audio_latents = audio_patchifier.patchify(audio_latents)
+        audio_timesteps = timestep.repeat(1, audio_latents.shape[1], 1)
+    else:
+        audio_timesteps = None
     #TODO: support gradient checkpointing in training
     vx, ax = dit(
         video_latents=video_latents,
@@ -546,5 +580,5 @@ def model_fn_ltx2(
     )
     # unpatchify
     vx = video_patchifier.unpatchify_video(vx, f, h, w)
-    ax = audio_patchifier.unpatchify_audio(ax, c_a, mel_bins)
+    ax = audio_patchifier.unpatchify_audio(ax, c_a, mel_bins) if ax is not None else None
     return vx, ax
