@@ -27,7 +27,7 @@ accelerate launch examples/ltx2/model_training/train.py \
   --extra_inputs "input_audio" \
   --height 512 \
   --width 768 \
-  --num_frames 49 \
+  --num_frames 121 \
   --dataset_repeat 1 \
   --model_id_with_origin_paths "DiffSynth-Studio/LTX-2-Repackage:text_encoder_post_modules.safetensors,DiffSynth-Studio/LTX-2-Repackage:video_vae_encoder.safetensors,DiffSynth-Studio/LTX-2-Repackage:audio_vae_encoder.safetensors,google/gemma-3-12b-it-qat-q4_0-unquantized:model-*.safetensors" \
   --learning_rate 1e-4 \
@@ -46,7 +46,7 @@ accelerate launch examples/ltx2/model_training/train.py \
   --extra_inputs "input_audio" \
   --height 512 \
   --width 768 \
-  --num_frames 49 \
+  --num_frames 121 \
   --dataset_repeat 100 \
   --model_id_with_origin_paths "DiffSynth-Studio/LTX-2-Repackage:transformer.safetensors" \
   --learning_rate 1e-4 \

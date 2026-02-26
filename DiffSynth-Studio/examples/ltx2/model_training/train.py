@@ -118,10 +118,10 @@ if __name__ == "__main__":
             max_pixels=args.max_pixels,
             height=args.height,
             width=args.width,
-            height_division_factor=16,
-            width_division_factor=16,
+            height_division_factor=32,
+            width_division_factor=32,
             num_frames=args.num_frames,
-            time_division_factor=4,
+            time_division_factor=8,
             time_division_remainder=1,
         ),
         special_operator_map={
