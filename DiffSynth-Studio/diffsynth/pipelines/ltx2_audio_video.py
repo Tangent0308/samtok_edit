@@ -577,6 +577,8 @@ def model_fn_ltx2(
         audio_positions=audio_positions,
         audio_context=audio_context,
         audio_timesteps=audio_timesteps,
+        use_gradient_checkpointing=use_gradient_checkpointing,
+        use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
     )
     # unpatchify
     vx = video_patchifier.unpatchify_video(vx, f, h, w)
