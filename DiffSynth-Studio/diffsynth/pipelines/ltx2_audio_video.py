@@ -565,7 +565,7 @@ class LTX2AudioVideoUnit_InContextVideoEmbedder(PipelineUnit):
         expected_height = height // in_context_downsample_factor // 2 if use_two_stage_pipeline else height // in_context_downsample_factor
         expected_width = width // in_context_downsample_factor // 2 if use_two_stage_pipeline else width // in_context_downsample_factor
         current_h, current_w, current_f = in_context_video[0].size[1], in_context_video[0].size[0], len(in_context_video)
-        h, w, f = pipe.check_resize_height_width(expected_height, expected_width, current_f)
+        h, w, f = pipe.check_resize_height_width(expected_height, expected_width, current_f, verbose=0)
         if current_h != h or current_w != w:
             in_context_video = [img.resize((w, h)) for img in in_context_video]
         if current_f != f:
