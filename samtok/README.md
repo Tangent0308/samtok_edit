@@ -28,7 +28,7 @@
 - ✅ Release evaluation codes.
 - ✅ Release demo codes.
 - ✅ Release gradio demo.
-- ⏳ Release RL codes & instruction.
+- ✅ Release RL codes & instruction.
 
 
 ## 📦 Model Zoo
@@ -209,6 +209,8 @@ Mask understanding means encoding 2D masks into mask tokens using SAMTok and inc
 Please refer to [TRAIN_TOKENIZER.md](docs/TRAIN_TOKENIZER.md) for training tokenizer.
 
 Please refer to [TRAIN_VLM.md](docs/TRAIN_VLM.md) for training VLM.
+
+We implement the RL code based on [Easy-R1](https://github.com/hiyouga/EasyR1), with the only modification lying in the reward design. Please refer to rl/reward_function/text2mask.py for details. The script to launch RL training is available at rl/qwen25vl_3b_mt_gres.sh.
 
 ## 🔬 Evaluation
 [Please refer to this folder](evaluation)
