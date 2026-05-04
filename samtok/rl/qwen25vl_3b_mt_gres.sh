@@ -2,7 +2,6 @@
 
 set -x
 
-export WANDB_API_KEY="5af7c29cbce6c69b564f36557a148e3e40979477"
 export WANDB_MODE=offline
 export WANDB_DIR='./verl_wandb_logs'
 
