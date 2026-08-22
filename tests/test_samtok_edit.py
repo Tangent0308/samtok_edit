@@ -13,6 +13,7 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "DiffSynth-Studio"))
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "data"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "train"))
 
 from diffsynth.core.data.samtok_dataset import (  # noqa: E402
     SamtokEditingDataset,
@@ -31,6 +32,7 @@ from build_edit_ntp_metadata import (  # noqa: E402
     EDIT_VERB_TEMPLATES,
     GLOBAL_TEMPLATES,
 )
+from train_samtok_edit import QwenImageSamtokTrainingModule  # noqa: E402
 
 
 SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
@@ -207,6 +209,20 @@ class SamtokEditTests(unittest.TestCase):
             kv_cache=cache,
         )
         self.assertIs(probe.kv_cache, cache)
+
+    def test_samtok_trainer_accepts_sharded_model_paths(self):
+        trainer = QwenImageSamtokTrainingModule.__new__(
+            QwenImageSamtokTrainingModule
+        )
+        configs = trainer.parse_model_configs(
+            json.dumps([["text-00001.safetensors", "text-00002.safetensors"], "vae.safetensors"]),
+            None,
+        )
+        self.assertEqual(
+            configs[0].path,
+            ["text-00001.safetensors", "text-00002.safetensors"],
+        )
+        self.assertEqual(configs[1].path, "vae.safetensors")
 
 
 if __name__ == "__main__":

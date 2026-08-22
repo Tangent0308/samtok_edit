@@ -322,6 +322,78 @@ class SamtokModelLogger(ModelLogger):
 
 
 class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
+    @staticmethod
+    def _model_path_lookup_key(path):
+        if isinstance(path, str):
+            return path
+        return json.dumps(path, separators=(",", ":"))
+
+    def parse_model_configs(
+        self,
+        model_paths,
+        model_id_with_origin_paths,
+        fp8_models=None,
+        offload_models=None,
+        quant_options=None,
+        device="cpu",
+    ):
+        """Keep DiffSynth's list-of-shards model path support hash-safe."""
+
+        if model_paths is None:
+            return super().parse_model_configs(
+                model_paths,
+                model_id_with_origin_paths,
+                fp8_models=fp8_models,
+                offload_models=offload_models,
+                quant_options=quant_options,
+                device=device,
+            )
+
+        decoded_paths = json.loads(model_paths)
+        if all(isinstance(path, str) for path in decoded_paths):
+            return super().parse_model_configs(
+                model_paths,
+                model_id_with_origin_paths,
+                fp8_models=fp8_models,
+                offload_models=offload_models,
+                quant_options=quant_options,
+                device=device,
+            )
+
+        fp8_models_arg = fp8_models
+        offload_models_arg = offload_models
+        fp8_model_names = [] if fp8_models is None else fp8_models.split(",")
+        offload_model_names = (
+            [] if offload_models is None else offload_models.split(",")
+        )
+        quant_map = self.parse_quant_options(quant_options)
+        model_configs = []
+        for path in decoded_paths:
+            path_key = self._model_path_lookup_key(path)
+            vram_config = self.parse_vram_config(
+                fp8=path_key in fp8_model_names,
+                offload=path_key in offload_model_names,
+                device=device,
+            )
+            model_configs.append(
+                ModelConfig(
+                    path=path,
+                    quantize=quant_map.get(path_key),
+                    **vram_config,
+                )
+            )
+        model_configs.extend(
+            super().parse_model_configs(
+                None,
+                model_id_with_origin_paths,
+                fp8_models=fp8_models_arg,
+                offload_models=offload_models_arg,
+                quant_options=quant_options,
+                device=device,
+            )
+        )
+        return model_configs
+
     def __init__(
         self,
         model_paths=None,
@@ -340,6 +412,7 @@ class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
         extra_inputs=None,
         fp8_models=None,
         offload_models=None,
+        quant_options=None,
         resume_from_checkpoint=None,
         remove_prefix_in_ckpt=None,
         device="cpu",
@@ -357,6 +430,7 @@ class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
             model_id_with_origin_paths,
             fp8_models=fp8_models,
             offload_models=offload_models,
+            quant_options=quant_options,
             device=device,
         )
         tokenizer_config = ModelConfig(tokenizer_path) if tokenizer_path else None
@@ -627,6 +701,7 @@ def main():
         extra_inputs=args.extra_inputs,
         fp8_models=args.fp8_models,
         offload_models=args.offload_models,
+        quant_options=args.quant_options,
         resume_from_checkpoint=args.resume_from_checkpoint,
         remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
         task=args.task,
