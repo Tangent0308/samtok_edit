@@ -7,6 +7,8 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
+import torch
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "DiffSynth-Studio"))
@@ -20,10 +22,15 @@ from diffsynth.core.data.samtok_dataset import (  # noqa: E402
     span_of,
     to_cot,
 )
+from diffsynth.models.qwen_image_dit import QwenImageTransformerBlock  # noqa: E402
 from diffsynth.utils.state_dict_converters.qwen_image_text_encoder_samtok import (  # noqa: E402
     QwenImageSamtokTextEncoderStateDictConverter,
 )
 from samtok_codec import SamtokCodec  # noqa: E402
+from build_edit_ntp_metadata import (  # noqa: E402
+    EDIT_VERB_TEMPLATES,
+    GLOBAL_TEMPLATES,
+)
 
 
 SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
@@ -170,6 +177,36 @@ class SamtokEditTests(unittest.TestCase):
     def test_codec_rejects_empty_mask_list_cleanly(self):
         with self.assertRaisesRegex(ValueError, "one or more non-empty"):
             SamtokCodec._ordered_masks([])
+
+    def test_gres_edit_templates_are_english_only(self):
+        for template in EDIT_VERB_TEMPLATES + GLOBAL_TEMPLATES:
+            self.assertTrue(template.isascii(), template)
+
+    def test_qwen_image_block_forwards_kv_cache(self):
+        class AttentionProbe(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.kv_cache = None
+
+            def forward(self, image, text, kv_cache=None, **kwargs):
+                self.kv_cache = kv_cache
+                return torch.zeros_like(image), torch.zeros_like(text)
+
+        block = QwenImageTransformerBlock(
+            dim=4,
+            num_attention_heads=1,
+            attention_head_dim=4,
+        )
+        probe = AttentionProbe()
+        block.attn = probe
+        cache = (torch.zeros(1), torch.ones(1))
+        block(
+            image=torch.zeros(1, 2, 4),
+            text=torch.zeros(1, 3, 4),
+            temb=torch.zeros(1, 4),
+            kv_cache=cache,
+        )
+        self.assertIs(probe.kv_cache, cache)
 
 
 if __name__ == "__main__":

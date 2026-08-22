@@ -28,12 +28,12 @@ PY
 
 cd "$DIFFSYNTH_DIR"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
-LAUNCH_ARGS=(--num_processes "$NUM_PROCESSES")
 if (( NUM_PROCESSES > 1 )); then
-  LAUNCH_ARGS=(--multi_gpu "${LAUNCH_ARGS[@]}")
+  LAUNCH_CMD=(accelerate launch --multi_gpu --num_processes "$NUM_PROCESSES")
+else
+  LAUNCH_CMD=(python)
 fi
-PYTHONPATH="$DIFFSYNTH_DIR:${PYTHONPATH:-}" accelerate launch \
-  "${LAUNCH_ARGS[@]}" \
+PYTHONPATH="$DIFFSYNTH_DIR:${PYTHONPATH:-}" "${LAUNCH_CMD[@]}" \
   "$SCRIPT_DIR/train_samtok_edit.py" \
   --dataset_base_path "$DATASET_BASE" \
   --dataset_metadata_path "$STAGE2_METADATA" \

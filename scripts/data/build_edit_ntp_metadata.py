@@ -51,13 +51,6 @@ SEGMENTATION_QUESTIONS = [
     "Can you highlight the {class_name} in this image with a segmentation mask",
 ]
 EDIT_VERB_TEMPLATES = [
-    "把{expr}改成蓝色",
-    "把{expr}改成红色",
-    "删除{expr}",
-    "移除{expr}",
-    "把{expr}替换成一只柯基",
-    "让{expr}变得透明",
-    "把{expr}的材质改成金属",
     "change {expr} to blue",
     "remove {expr}",
     "delete {expr}",
@@ -66,9 +59,6 @@ EDIT_VERB_TEMPLATES = [
     "recolor {expr} to green",
 ]
 GLOBAL_TEMPLATES = [
-    "整体改成黄昏色调",
-    "把整张图变成水彩画风格",
-    "给整张图添加柔和的电影感色调",
     "apply a vintage film look to the whole image",
     "turn the entire image into a watercolor painting",
     "make the whole scene look like it was photographed at dusk",

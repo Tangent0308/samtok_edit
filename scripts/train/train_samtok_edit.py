@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import os
 import sys
 
@@ -38,6 +40,88 @@ from diffsynth.diffusion.runner import (
 from diffsynth.pipelines.qwen_image_samtok import QwenImageSamtokPipeline, ModelConfig
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+def trainable_parameter_audit(model):
+    """Describe and validate the Stage-1 trainable parameter boundary."""
+
+    trainable = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    invalid = [
+        name
+        for name, _ in trainable
+        if not name.startswith("pipe.text_encoder.")
+        or not (".lora_A." in name or ".lora_B." in name)
+    ]
+    dtypes = {}
+    for _, parameter in trainable:
+        dtype = str(parameter.dtype).removeprefix("torch.")
+        dtypes[dtype] = dtypes.get(dtype, 0) + parameter.numel()
+    report = {
+        "trainable_tensors": len(trainable),
+        "trainable_parameters": sum(parameter.numel() for _, parameter in trainable),
+        "trainable_parameter_dtypes": dtypes,
+        "text_encoder_trainable_parameters": sum(
+            parameter.numel()
+            for name, parameter in trainable
+            if name.startswith("pipe.text_encoder.")
+        ),
+        "dit_trainable_parameters": sum(
+            parameter.numel()
+            for name, parameter in trainable
+            if name.startswith("pipe.dit.")
+        ),
+        "vae_trainable_parameters": sum(
+            parameter.numel()
+            for name, parameter in trainable
+            if name.startswith("pipe.vae.")
+        ),
+        "invalid_trainable_names": invalid[:10],
+    }
+    if not trainable:
+        raise RuntimeError("No trainable parameters were found")
+    if invalid:
+        raise RuntimeError(
+            "Stage 1 must train only text-encoder LoRA parameters; found "
+            f"{invalid[:10]}"
+        )
+    if any(parameter.dtype != torch.float32 for _, parameter in trainable):
+        raise RuntimeError("Stage-1 text-encoder LoRA parameters must remain fp32")
+    return report
+
+
+def gradient_audit(model):
+    """Return finite-gradient statistics without retaining gradient tensors."""
+
+    gradient_norms = []
+    frozen_gradient_tensors = 0
+    trainable_gradient_tensors = 0
+    for parameter in model.parameters():
+        if parameter.requires_grad:
+            if parameter.grad is not None:
+                trainable_gradient_tensors += 1
+                gradient_norms.append(parameter.grad.detach().float().norm())
+        elif parameter.grad is not None:
+            frozen_gradient_tensors += 1
+    if gradient_norms:
+        norms = torch.stack(gradient_norms)
+        total_norm = float(norms.norm().item())
+        nonzero_tensors = int((norms > 0).sum().item())
+        finite = bool(torch.isfinite(norms).all().item()) and math.isfinite(total_norm)
+    else:
+        total_norm = 0.0
+        nonzero_tensors = 0
+        finite = True
+    return {
+        "grad_norm_before_clip": total_norm,
+        "trainable_grad_tensors": trainable_gradient_tensors,
+        "nonzero_grad_tensors": nonzero_tensors,
+        "frozen_grad_tensors": frozen_gradient_tensors,
+        "gradients_finite": finite,
+    }
 
 
 def launch_training_task_ordered(
@@ -88,19 +172,118 @@ def launch_training_task_ordered(
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     initialize_deepspeed_gradient_checkpointing(accelerator)
 
+    if args.debug_train_metrics and accelerator.is_main_process:
+        audit = trainable_parameter_audit(accelerator.unwrap_model(model))
+        print("[SamtokDebug][parameter_audit] " + json.dumps(audit, sort_keys=True))
+
+    probe_name, probe_parameter = None, None
+    if args.debug_train_metrics:
+        for name, parameter in accelerator.unwrap_model(model).named_parameters():
+            if parameter.requires_grad and ".lora_B." in name:
+                probe_name, probe_parameter = name, parameter
+                break
+
+    micro_step = 0
+    optimizer_step = 0
+
     for epoch_id in range(args.num_epochs):
         for data in tqdm(dataloader, disable=not accelerator.is_local_main_process):
             with accelerator.accumulate(model):
+                micro_step += 1
+                sample_type = data.get("sample_type", "edit")
                 loss = model(data)
                 accelerator.backward(loss)
+                debug_metrics = {}
+                if args.debug_train_metrics:
+                    debug_metrics.update(gradient_audit(accelerator.unwrap_model(model)))
+                    if not debug_metrics["gradients_finite"]:
+                        raise FloatingPointError(
+                            f"Non-finite Stage-1 gradients at micro-step {micro_step}"
+                        )
+                    if debug_metrics["nonzero_grad_tensors"] == 0:
+                        raise RuntimeError(
+                            f"No non-zero LoRA gradients at micro-step {micro_step}"
+                        )
+                    if debug_metrics["frozen_grad_tensors"]:
+                        raise RuntimeError(
+                            "A frozen parameter unexpectedly received a .grad tensor"
+                        )
+
+                clip_norm = None
                 if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                    clip_norm = accelerator.clip_grad_norm_(
+                        model.parameters(), args.max_grad_norm
+                    )
+                probe_before = (
+                    probe_parameter.detach().float().clone()
+                    if accelerator.sync_gradients and probe_parameter is not None
+                    else None
+                )
                 optimizer.step()
                 if accelerator.sync_gradients:
                     scheduler.step()
+                    optimizer_step += 1
+                probe_after = (
+                    probe_parameter.detach().float()
+                    if accelerator.sync_gradients and probe_parameter is not None
+                    else None
+                )
                 optimizer.zero_grad(set_to_none=True)
+
+                if args.debug_train_metrics:
+                    pipe = accelerator.unwrap_model(model).pipe
+                    components = getattr(pipe, "last_loss_log", None) or {}
+                    expected_components = {
+                        "edit_mt": {"loss_ntp", "loss_fm"},
+                        "edit_ntp": {"loss_ntp"},
+                        "edit": {"loss_fm"},
+                    }[sample_type]
+                    if set(components) != expected_components:
+                        raise RuntimeError(
+                            f"Loss dispatch mismatch for {sample_type}: {components}"
+                        )
+                    debug_metrics.update(
+                        {
+                            "sync_gradients": int(accelerator.sync_gradients),
+                            "optimizer_step": optimizer_step,
+                            "learning_rate": float(optimizer.param_groups[0]["lr"]),
+                            "clip_return_norm": (
+                                float(clip_norm.detach().float().item())
+                                if isinstance(clip_norm, torch.Tensor)
+                                else float(clip_norm) if clip_norm is not None else None
+                            ),
+                            "probe_update_l2_norm": (
+                                float((probe_after - probe_before).norm().item())
+                                if probe_before is not None and probe_after is not None
+                                else None
+                            ),
+                        }
+                    )
+                    if micro_step % args.debug_log_steps == 0:
+                        record = {
+                            "epoch": epoch_id,
+                            "micro_step": micro_step,
+                            "accumulation_slot": (
+                                (micro_step - 1) % args.gradient_accumulation_steps
+                            )
+                            + 1,
+                            "sample_type": sample_type,
+                            "loss_total": float(loss.detach().float().item()),
+                            **components,
+                            **(getattr(pipe, "last_training_debug", None) or {}),
+                            **debug_metrics,
+                            "probe_parameter": probe_name,
+                        }
+                        accelerator.print(
+                            "[SamtokDebug][micro_step] "
+                            + json.dumps(record, sort_keys=True)
+                        )
                 model_logger.on_step_end(
-                    accelerator, model, args.save_steps, loss=loss
+                    accelerator,
+                    model,
+                    args.save_steps,
+                    loss=loss,
+                    debug_metrics=debug_metrics,
                 )
         if args.save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
@@ -131,6 +314,11 @@ class SamtokModelLogger(ModelLogger):
         for name, value in components.items():
             for logger in self.loggers:
                 logger.log(name, float(value), self.num_steps)
+        for name, value in (kwargs.get("debug_metrics") or {}).items():
+            if value is None:
+                continue
+            for logger in self.loggers:
+                logger.log("debug/" + name, float(value), self.num_steps)
 
 
 class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
@@ -316,6 +504,30 @@ class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
         )
         for unit in self.pipe.units:
             inputs = self.pipe.unit_runner(unit, self.pipe, *inputs)
+        if self.task == "sft":
+            shared, positive, _ = inputs
+            cot_labels = positive.get("samtok_cot_labels")
+            prompt_mask = positive.get("prompt_emb_mask")
+            input_latents = shared.get("input_latents")
+            edit_latents = shared.get("edit_latents")
+            if edit_latents is not None and not isinstance(edit_latents, list):
+                edit_latents = [edit_latents]
+            self.pipe.last_training_debug = {
+                "cot_tokens": int(cot_labels.numel()) if cot_labels is not None else 0,
+                "prompt_tokens": (
+                    int(prompt_mask.sum().item()) if prompt_mask is not None else 0
+                ),
+                "has_ntp_loss": cot_labels is not None,
+                "has_fm_loss": input_latents is not None,
+                "target_latent_shape": (
+                    list(input_latents.shape) if input_latents is not None else None
+                ),
+                "edit_latent_shapes": (
+                    [list(latent.shape) for latent in edit_latents]
+                    if edit_latents is not None
+                    else []
+                ),
+            }
         return self.task_to_loss[self.task](self.pipe, *inputs)
 
 
@@ -338,11 +550,15 @@ def samtok_parser():
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
     parser.add_argument("--lora_dropout", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--debug_train_metrics", action="store_true")
+    parser.add_argument("--debug_log_steps", type=int, default=1)
     return parser
 
 
 def main():
     args = samtok_parser().parse_args()
+    if args.debug_log_steps < 1:
+        raise ValueError("debug_log_steps must be positive")
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         kwargs_handlers=[
