@@ -507,3 +507,15 @@ def QwenImageTextEncoder_Module_Map_Updater():
 VERSION_CHECKER_MAPS = {
     "diffsynth.models.qwen_image_text_encoder.QwenImageTextEncoder": QwenImageTextEncoder_Module_Map_Updater,
 }
+
+# QwenImageSamtokTextEncoder is built from the same Transformers submodules as
+# the stock Qwen-Image encoder.  Reuse its version-aware offload map.
+_SAMTOK_TEXT_ENCODER_CLASS = (
+    "diffsynth.models.qwen_image_text_encoder_samtok.QwenImageSamtokTextEncoder"
+)
+VRAM_MANAGEMENT_MODULE_MAPS[_SAMTOK_TEXT_ENCODER_CLASS] = dict(
+    VRAM_MANAGEMENT_MODULE_MAPS[
+        "diffsynth.models.qwen_image_text_encoder.QwenImageTextEncoder"
+    ]
+)
+VERSION_CHECKER_MAPS[_SAMTOK_TEXT_ENCODER_CLASS] = QwenImageTextEncoder_Module_Map_Updater

@@ -33,6 +33,48 @@ def FlowMatchSFTLoss(pipe: BasePipeline, **inputs):
     return loss
 
 
+def SamtokNTPLoss(pipe: BasePipeline, **inputs):
+    """Next-token loss over only the shifted canonical CoT token slice."""
+
+    hidden = inputs["samtok_cot_hidden"]
+    labels = inputs["samtok_cot_labels"]
+    logits = pipe.text_encoder.ntp_logits(hidden).float()
+    return torch.nn.functional.cross_entropy(
+        logits.reshape(-1, logits.shape[-1]), labels.reshape(-1)
+    )
+
+
+def SamtokEditingLoss(
+    pipe: BasePipeline,
+    ntp_weight: float = 1.0,
+    fm_weight: float = 1.0,
+    **inputs,
+):
+    """Dispatch Stage-1 NTP/FM losses by sample type."""
+
+    sample_type = inputs.get("sample_type", "edit")
+    components = {}
+    if sample_type == "edit_ntp":
+        ntp = SamtokNTPLoss(pipe, **inputs)
+        loss = ntp_weight * ntp
+        components["loss_ntp"] = ntp
+    elif sample_type == "edit":
+        fm = FlowMatchSFTLoss(pipe, **inputs)
+        loss = fm_weight * fm
+        components["loss_fm"] = fm
+    elif sample_type == "edit_mt":
+        ntp = SamtokNTPLoss(pipe, **inputs)
+        fm = FlowMatchSFTLoss(pipe, **inputs)
+        loss = ntp_weight * ntp + fm_weight * fm
+        components.update(loss_ntp=ntp, loss_fm=fm)
+    else:
+        raise ValueError(f"Unknown SAMTok editing sample_type: {sample_type!r}")
+    pipe.last_loss_log = {
+        name: value.detach().float().item() for name, value in components.items()
+    }
+    return loss
+
+
 def FlowMatchSFTAudioVideoLoss(pipe: BasePipeline, **inputs):
     max_timestep_boundary = int(inputs.get("max_timestep_boundary", 1) * len(pipe.scheduler.timesteps))
     min_timestep_boundary = int(inputs.get("min_timestep_boundary", 0) * len(pipe.scheduler.timesteps))

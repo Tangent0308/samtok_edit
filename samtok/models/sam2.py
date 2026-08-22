@@ -19,7 +19,7 @@ from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask
 from transformers.utils import can_return_tuple, ModelOutput
 from transformers.activations import ACT2FN
 
-from projects.samtok.models.losses import CrossEntropyLoss, DiceLoss, point_sample, get_uncertain_point_coords_with_randomness
+from .losses import CrossEntropyLoss, DiceLoss, point_sample, get_uncertain_point_coords_with_randomness
 
 
 class SAM2Config(PretrainedConfig):
@@ -4210,4 +4210,3 @@ class VQ_SAM2(PreTrainedModel):
                 quant_mask_embeds=quant_mask_embeds,
                 quant_codes=code,
             )
-

@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+
+# Local training artifacts and materialized datasets.
+/data/
+/models/

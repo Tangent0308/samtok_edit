@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 
-from projects.samtok.models.losses.utils import weight_reduce_loss
+from .utils import weight_reduce_loss
 
 
 def dice_loss(pred,

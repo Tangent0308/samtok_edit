@@ -1,9 +1,4 @@
-from .perceptionlm import PerceptionLM_TokenMask
-from .qwen25vl import QWEN25VL_VQSAM2Model
-from .qwen3vl import QWEN3VL_VQSAM2Model
-from .processing_perception_lm import PerceptionLMProcessor
 from .sam2 import VQ_SAM2, VQ_SAM2Config, SAM2Config
-from .vq_sam2 import VQ_SAM2Model
 
 import numpy as np
 from torchvision.transforms.functional import resize, to_pil_image
@@ -17,3 +12,16 @@ class DirectResize:
         """
         img = to_pil_image(image, mode='RGB')
         return np.array(img.resize((self.target_length, self.target_length)))
+
+
+# The VLM training wrappers depend on optional mmengine/xtuner packages.  Keep
+# the standalone mask codec importable in lightweight DiffSynth environments.
+try:
+    from .perceptionlm import PerceptionLM_TokenMask
+    from .qwen25vl import QWEN25VL_VQSAM2Model
+    from .qwen3vl import QWEN3VL_VQSAM2Model
+    from .processing_perception_lm import PerceptionLMProcessor
+    from .vq_sam2 import VQ_SAM2Model
+except ModuleNotFoundError as exc:
+    if exc.name not in {"mmengine", "xtuner"}:
+        raise

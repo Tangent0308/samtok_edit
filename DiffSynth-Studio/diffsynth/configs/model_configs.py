@@ -13,6 +13,16 @@ qwen_image_series = [
         "state_dict_converter": "diffsynth.utils.state_dict_converters.qwen_image_text_encoder.QwenImageTextEncoderStateDictConverter",
     },
     {
+        # Qwen2.5-VL-7B-SAMTok-gres-ft (152179-token vocabulary).
+        # The hash depends on state-dict key names and shapes, so a Stage-1
+        # LoRA-fused export with the same layout continues to match.
+        "model_hash": "7792f327a564edcc922f747808b18fb6",
+        "model_name": "qwen_image_text_encoder",
+        "model_class": "diffsynth.models.qwen_image_text_encoder_samtok.QwenImageSamtokTextEncoder",
+        "state_dict_converter": "diffsynth.utils.state_dict_converters.qwen_image_text_encoder_samtok.QwenImageSamtokTextEncoderStateDictConverter",
+        "extra_kwargs": {"vocab_size": 152179},
+    },
+    {
         # Example: ModelConfig(model_id="Qwen/Qwen-Image", origin_file_pattern="vae/diffusion_pytorch_model.safetensors")
         "model_hash": "ed4ea5824d55ec3107b09815e318123a",
         "model_name": "qwen_image_vae",

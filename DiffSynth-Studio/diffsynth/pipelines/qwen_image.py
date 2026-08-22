@@ -204,6 +204,8 @@ class QwenImagePipeline(BasePipeline):
 class QwenImageBlockwiseMultiControlNet(torch.nn.Module):
     def __init__(self, models: list[QwenImageBlockWiseControlNet]):
         super().__init__()
+        if models is None:
+            models = []
         if not isinstance(models, list):
             models = [models]
         self.models = torch.nn.ModuleList(models)

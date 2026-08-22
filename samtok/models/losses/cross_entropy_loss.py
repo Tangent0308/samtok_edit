@@ -5,8 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from projects.samtok.models.losses.accuracy import accuracy
-from projects.samtok.models.losses.utils import weight_reduce_loss
+from .accuracy import accuracy
+from .utils import weight_reduce_loss
 
 
 
