@@ -1,5 +1,5 @@
 from .operators import *
-import torch, json, pandas
+import json, os, pandas, torch
 
 
 class UnifiedDataset(torch.utils.data.Dataset):
@@ -60,12 +60,33 @@ class UnifiedDataset(torch.utils.data.Dataset):
         ])
         
     def search_for_cached_data_files(self, path):
-        for file_name in os.listdir(path):
-            subpath = os.path.join(path, file_name)
-            if os.path.isdir(subpath):
-                self.search_for_cached_data_files(subpath)
-            elif subpath.endswith(".pth"):
-                self.cached_data.append(subpath)
+        # ``os.listdir`` followed by ``os.path.isdir`` performs one extra stat
+        # for every cache and sidecar.  That is especially expensive for a
+        # remote cache with hundreds of thousands of entries and was repeated
+        # independently by every distributed rank.  DirEntry normally carries
+        # the directory type from readdir, so scandir avoids those round trips.
+        pending_dirs = [os.path.abspath(path)]
+        next_progress = 25_000
+        show_progress = os.environ.get("RANK", "0") == "0"
+        while pending_dirs:
+            current_path = pending_dirs.pop()
+            child_dirs = []
+            with os.scandir(current_path) as entries:
+                for entry in entries:
+                    if entry.name.endswith(".pth"):
+                        self.cached_data.append(entry.path)
+                    elif entry.is_dir(follow_symlinks=False):
+                        child_dirs.append(entry.path)
+            # Preserve the depth-first directory order used by the previous
+            # recursive implementation.
+            pending_dirs.extend(reversed(child_dirs))
+            if show_progress and len(self.cached_data) >= next_progress:
+                print(
+                    "[UnifiedDataset][cache_discovery] "
+                    f"found={len(self.cached_data)} path={path}",
+                    flush=True,
+                )
+                next_progress = (len(self.cached_data) // 25_000 + 1) * 25_000
     
     def load_metadata(self, metadata_path):
         if metadata_path is None:

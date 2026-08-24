@@ -19,10 +19,25 @@ EXPECTED_COUNTS="${EXPECTED_COUNTS:-edit_mt:110640,edit:55320}"
 EXPECTED_METADATA_SHA256="${EXPECTED_METADATA_SHA256:-}"
 EXPECTED_TE_LORA_SHA256="${EXPECTED_TE_LORA_SHA256:-}"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
-CACHE_PORT="${CACHE_PORT:-50851}"
-TRAIN_PORT="${TRAIN_PORT:-50852}"
+CACHE_PORT="${CACHE_PORT:-20051}"
+TRAIN_PORT="${TRAIN_PORT:-20052}"
 DATASET_WORKERS="${DATASET_WORKERS:-8}"
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
+START_PHASE="${START_PHASE:-cache}"
+CACHE_AUDIT_WORKERS="${CACHE_AUDIT_WORKERS:-32}"
+CACHE_AUDIT_TORCH_THREADS="${CACHE_AUDIT_TORCH_THREADS:-1}"
+CACHE_AUDIT_CHUNKSIZE="${CACHE_AUDIT_CHUNKSIZE:-4}"
+CACHE_AUDIT_LOG_EVERY="${CACHE_AUDIT_LOG_EVERY:-500}"
+
+case "$START_PHASE" in
+  cache) START_PHASE_INDEX=0 ;;
+  audit) START_PHASE_INDEX=1 ;;
+  train) START_PHASE_INDEX=2 ;;
+  *)
+    echo "START_PHASE must be cache, audit, or train; got: $START_PHASE" >&2
+    exit 2
+    ;;
+esac
 
 timestamp() {
   date -u +'%Y-%m-%dT%H:%M:%SZ'
@@ -53,11 +68,22 @@ import socket
 import sys
 
 port = int(sys.argv[1])
-sock = socket.socket()
-try:
-    sock.bind(("127.0.0.1", port))
-finally:
-    sock.close()
+errors = []
+for family, address in (
+    (socket.AF_INET, ("0.0.0.0", port)),
+    (socket.AF_INET6, ("::", port)),
+):
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        if family == socket.AF_INET6:
+            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        sock.bind(address)
+    except OSError as exc:
+        errors.append(f"{address[0]}: {exc}")
+    finally:
+        sock.close()
+if errors:
+    raise SystemExit("; ".join(errors))
 PY
 }
 
@@ -80,13 +106,19 @@ run_logged() {
 [[ -d "$MERGED_TE_DIR" ]] || fail "Missing merged TE directory: $MERGED_TE_DIR"
 [[ -r "$WANDB_ENV_FILE" ]] || fail "Cannot read WandB environment file: $WANDB_ENV_FILE"
 [[ "$(stat -c '%a' "$WANDB_ENV_FILE")" == "600" ]] || fail "WandB environment file must have mode 600"
-[[ ! -e "$CACHE_ROOT" ]] || fail "Cache output already exists: $CACHE_ROOT"
+if (( START_PHASE_INDEX == 0 )); then
+  [[ ! -e "$CACHE_ROOT" ]] || fail "Cache output already exists: $CACHE_ROOT"
+else
+  [[ -d "$CACHE_ROOT" ]] || fail "Cache input does not exist: $CACHE_ROOT"
+fi
 [[ ! -e "$TRAIN_OUTPUT_PATH" ]] || fail "Training output already exists: $TRAIN_OUTPUT_PATH"
 
 mkdir -p "$LOG_DIR" "$REPORT_DIR"
 check_sha256 "$STAGE2_METADATA" "$EXPECTED_METADATA_SHA256"
 check_sha256 "$TE_LORA_PATH" "$EXPECTED_TE_LORA_SHA256"
-check_port "$CACHE_PORT" || fail "Cache rendezvous port is unavailable: $CACHE_PORT"
+if (( START_PHASE_INDEX == 0 )); then
+  check_port "$CACHE_PORT" || fail "Cache rendezvous port is unavailable: $CACHE_PORT"
+fi
 check_port "$TRAIN_PORT" || fail "Training rendezvous port is unavailable: $TRAIN_PORT"
 
 set -a
@@ -106,30 +138,51 @@ log "Stage-2 pipeline preflight passed"
 log "metadata=$STAGE2_METADATA"
 log "cache=$CACHE_ROOT"
 log "train_output=$TRAIN_OUTPUT_PATH"
+log "start_phase=$START_PHASE"
 log "world_size=$NUM_PROCESSES, dataset_workers_per_rank=$DATASET_WORKERS"
 log "WandB entity/project/run=$WANDB_ENTITY/$WANDB_PROJECT/$WANDB_RUN_NAME"
 
-run_logged "Stage 2a cache generation" "$LOG_DIR/stage2a_cache.log" \
-  env \
-    CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" \
-    NUM_PROCESSES="$NUM_PROCESSES" \
-    MAIN_PROCESS_PORT="$CACHE_PORT" \
-    DATASET_WORKERS="$DATASET_WORKERS" \
-    DEBUG_TRAIN_METRICS=0 \
-    DATASET_BASE="$DATASET_BASE" \
-    STAGE2_METADATA="$STAGE2_METADATA" \
-    OUTPUT_PATH="$CACHE_ROOT" \
-    TE_LORA_PATH="$TE_LORA_PATH" \
-    MERGED_TE_DIR="$MERGED_TE_DIR" \
-    bash "$SCRIPT_DIR/stage2_data_process.sh"
+if (( START_PHASE_INDEX <= 0 )); then
+  run_logged "Stage 2a cache generation" "$LOG_DIR/stage2a_cache.log" \
+    env \
+      CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" \
+      NUM_PROCESSES="$NUM_PROCESSES" \
+      MAIN_PROCESS_PORT="$CACHE_PORT" \
+      DATASET_WORKERS="$DATASET_WORKERS" \
+      DEBUG_TRAIN_METRICS=0 \
+      DATASET_BASE="$DATASET_BASE" \
+      STAGE2_METADATA="$STAGE2_METADATA" \
+      OUTPUT_PATH="$CACHE_ROOT" \
+      TE_LORA_PATH="$TE_LORA_PATH" \
+      MERGED_TE_DIR="$MERGED_TE_DIR" \
+      bash "$SCRIPT_DIR/stage2_data_process.sh"
+fi
 
-run_logged "Stage 2 cache audit" "$LOG_DIR/stage2_cache_audit.log" \
-  python "$SCRIPT_DIR/audit_stage2_cache.py" \
-    --cache_root "$CACHE_ROOT" \
-    --expected_counts "$EXPECTED_COUNTS" \
-    --world_size "$NUM_PROCESSES" \
-    --expected_te_lora "$TE_LORA_PATH" \
-    --report_json "$REPORT_DIR/stage2_cache_audit.json"
+if (( START_PHASE_INDEX <= 1 )); then
+  run_logged "Stage 2 cache audit" "$LOG_DIR/stage2_cache_audit.log" \
+    python "$SCRIPT_DIR/audit_stage2_cache.py" \
+      --cache_root "$CACHE_ROOT" \
+      --expected_counts "$EXPECTED_COUNTS" \
+      --world_size "$NUM_PROCESSES" \
+      --expected_te_lora "$TE_LORA_PATH" \
+      --report_json "$REPORT_DIR/stage2_cache_audit.json" \
+      --workers "$CACHE_AUDIT_WORKERS" \
+      --torch_threads_per_worker "$CACHE_AUDIT_TORCH_THREADS" \
+      --chunksize "$CACHE_AUDIT_CHUNKSIZE" \
+      --log_every "$CACHE_AUDIT_LOG_EVERY"
+fi
+
+python - "$REPORT_DIR/stage2_cache_audit.json" <<'PY'
+import json
+import sys
+
+report_path = sys.argv[1]
+with open(report_path, encoding="utf-8") as handle:
+    report = json.load(handle)
+if not report.get("passed"):
+    raise SystemExit(f"Stage 2 cache audit did not pass: {report_path}")
+print(f"Stage 2 cache audit gate passed: {report_path}")
+PY
 
 check_port "$TRAIN_PORT" || fail "Training rendezvous port became unavailable: $TRAIN_PORT"
 run_logged "Stage 2b DiT LoRA training" "$LOG_DIR/stage2b_train.log" \

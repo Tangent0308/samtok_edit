@@ -1130,23 +1130,69 @@ Stage 2a 8-card cache
 ```
 
 任一阶段非零退出都会阻止后续阶段。启动时 metadata 和 TE checkpoint SHA256 门禁实际通过；
-8 个 Stage 2a worker 已完成 NCCL 连接，每卡正在使用约 24–25.6GB 显存。初始预热后
-rank-0 进度约 2.1 sample/s，已开始持续写入 `.pth` 和 provenance `.json`。当前没有
-traceback、OOM 或数据审计错误。
+Stage 2a 于 2026-08-24 04:43:47 UTC 正常结束，耗时约 2 小时 40 分钟。总计写入
+165,960 个 `.pth` 和对应 provenance `.json`；运行汇总为
+`edit_mt=110,640, edit=55,320`，8 个 rank 的末尾 cache 都存在且非空，没有 traceback、
+OOM 或数据分片错误。
+
+第一版正式 cache auditor 是单进程串行实现，且先逐个读 sidecar、再反序列化全部
+`.pth`、最后为组合 SHA256 第二次读取全部 `.pth`；运行中也不输出进度。
+实际于 04:43:47 UTC 启动后，sidecar 阶段用时约 77 分钟，tensor 阶段实测仅
+4.09 cache/s，预计剩余十余小时。因此在 06:14:36 UTC 主动以 `SIGTERM` 停止旧
+auditor，退出码 143 由 pipeline log 明确记录；该操作不修改已完成的 cache。
+
+优化后的 auditor 以 32 process 并行，sidecar/cache pair 同 task 检查，每份 `.pth`
+仅读取一次即同时完成单文件 SHA256、反序列化、结构/dtype/finiteness 检查，
+各文件 hash 再合成 manifest SHA256。在 24 条已知正确 smoke cache 上，新旧审计的数量、
+类型、逐卡比例、metadata index、总字节、tensor path/dtype 和错误列表逐项一致。
+06:15:03 UTC 使用同一 detached tmux session 和 `START_PHASE=audit` 恢复，没有重做 Stage 2a。
+正式 discovery 只用 27 秒，处理段稳定吞吐约 467 cache/s，相比旧实现约 114 倍；
+`stage2_cache_audit.log` 每 500 条写出 percent/rate/read GiB/elapsed/ETA/errors。审计于
+06:21:31 UTC 通过，总耗时 383.14 秒（包含 discovery），平均 433.15 cache/s；完整检查
+165,960 份 `.pth`、165,960 份 sidecar、530,919,706,504 bytes，`error_count=0`。
+全局类型为 `edit_mt=110,640, edit=55,320`，每个 rank 都是 `13,830:6,915`，metadata index
+恰好覆盖 `[0,165959]` 且 165,960 个唯一值；全部 829,800 个浮点 tensor 为 bf16，
+331,920 个 mask tensor 为 int64。组合 cache manifest SHA256 为
+`540c23d6b7b3327d35e29add5b8244757400265ab4f54a62873d76907c498d02`。
+
+审计门禁通过后，首次 Stage 2b 启动使用的 `50852` 恰好被本机 IPv6 出站连接占用；旧预检
+只检查 IPv4 loopback，未发现冲突，Torch rendezvous 因 `EADDRINUSE` 在模型加载前退出，
+没有产生训练输出。失败日志保留为 `stage2b_train.failed_port_20260824-062136.log`。
+随后把默认端口移到系统临时端口范围之外的 `20051/20052`，并将预检改为同时绑定 IPv4/IPv6
+wildcard。06:24:06 UTC 使用 `START_PHASE=train` 复用已通过的审计报告重新启动，没有重复
+cache 或 audit。此时进一步发现上游 `UnifiedDataset` 的 cache discovery 会让每个 rank 都用
+`os.listdir + os.path.isdir` 对 331,920 个 cache/sidecar 目录项做远端 stat；运行超过 6 分钟
+仍未结束。因此在模型加载和输出目录创建前停止该次启动，将 discovery 改为迭代式
+`os.scandir`，并由 global rank 0 每约 25,000 条 flush `found=...` 进度。单进程在正式 cache
+上的独立实测为 29.26 秒，恰好发现 165,960 个唯一 `.pth`、每个 rank 目录 20,745 个，
+而旧 8 rank 实际运行 6 分钟仍未结束，至少加速约 12 倍。语法、23/23 单元测试和 diff
+检查通过后，06:32:00 UTC 再次从 `START_PHASE=train` 启动；真实 8 rank discovery 约 30 秒
+完成，日志已显示完整发现进度，随后进入 2511 的 5 个 transformer shard 加载。新增 cache
+discovery 回归测试后完整测试为 24/24 通过。
 
 首次尝试 `nohup + setsid` 时，宿主执行器在父 shell 退出后回收了子进程；该尝试
 未进入 Stage 2a、未产生 cache 或训练产物。随后改用独立 tmux session 重新从 0 启动，
 已验证 session 为 detached 且真实 8 卡 worker 存活。
 
+模型加载完成后，8 卡 NCCL rings 正常连接；`training_args.json` 实际确认
+`dataset_repeat=2,num_epochs=1,gradient_accumulation_steps=1,lr=1e-4,weight_decay=0.01`、
+DiT rank-32 LoRA、12 组 target module、gradient checkpointing、`zero_cond_t=True`、
+`find_unused_parameters=True`、`save_steps=4000` 和 `sample_type_ratio=none`。训练进度总数为
+41,490 optimizer step。启动抽查前 23 步全部 finite，`loss == loss_fm`，mean/min/max 分别为
+0.03849/0.00355/0.13747，没有 traceback、OOM、NCCL 或 W&B error。
+
 W&B run name 为 `stage2-full-8gpu-1ep-20260824-020317`，entity/project 为
-`2200012743-peking-university/samtok-edit`。Stage 2a 按方案关闭 W&B；在 cache 完成且审计通过后，
-Stage 2b 才会创建线上 run 和本地 `$TRAIN_OUTPUT_PATH/wandb_log/`。
+`2200012743-peking-university/samtok-edit`。Stage 2a 按方案关闭 W&B；Stage 2b 已于
+06:49:25 UTC 创建 online run `run_20260824_6d6e8387`，本地目录为
+`stage2_dit_lora/wandb_log/wandb/run-20260824_064925-run_20260824_6d6e8387/`，线上曲线入口为
+`https://ml.tiktok-row.net/experiment/tracking/detail?Id=project_20260823_dd21e517&selectedTrial=run_20260824_6d6e8387`。
 
 ### 运行路径
 
 - [流水线状态日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/logs/stage2_pipeline.log>)；
 - [Stage 2a 详细日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/logs/stage2a_cache.log>)；
 - [cache 审计日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/logs/stage2_cache_audit.log>)；
+- [cache 审计报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/reports/stage2_cache_audit.json>)；
 - [Stage 2b 训练日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/logs/stage2b_train.log>)；
 - [Stage 2 cache](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_cache>)；
 - [Stage 2b 输出](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_dit_lora>)。

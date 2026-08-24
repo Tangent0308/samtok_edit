@@ -29,6 +29,7 @@ from diffsynth.core.data.samtok_dataset import (  # noqa: E402
     span_of,
     to_cot,
 )
+from diffsynth.core.data.unified_dataset import UnifiedDataset  # noqa: E402
 from diffsynth.models.qwen_image_dit import QwenImageTransformerBlock  # noqa: E402
 from diffsynth.diffusion import loss as loss_module  # noqa: E402
 from diffsynth.pipelines.qwen_image_samtok import shifted_cot_supervision  # noqa: E402
@@ -67,6 +68,26 @@ SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
 
 
 class SamtokEditTests(unittest.TestCase):
+    def test_cache_discovery_recurses_and_selects_only_pth(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "0" / "nested").mkdir(parents=True)
+            (root / "1").mkdir()
+            expected = {
+                root / "0" / "0.pth",
+                root / "0" / "nested" / "1.pth",
+                root / "1" / "2.pth",
+            }
+            for path in expected:
+                path.touch()
+            (root / "0" / "0.json").touch()
+            (root / "1" / "ignore.txt").touch()
+
+            with mock.patch.dict(os.environ, {"RANK": "1"}):
+                dataset = UnifiedDataset(base_path=folder, metadata_path=None)
+
+            self.assertEqual({Path(path) for path in dataset.cached_data}, expected)
+
     def test_plain_edit_selection_minimizes_deprioritized_overlap(self):
         preferred = [
             ("a.parquet", index, "add", False) for index in range(3)

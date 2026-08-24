@@ -717,6 +717,11 @@ metadata index 是否连续覆盖且类型总数不变。每个 `<rank>/<local_i
 `<rank>/<local_id>.json`，保存 metadata index、sample type、prompt、源数据 provenance、
 图片尺寸、实际融合的 TE LoRA 路径，以及 cache tensor 的 key/shape/dtype/finiteness。
 可使用 `scripts/train/audit_stage2_cache.py` 再次加载全部 `.pth` 并生成结构化验收报告。
+正式审计默认使用 32 个 process，每个 sidecar/cache pair 在同一 task 中验证；`.pth`
+只从存储读取一次，同一份 bytes 同时用于单文件 SHA256、`torch.load`、tensor 结构、
+bf16 与 finiteness 检查。各文件 hash 再按相对路径有序合成 manifest SHA256，因此不需要
+第二次读取全部 cache。日志定期 flush `processed/percent/rate/read_gib/elapsed/eta/errors`，
+完整报告以 atomic replace 写入 `stage2_cache_audit.json`。
 
 默认输出为 `$REPO_ROOT/models/stage2_cache`；实际运行时建议将 `OUTPUT_PATH` 指向
 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/<run>/stage2_cache`。
@@ -760,7 +765,18 @@ Stage 2a，再由 `audit_stage2_cache.py` 全量反序列化 cache，检查数�
 bf16 精度与 finiteness，只有审计通过才启动 Stage 2b。编排脚本要求显式传入数据、
 Stage 1 TE LoRA、合并 TE 目录和权限为 `600` 的 W&B env 文件；可选 SHA256 门禁在加载
 模型前拒绝错误 metadata 或 TE checkpoint。各阶段使用独立日志，编排层只记录阶段状态；
-脚本本身不包含 W&B API key。
+脚本本身不包含 W&B API key。`START_PHASE=cache|audit|train` 支持在已验收的阶段边界恢复；
+`audit` 和 `train` 恢复都要求已有 cache，进入训练前还会强制检查结构化审计报告
+`passed=true`。审计并行度可由 `CACHE_AUDIT_WORKERS`、`CACHE_AUDIT_TORCH_THREADS`、
+`CACHE_AUDIT_CHUNKSIZE` 和 `CACHE_AUDIT_LOG_EVERY` 覆盖。缓存审计默认用 32 个 process，
+每个 process 固定 1 个 Torch CPU thread；每个 `.pth` 只读一次，在同一 worker 内完成原始文件
+SHA256、反序列化、结构、dtype 和 finiteness 检查，并按固定相对路径顺序合成 manifest SHA256。
+审计日志按默认每 500 条实时 flush `processed/percent/rate/read_gib/elapsed/eta/errors`。
+分布式 rendezvous 默认端口使用系统临时端口范围之外的 `20051/20052`；预检会分别尝试绑定
+IPv4 与 IPv6 wildcard，避免 IPv6 出站连接占用端口但只检查 IPv4 loopback 时产生的漏检。
+正式 cache 加载时，当前 DiffSynth `UnifiedDataset` 使用迭代式 `os.scandir` 发现 `.pth`，
+避免旧 `os.listdir + os.path.isdir` 对每个 `.pth`/sidecar 发起额外远端 stat；global rank 0
+每跨过约 25,000 条向训练日志 flush 一条 `cache_discovery found=...` 进度。
 
 #### 超参数和资源
 
