@@ -804,25 +804,25 @@ Qwen、SAMTok codec 或其他模型，也没有干扰正在运行的 Stage 2 训
    绿色 GT mask-token decode、红色 online mask-token decode。三种结果分别 overlay
    在三个独立原图面板上，没有把三种 mask 混合到同一个面板。
 
-分类结果路径：
+分类结果已复制到仓库。下表使用相对路径直接展示，点击图片可打开原始大图：
 
 | edit type | 样本数 | 最终出图对比 | mask 对比 |
 |---|---:|---|---|
-| add | 10 | [add_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/add_final_results.jpg>) | [add_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/add_mask_comparison.jpg>) |
-| background | 13 | [background_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/background_final_results.jpg>) | [background_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/background_mask_comparison.jpg>) |
-| color | 13 | [color_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/color_final_results.jpg>) | [color_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/color_mask_comparison.jpg>) |
-| motion | 5 | [motion_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/motion_final_results.jpg>) | [motion_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/motion_mask_comparison.jpg>) |
-| remove | 6 | [remove_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/remove_final_results.jpg>) | [remove_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/remove_mask_comparison.jpg>) |
-| replace | 6 | [replace_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/replace_final_results.jpg>) | [replace_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/replace_mask_comparison.jpg>) |
-| style | 11 | [style_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/style_final_results.jpg>) | [style_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/style_mask_comparison.jpg>) |
+| add | 10 | [![Stage 1 add final](docs/assets/evaluation/stage1_category_comparisons/add_final_results.jpg)](docs/assets/evaluation/stage1_category_comparisons/add_final_results.jpg) | [![Stage 1 add masks](docs/assets/evaluation/stage1_category_comparisons/add_mask_comparison.jpg)](docs/assets/evaluation/stage1_category_comparisons/add_mask_comparison.jpg) |
+| background | 13 | [![Stage 1 background final](docs/assets/evaluation/stage1_category_comparisons/background_final_results.jpg)](docs/assets/evaluation/stage1_category_comparisons/background_final_results.jpg) | [![Stage 1 background masks](docs/assets/evaluation/stage1_category_comparisons/background_mask_comparison.jpg)](docs/assets/evaluation/stage1_category_comparisons/background_mask_comparison.jpg) |
+| color | 13 | [![Stage 1 color final](docs/assets/evaluation/stage1_category_comparisons/color_final_results.jpg)](docs/assets/evaluation/stage1_category_comparisons/color_final_results.jpg) | [![Stage 1 color masks](docs/assets/evaluation/stage1_category_comparisons/color_mask_comparison.jpg)](docs/assets/evaluation/stage1_category_comparisons/color_mask_comparison.jpg) |
+| motion | 5 | [![Stage 1 motion final](docs/assets/evaluation/stage1_category_comparisons/motion_final_results.jpg)](docs/assets/evaluation/stage1_category_comparisons/motion_final_results.jpg) | [![Stage 1 motion masks](docs/assets/evaluation/stage1_category_comparisons/motion_mask_comparison.jpg)](docs/assets/evaluation/stage1_category_comparisons/motion_mask_comparison.jpg) |
+| remove | 6 | [![Stage 1 remove final](docs/assets/evaluation/stage1_category_comparisons/remove_final_results.jpg)](docs/assets/evaluation/stage1_category_comparisons/remove_final_results.jpg) | [![Stage 1 remove masks](docs/assets/evaluation/stage1_category_comparisons/remove_mask_comparison.jpg)](docs/assets/evaluation/stage1_category_comparisons/remove_mask_comparison.jpg) |
+| replace | 6 | [![Stage 1 replace final](docs/assets/evaluation/stage1_category_comparisons/replace_final_results.jpg)](docs/assets/evaluation/stage1_category_comparisons/replace_final_results.jpg) | [![Stage 1 replace masks](docs/assets/evaluation/stage1_category_comparisons/replace_mask_comparison.jpg)](docs/assets/evaluation/stage1_category_comparisons/replace_mask_comparison.jpg) |
+| style | 11 | [![Stage 1 style final](docs/assets/evaluation/stage1_category_comparisons/style_final_results.jpg)](docs/assets/evaluation/stage1_category_comparisons/style_final_results.jpg) | [![Stage 1 style masks](docs/assets/evaluation/stage1_category_comparisons/style_mask_comparison.jpg)](docs/assets/evaluation/stage1_category_comparisons/style_mask_comparison.jpg) |
 
 `background` 的 13 条和 `style` 的 11 条 raw raster mask 非空，但按当前 CoT 数据规范，
 GT 和 online CoT 都是 canonical 空表，因此两列 token decode 使用原图并显式标记
 `EMPTY ... TOKEN MASK`；这不是 decode 缺失。5 条 `motion` 中另有 1 条 raw/GT/online
 mask 全为空。其他 39 条均使用此前真实 codec decode 后的独立 overlay。
 
-- [分类汇总目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/>)
-- [manifest.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/manifest.json>)：记录 14 张图的尺寸、SHA256、各类 metadata index 和逐样本 mask 状态。
+- [仓库内分类汇总目录](docs/assets/evaluation/stage1_category_comparisons/)
+- [manifest.json](docs/assets/evaluation/stage1_category_comparisons/manifest.json)：记录 14 张图的尺寸、SHA256、各类 metadata index 和逐样本 mask 状态。
 
 ## E9：Stage 2 8 卡 smoke 数据构建
 
@@ -1377,19 +1377,21 @@ metadata index、source、target、prompt、GT CoT、实际 conditioned CoT、pa
 parser 层，64/64 全部相等。因此两个 online 列分别展示同一真实 codec decode overlay
 的独立副本；这不是缺少 Stage 2 decode，而是相同 mask token 必然得到相同 decode 的结果。
 
+分类结果已复制到仓库。下表使用相对路径直接展示，点击图片可打开原始大图：
+
 | edit type | 样本数 | S1–S8 最终出图对比 | 四列 mask overlay 对比 |
 |---|---:|---|---|
-| add | 10 | [add_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/add_final_results.jpg>) | [add_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/add_mask_comparison.jpg>) |
-| background | 13 | [background_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/background_final_results.jpg>) | [background_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/background_mask_comparison.jpg>) |
-| color | 13 | [color_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/color_final_results.jpg>) | [color_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/color_mask_comparison.jpg>) |
-| motion | 5 | [motion_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/motion_final_results.jpg>) | [motion_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/motion_mask_comparison.jpg>) |
-| remove | 6 | [remove_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/remove_final_results.jpg>) | [remove_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/remove_mask_comparison.jpg>) |
-| replace | 6 | [replace_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/replace_final_results.jpg>) | [replace_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/replace_mask_comparison.jpg>) |
-| style | 11 | [style_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/style_final_results.jpg>) | [style_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/style_mask_comparison.jpg>) |
+| add | 10 | [![Stage 2 add final](docs/assets/evaluation/stage2_step4000_category_comparisons/add_final_results.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/add_final_results.jpg) | [![Stage 2 add masks](docs/assets/evaluation/stage2_step4000_category_comparisons/add_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/add_mask_comparison.jpg) |
+| background | 13 | [![Stage 2 background final](docs/assets/evaluation/stage2_step4000_category_comparisons/background_final_results.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/background_final_results.jpg) | [![Stage 2 background masks](docs/assets/evaluation/stage2_step4000_category_comparisons/background_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/background_mask_comparison.jpg) |
+| color | 13 | [![Stage 2 color final](docs/assets/evaluation/stage2_step4000_category_comparisons/color_final_results.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/color_final_results.jpg) | [![Stage 2 color masks](docs/assets/evaluation/stage2_step4000_category_comparisons/color_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/color_mask_comparison.jpg) |
+| motion | 5 | [![Stage 2 motion final](docs/assets/evaluation/stage2_step4000_category_comparisons/motion_final_results.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/motion_final_results.jpg) | [![Stage 2 motion masks](docs/assets/evaluation/stage2_step4000_category_comparisons/motion_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/motion_mask_comparison.jpg) |
+| remove | 6 | [![Stage 2 remove final](docs/assets/evaluation/stage2_step4000_category_comparisons/remove_final_results.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/remove_final_results.jpg) | [![Stage 2 remove masks](docs/assets/evaluation/stage2_step4000_category_comparisons/remove_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/remove_mask_comparison.jpg) |
+| replace | 6 | [![Stage 2 replace final](docs/assets/evaluation/stage2_step4000_category_comparisons/replace_final_results.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/replace_final_results.jpg) | [![Stage 2 replace masks](docs/assets/evaluation/stage2_step4000_category_comparisons/replace_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/replace_mask_comparison.jpg) |
+| style | 11 | [![Stage 2 style final](docs/assets/evaluation/stage2_step4000_category_comparisons/style_final_results.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/style_final_results.jpg) | [![Stage 2 style masks](docs/assets/evaluation/stage2_step4000_category_comparisons/style_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_category_comparisons/style_mask_comparison.jpg) |
 
 14/14 张 JPEG 均完成解码和 SHA256 复核；最终结果图宽度为 2,800 px，mask 图宽度为
 1,280 px，各类别样本数之和为 64。完整逐样本路由、mask 状态、图片尺寸和 SHA256 见
-[manifest.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/manifest.json>)。
+[manifest.json](docs/assets/evaluation/stage2_step4000_category_comparisons/manifest.json)。
 
 ### 结果文件
 
@@ -1399,7 +1401,7 @@ parser 层，64/64 全部相等。因此两个 online 列分别展示同一真�
 - [8 setting 定量审计](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/eight_setting_audit.json>)；
 - [64 张 Source/Target/S1–S8 十列 panel](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/panels_with_instruction>)；
 - [7 类代表样本总览](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/panels_with_instruction/overview_representative_7types.jpg>)。
-- [7 类共 14 张 S1–S8 分类大图](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/>)。
+- [仓库内 7 类共 14 张 S1–S8 分类大图](docs/assets/evaluation/stage2_step4000_category_comparisons/)。
 
 ## 当前结论和下一步
 
