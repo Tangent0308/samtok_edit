@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import random
+import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from collections import Counter
 from pathlib import Path
@@ -68,6 +70,29 @@ SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
 
 
 class SamtokEditTests(unittest.TestCase):
+    def test_uv_environment_definition_has_no_lockfile_workflow(self):
+        with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
+            project = tomllib.load(handle)["project"]
+
+        self.assertEqual(project["requires-python"], "==3.11.*")
+        dependencies = set(project["dependencies"])
+        for required in {
+            "byted-wandb==0.13.98",
+            "diffsynth==2.1.2",
+            "setuptools==66.1.1",
+            "torch==2.8.0",
+            "torchvision==0.23.0",
+            "transformers==5.12.1",
+        }:
+            self.assertIn(required, dependencies)
+
+        setup_script = REPO_ROOT / "setup_env.sh"
+        subprocess.run(["bash", "-n", setup_script], check=True)
+        script_text = setup_script.read_text(encoding="utf-8")
+        self.assertIn('"$UV_EXECUTABLE" pip install', script_text)
+        self.assertNotIn('"$UV_EXECUTABLE" sync', script_text)
+        self.assertIn('--editable "$DIFFSYNTH_DIR"', script_text)
+
     def test_cache_discovery_recurses_and_selects_only_pth(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

@@ -10,6 +10,28 @@ The checked model defaults intentionally point to:
 
 There is no 2509 or `-co` fallback in the provided scripts.
 
+## 0. Create the training environment
+
+The repository defines the currently validated Python 3.11/CUDA 12.8 stack in
+`pyproject.toml`. Create an isolated environment with:
+
+```bash
+bash setup_env.sh
+source .venv/bin/activate
+```
+
+The setup uses the checked-in `DiffSynth-Studio` directory as an editable local
+package and verifies that it wins over any separately installed DiffSynth. It
+also checks the pinned package versions, CUDA availability, and the unit tests.
+The default package index is the ByteDance internal PyPI and can be overridden
+with `SAMTOK_EDIT_INDEX`; see `bash setup_env.sh --help` for all overrides.
+
+No lockfile is used or generated. The script intentionally invokes the
+pip-compatible `uv pip install` interface rather than `uv sync`, because the
+latter creates `uv.lock`. Direct dependencies are exactly pinned in
+`pyproject.toml`; without a lockfile, transitive dependency resolution is not
+bit-for-bit frozen.
+
 ## Implemented invariants
 
 - Pass 1 and pass 2 use one `build_edit_model_inputs` function and the exact 2511 edit prompt.

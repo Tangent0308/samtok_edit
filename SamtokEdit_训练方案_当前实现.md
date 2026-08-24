@@ -46,6 +46,36 @@ mask-token CoT，并对“编辑模板 + CoT”整条序列做一次 forward，�
 
 ---
 
+## 运行环境与复现
+
+当前验证环境是 Debian 12、Python 3.11.2、PyTorch 2.8.0+cu128、CUDA runtime
+12.8、Transformers 5.12.1、Accelerate 1.14.0 和 8 张 H100 80GB；容器镜像为
+`aliyun-va-hub.byted.org/reckon/data.reckon.mlx.image_4551_sg:ada11081bb25b40d8e1899588b696f24`。
+镜像与宿主 NVIDIA driver 不属于 Python 项目依赖，需要由运行平台预先提供；
+PyTorch wheel 按 `cu128` 安装。
+
+仓库根目录的 `pyproject.toml` 精确固定当前直接训练、数据构建和评测依赖；
+`DiffSynth-Studio` 保持普通代码目录，由 `setup_env.sh` 以 editable 本地包安装，
+并在安装后校验 `diffsynth.__file__` 确实指向当前仓库，避免命中用户环境中遗留的
+DiffSynth 2.0.18 editable 记录。默认构建命令是：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+bash setup_env.sh
+source .venv/bin/activate
+```
+
+脚本默认使用 Python 3.11、uv 0.11.32（仅在未安装 uv 时用该版本引导）、
+ByteDance 内部 PyPI 和 `cu128` PyTorch backend；可通过 `bash setup_env.sh --help`
+查看可覆盖参数。安装后执行依赖一致性、关键版本、CUDA、本地 DiffSynth 来源和
+仓库单元测试校验。
+
+按要求不保留 lockfile：`setup_env.sh` 使用 `uv pip install`，不使用会生成
+`uv.lock` 的 `uv sync`，`.gitignore` 也忽略根目录 `uv.lock`。直接依赖版本是精确的；
+但无 lock 时传递依赖不能保证 bit-for-bit 不变，这是不使用 lockfile 的必然权衡。
+
+---
+
 ## 统一序列与对齐规则
 
 ### 1.1 统一序列 S
@@ -319,6 +349,8 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 
 ```text
 /opt/tiger/tanyue/samtok_edit/
+├── pyproject.toml                           # Python 3.11 直接依赖的精确版本
+├── setup_env.sh                            # uv 环境构建、本地 DiffSynth 和验收
 ├── DiffSynth-Studio/                         # 普通目录，官方 main@fed7b18f 的 vendored tree
 │   └── diffsynth/
 │       ├── models/qwen_image_text_encoder_samtok.py

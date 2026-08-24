@@ -1,5 +1,10 @@
 __pycache__/
 *.py[cod]
+*.egg-info/
+
+# Reproducible local environment (the project intentionally does not keep a uv lockfile).
+/.venv/
+/uv.lock
 
 # Local training artifacts and materialized datasets.
 /data/
