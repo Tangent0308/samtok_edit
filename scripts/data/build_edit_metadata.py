@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Materialize plain ``edit`` rows from the original CrispEdit parquets."""
+"""Select and materialize plain ``edit`` rows from original CrispEdit parquets."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
+import random
 import sys
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -18,19 +19,139 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_edit_mt_metadata import (  # noqa: E402
     DEFAULT_CRISPEDIT,
     DEFAULT_MASKS,
+    _atomic_jsonl,
+    _combine_shards,
     _decode_image,
     _image_bytes,
     _write_bytes_once,
+    canonical_source_parquet,
+    load_excluded_source_ids,
+    partition_pairs,
 )
 
 
-def write_atomic(rows, path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        for row in rows:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-    os.replace(temporary, path)
+def collect_candidates(
+    raw_paths: list[Path],
+    *,
+    ascii_only: bool,
+    excluded_source_ids: set[tuple[str, int]],
+    deprioritized_source_ids: set[tuple[str, int]],
+    mask_dir: Path | None = None,
+) -> tuple[list[tuple[str, int, str, bool]], Counter]:
+    """Collect lightweight candidates without decoding or materializing images."""
+
+    candidates = []
+    stats = Counter()
+    for raw_path in tqdm(raw_paths, desc="Scanning plain-edit candidates"):
+        allowed = None
+        if mask_dir is not None:
+            mask_path = mask_dir / raw_path.name
+            if not mask_path.is_file():
+                raise FileNotFoundError(mask_path)
+            mask_rows = pq.read_table(
+                mask_path, columns=["row_idx", "filter_decision"]
+            ).to_pylist()
+            allowed = {
+                int(row["row_idx"])
+                for row in mask_rows
+                if row["filter_decision"] == "keep"
+            }
+        raw_rows = pq.read_table(raw_path, columns=["instruction", "type"]).to_pylist()
+        source_parquet = canonical_source_parquet(raw_path.name)
+        for row_idx, raw in enumerate(raw_rows):
+            stats["scanned"] += 1
+            if allowed is not None and row_idx not in allowed:
+                stats["mask_filter_drop"] += 1
+                continue
+            identity = (source_parquet, row_idx)
+            if identity in excluded_source_ids:
+                stats["excluded_source"] += 1
+                continue
+            instruction = raw.get("instruction") or ""
+            if not instruction:
+                stats["empty_prompt_drop"] += 1
+                continue
+            if ascii_only and not instruction.isascii():
+                stats["non_ascii_drop"] += 1
+                continue
+            edit_type = raw.get("type") or ""
+            deprioritized = identity in deprioritized_source_ids
+            candidates.append((raw_path.name, row_idx, edit_type, deprioritized))
+            stats["eligible"] += 1
+            stats[f"eligible_type:{edit_type}"] += 1
+            stats[
+                "eligible_deprioritized" if deprioritized else "eligible_preferred"
+            ] += 1
+    return candidates, stats
+
+
+def select_candidates(
+    candidates: list[tuple[str, int, str, bool]],
+    sample_rows: int | None,
+    seed: int,
+) -> list[tuple[str, int, str, bool]]:
+    """Randomly select rows, exhausting non-deprioritized rows before fallback."""
+
+    if sample_rows is None:
+        return candidates[:]
+    if sample_rows < 1:
+        raise ValueError("sample_rows must be positive")
+    if sample_rows > len(candidates):
+        raise ValueError(
+            f"Requested {sample_rows} rows from only {len(candidates)} eligible rows"
+        )
+    rng = random.Random(seed)
+    preferred = [candidate for candidate in candidates if not candidate[3]]
+    fallback = [candidate for candidate in candidates if candidate[3]]
+    if sample_rows <= len(preferred):
+        selected = rng.sample(preferred, sample_rows)
+    else:
+        selected = preferred + rng.sample(fallback, sample_rows - len(preferred))
+        rng.shuffle(selected)
+    return selected
+
+
+def materialize_parquet(
+    raw_path: Path,
+    output_root: Path,
+    selected_row_indices: set[int] | None,
+    remaining_rows: int | None,
+) -> tuple[list[dict], Counter]:
+    raw_rows = pq.read_table(
+        raw_path, columns=["input_img", "instruction", "output_img", "type"]
+    ).to_pylist()
+    rows = []
+    stats = Counter()
+    for row_idx, raw in enumerate(raw_rows):
+        if selected_row_indices is not None and row_idx not in selected_row_indices:
+            continue
+        if remaining_rows is not None and len(rows) >= remaining_rows:
+            break
+        source_bytes = _image_bytes(raw["input_img"], raw_path.parent)
+        target_bytes = _image_bytes(raw["output_img"], raw_path.parent)
+        _, source_ext = _decode_image(source_bytes)
+        _, target_ext = _decode_image(target_bytes)
+        stem = raw_path.stem.replace(" ", "_")
+        source_rel = Path("images") / stem / f"{row_idx:06d}_source.{source_ext}"
+        target_rel = Path("images") / stem / f"{row_idx:06d}_target.{target_ext}"
+        _write_bytes_once(output_root / source_rel, source_bytes)
+        _write_bytes_once(output_root / target_rel, target_bytes)
+        rows.append(
+            {
+                "image": target_rel.as_posix(),
+                "edit_image": source_rel.as_posix(),
+                "prompt": raw["instruction"],
+                "sample_type": "edit",
+                "provenance": {
+                    "source_parquet": raw_path.name,
+                    "row_idx": row_idx,
+                    "edit_type": raw.get("type") or "",
+                },
+            }
+        )
+        stats["materialized"] += 1
+        stats[f"materialized_type:{raw.get('type') or ''}"] += 1
+    return rows, stats
 
 
 def main():
@@ -45,67 +166,176 @@ def main():
     parser.add_argument(
         "--filter_with_mask_parquets",
         action="store_true",
-        help="Only keep rows whose paired mask parquet has filter_decision=keep",
+        help="Only retain rows whose paired mask parquet has filter_decision=keep",
     )
     parser.add_argument("--mask_dir", type=Path, default=DEFAULT_MASKS)
     parser.add_argument("--max_files", type=int, default=None)
     parser.add_argument("--max_rows", type=int, default=None)
+    parser.add_argument(
+        "--sample_rows",
+        type=int,
+        default=None,
+        help="Globally sample exactly this many eligible rows with --seed",
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--ascii_only", action="store_true", help="Exclude rows with non-ASCII prompts"
+    )
+    parser.add_argument(
+        "--exclude_metadata_jsonl",
+        type=Path,
+        action="append",
+        default=[],
+        help="Hard-exclude source identities in this metadata; may be repeated",
+    )
+    parser.add_argument(
+        "--deprioritize_metadata_jsonl",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Prefer source identities absent from this metadata, then use the minimum "
+            "random fallback needed to reach --sample_rows; may be repeated"
+        ),
+    )
+    parser.add_argument("--num_workers", type=int, default=1)
+    parser.add_argument("--worker_index", type=int, default=0)
+    parser.add_argument("--skip_combine", action="store_true")
+    parser.add_argument("--combine_only", action="store_true")
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
+
+    if args.max_rows is not None and args.sample_rows is not None:
+        raise ValueError("--max_rows and --sample_rows cannot be combined")
+    if args.resume and args.max_rows is not None:
+        raise ValueError("--resume and --max_rows cannot be combined")
+    if args.num_workers > 1 and not args.skip_combine:
+        raise ValueError("Multi-worker construction requires --skip_combine")
+    if args.deprioritize_metadata_jsonl and args.sample_rows is None:
+        raise ValueError("--deprioritize_metadata_jsonl requires --sample_rows")
+    if (args.ascii_only or args.exclude_metadata_jsonl) and args.sample_rows is None:
+        raise ValueError(
+            "--ascii_only and --exclude_metadata_jsonl require --sample_rows so the "
+            "selection filters are applied globally"
+        )
 
     output_root = args.output_root.resolve()
     output_jsonl = args.output_jsonl or output_root / "edit_all.jsonl"
+    shard_dir = output_root / "edit_metadata_shards"
     raw_paths = sorted(args.crispedit_dir.glob("*.parquet"))
     if args.max_files is not None:
         raw_paths = raw_paths[: args.max_files]
-    rows = []
-    for raw_path in tqdm(raw_paths, desc="CrispEdit edit shards"):
-        allowed = None
-        if args.filter_with_mask_parquets:
-            mask_path = args.mask_dir / raw_path.name
-            mask_rows = pq.read_table(
-                mask_path, columns=["row_idx", "filter_decision"]
-            ).to_pylist()
-            allowed = {
-                int(row["row_idx"])
-                for row in mask_rows
-                if row["filter_decision"] == "keep"
-            }
-        raw_rows = pq.read_table(
-            raw_path, columns=["input_img", "instruction", "output_img", "type"]
-        ).to_pylist()
-        for row_idx, raw in enumerate(raw_rows):
-            if allowed is not None and row_idx not in allowed:
-                continue
-            source_bytes = _image_bytes(raw["input_img"], raw_path.parent)
-            target_bytes = _image_bytes(raw["output_img"], raw_path.parent)
-            _, source_ext = _decode_image(source_bytes)
-            _, target_ext = _decode_image(target_bytes)
-            stem = raw_path.stem.replace(" ", "_")
-            source_rel = Path("images") / stem / f"{row_idx:06d}_source.{source_ext}"
-            target_rel = Path("images") / stem / f"{row_idx:06d}_target.{target_ext}"
-            _write_bytes_once(output_root / source_rel, source_bytes)
-            _write_bytes_once(output_root / target_rel, target_bytes)
-            rows.append(
-                {
-                    "image": target_rel.as_posix(),
-                    "edit_image": source_rel.as_posix(),
-                    "prompt": raw["instruction"],
-                    "sample_type": "edit",
-                }
+
+    if args.combine_only:
+        shard_paths = [shard_dir / f"{path.stem}.edit.jsonl" for path in raw_paths]
+        missing = [path for path in shard_paths if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"Cannot combine: {len(missing)} metadata shards are missing; first={missing[0]}"
             )
-            if args.max_rows is not None and len(rows) >= args.max_rows:
+        _combine_shards(shard_paths, output_jsonl)
+        print(
+            json.dumps(
+                {
+                    "output_root": str(output_root),
+                    "edit_metadata": str(output_jsonl),
+                    "combined_parquet_shards": len(shard_paths),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    hard_exclusions, hard_exclusion_stats = load_excluded_source_ids(
+        args.exclude_metadata_jsonl
+    )
+    deprioritized, deprioritized_stats = load_excluded_source_ids(
+        args.deprioritize_metadata_jsonl
+    )
+    selected_by_file = None
+    selection_stats = Counter()
+    if args.sample_rows is not None:
+        candidates, selection_stats = collect_candidates(
+            raw_paths,
+            ascii_only=args.ascii_only,
+            excluded_source_ids=hard_exclusions,
+            deprioritized_source_ids=deprioritized,
+            mask_dir=args.mask_dir if args.filter_with_mask_parquets else None,
+        )
+        selected = select_candidates(candidates, args.sample_rows, args.seed)
+        selected_by_file = defaultdict(set)
+        for filename, row_idx, edit_type, was_deprioritized in selected:
+            selected_by_file[filename].add(row_idx)
+            selection_stats[f"selected_type:{edit_type}"] += 1
+            selection_stats[
+                "selected_deprioritized" if was_deprioritized else "selected_preferred"
+            ] += 1
+        selection_stats["selected"] = len(selected)
+        selection_stats["selected_parquet_files"] = len(selected_by_file)
+
+    assigned_pairs = partition_pairs(
+        [(path, path) for path in raw_paths], args.num_workers, args.worker_index
+    )
+    totals = Counter()
+    completed = []
+    remaining = args.max_rows
+    for raw_path, _ in tqdm(assigned_pairs, desc="CrispEdit edit shards"):
+        shard_path = shard_dir / f"{raw_path.stem}.edit.jsonl"
+        if args.resume and shard_path.is_file():
+            completed.append(shard_path)
+            totals["resumed_shards"] += 1
+            continue
+        rows, stats = materialize_parquet(
+            raw_path,
+            output_root,
+            (
+                selected_by_file.get(raw_path.name, set())
+                if selected_by_file is not None
+                else None
+            ),
+            remaining,
+        )
+        _atomic_jsonl(rows, shard_path)
+        completed.append(shard_path)
+        totals.update(stats)
+        if remaining is not None:
+            remaining -= len(rows)
+            if remaining <= 0:
                 break
-        if args.max_rows is not None and len(rows) >= args.max_rows:
-            break
-    write_atomic(rows, output_jsonl)
+
+    if not args.skip_combine:
+        _combine_shards(completed, output_jsonl)
     print(
         json.dumps(
             {
-                "output": str(output_jsonl),
-                "rows": len(rows),
-                "filtered": args.filter_with_mask_parquets,
+                "output_root": str(output_root),
+                "edit_metadata": str(output_jsonl),
+                "combined": not args.skip_combine,
+                "worker": {
+                    "index": args.worker_index,
+                    "count": args.num_workers,
+                    "assigned_parquet_shards": len(assigned_pairs),
+                },
+                "selection": {
+                    "mode": "global_random_prefer_disjoint"
+                    if args.sample_rows is not None
+                    else "prefix",
+                    "seed": args.seed if args.sample_rows is not None else None,
+                    "ascii_only": args.ascii_only,
+                    "stats": dict(selection_stats),
+                },
+                "hard_exclusion": {
+                    "metadata": [str(path) for path in args.exclude_metadata_jsonl],
+                    "stats": dict(hard_exclusion_stats),
+                },
+                "deprioritized": {
+                    "metadata": [str(path) for path in args.deprioritize_metadata_jsonl],
+                    "stats": dict(deprioritized_stats),
+                },
+                "stats": dict(totals),
                 "dataset_base_path": str(output_root),
             },
+            ensure_ascii=False,
             indent=2,
         )
     )

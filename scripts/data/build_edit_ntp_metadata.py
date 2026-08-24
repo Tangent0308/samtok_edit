@@ -155,6 +155,27 @@ def build_rows(
     return output, layers, global_count
 
 
+def select_source_rows(
+    source_rows: list[dict],
+    max_rows: int | None,
+    sample_rows: int | None,
+    seed: int,
+) -> list[dict]:
+    if max_rows is not None and sample_rows is not None:
+        raise ValueError("max_rows and sample_rows cannot be combined")
+    if sample_rows is not None:
+        if sample_rows < 1:
+            raise ValueError("sample_rows must be positive")
+        if sample_rows > len(source_rows):
+            raise ValueError(
+                f"Requested {sample_rows} rows from only {len(source_rows)} source rows"
+            )
+        return random.Random(seed).sample(source_rows, sample_rows)
+    if max_rows is not None:
+        return source_rows[:max_rows]
+    return source_rows[:]
+
+
 def write_jsonl_atomic(rows, output_path: Path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_path.with_suffix(output_path.suffix + ".tmp")
@@ -181,6 +202,17 @@ def main():
     parser.add_argument("--global_ratio", type=float, default=0.10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max_rows", type=int, default=None)
+    parser.add_argument(
+        "--sample_rows",
+        type=int,
+        default=None,
+        help="Randomly sample this many released GRES rows with --seed",
+    )
+    parser.add_argument(
+        "--ascii_only",
+        action="store_true",
+        help="Require every generated prompt and canonical CoT to contain ASCII text only",
+    )
     parser.add_argument("--check_images", action="store_true")
     parser.add_argument(
         "--relative_image_paths",
@@ -191,8 +223,9 @@ def main():
 
     with args.input_json.open(encoding="utf-8") as handle:
         source_rows = json.load(handle)
-    if args.max_rows is not None:
-        source_rows = source_rows[: args.max_rows]
+    source_rows = select_source_rows(
+        source_rows, args.max_rows, args.sample_rows, args.seed
+    )
     rows, layers, global_count = build_rows(
         source_rows,
         random.Random(args.seed),
@@ -201,12 +234,19 @@ def main():
         args.check_images,
         not args.relative_image_paths,
     )
+    if args.ascii_only:
+        for row_id, row in enumerate(rows):
+            if not row["prompt"].isascii() or not row["mt_cot"].isascii():
+                raise ValueError(f"Generated row {row_id} contains non-ASCII text")
     write_jsonl_atomic(rows, args.output_jsonl)
     print(
         json.dumps(
             {
                 "output": str(args.output_jsonl),
                 "gres_rows": len(source_rows),
+                "selection_mode": "global_random" if args.sample_rows is not None else "prefix",
+                "seed": args.seed,
+                "ascii_only": args.ascii_only,
                 "global_rows": global_count,
                 "total_rows": len(rows),
                 "parse_layers": dict(layers),

@@ -39,6 +39,37 @@ EDIT_DROP_IDX = 64
 IMAGE_PROMPT_TEMPLATE = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
 
 
+def shifted_cot_supervision(
+    hidden: torch.Tensor,
+    cot_ids: torch.Tensor,
+    template_length: int,
+) -> torch.Tensor:
+    """Select hidden positions that predict every CoT token, including im_end."""
+
+    if hidden.ndim != 3 or cot_ids.ndim != 2:
+        raise ValueError(
+            f"Expected hidden [B,L,H] and cot_ids [B,C], got "
+            f"{tuple(hidden.shape)} and {tuple(cot_ids.shape)}"
+        )
+    if hidden.shape[0] != cot_ids.shape[0]:
+        raise ValueError("CoT hidden/label batch sizes do not match")
+    cot_length = cot_ids.shape[1]
+    start = int(template_length) - 1
+    stop = start + cot_length
+    if start < 0 or stop > hidden.shape[1]:
+        raise ValueError(
+            f"Invalid shifted CoT slice [{start}:{stop}] for hidden length "
+            f"{hidden.shape[1]}"
+        )
+    shifted = hidden[:, start:stop]
+    if shifted.shape[:2] != cot_ids.shape:
+        raise RuntimeError(
+            f"Shifted CoT hidden/label mismatch: {tuple(shifted.shape)} vs "
+            f"{tuple(cot_ids.shape)}"
+        )
+    return shifted
+
+
 def _calculate_dimensions(target_area: int, ratio: float) -> tuple[int, int]:
     width = math.sqrt(target_area * ratio)
     height = width / ratio
@@ -187,6 +218,7 @@ class QwenImageUnit_SamtokPromptEmbedder(QwenImageUnit_PromptEmbedder):
         mt_cot: str | None = None,
         need_ntp: bool = False,
     ):
+        pipe.last_ntp_alignment = None
         model_inputs = build_edit_model_inputs(pipe, prompt, edit_image)
         input_ids = model_inputs.input_ids
         attention_mask = model_inputs.attention_mask
@@ -218,10 +250,25 @@ class QwenImageUnit_SamtokPromptEmbedder(QwenImageUnit_PromptEmbedder):
             if cot_ids is None:
                 raise ValueError("NTP supervision requested for a sample without mt_cot")
             cot_length = cot_ids.shape[1]
-            extra["samtok_cot_hidden"] = hidden[
-                :, template_length - 1 : template_length - 1 + cot_length
-            ]
+            shifted_hidden = shifted_cot_supervision(
+                hidden, cot_ids, template_length
+            )
+            if pipe.im_end_id is None or int(cot_ids[0, -1].item()) != pipe.im_end_id:
+                raise RuntimeError("The final NTP label must be the <|im_end|> token")
+            extra["samtok_cot_hidden"] = shifted_hidden
             extra["samtok_cot_labels"] = cot_ids
+            pipe.last_ntp_alignment = {
+                "template_tokens": int(template_length),
+                "full_sequence_tokens": int(hidden.shape[1]),
+                "cot_label_tokens": int(cot_length),
+                "cot_hidden_start": int(template_length - 1),
+                "cot_hidden_stop": int(template_length - 1 + cot_length),
+                "cot_hidden_tokens": int(shifted_hidden.shape[1]),
+                "cot_first_label_id": int(cot_ids[0, 0].item()),
+                "cot_last_label_id": int(cot_ids[0, -1].item()),
+                "im_end_token_id": int(pipe.im_end_id),
+                "ntp_shift_alignment_ok": True,
+            }
         return split, extra
 
     def process(
@@ -330,6 +377,7 @@ class QwenImageSamtokPipeline(QwenImagePipeline):
         self.last_mt_cot = None
         self.last_pass1_raw = None
         self.last_parse_layer = None
+        self.last_ntp_alignment = None
 
     @staticmethod
     def from_pretrained(

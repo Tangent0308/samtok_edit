@@ -28,10 +28,18 @@ PY
 
 cd "$DIFFSYNTH_DIR"
 NUM_PROCESSES="${NUM_PROCESSES:-8}"
+MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29500}"
 if (( NUM_PROCESSES > 1 )); then
-  LAUNCH_CMD=(accelerate launch --multi_gpu --num_processes "$NUM_PROCESSES")
+  LAUNCH_CMD=(
+    accelerate launch --multi_gpu --num_processes "$NUM_PROCESSES"
+    --main_process_port "$MAIN_PROCESS_PORT"
+  )
 else
   LAUNCH_CMD=(python)
+fi
+EXTRA_ARGS=()
+if [[ "${DEBUG_TRAIN_METRICS:-0}" == "1" ]]; then
+  EXTRA_ARGS+=(--debug_train_metrics --debug_log_steps "${DEBUG_LOG_STEPS:-1}")
 fi
 PYTHONPATH="$DIFFSYNTH_DIR:${PYTHONPATH:-}" "${LAUNCH_CMD[@]}" \
   "$SCRIPT_DIR/train_samtok_edit.py" \
@@ -47,4 +55,6 @@ PYTHONPATH="$DIFFSYNTH_DIR:${PYTHONPATH:-}" "${LAUNCH_CMD[@]}" \
   --remove_prefix_in_ckpt "pipe.dit." \
   --zero_cond_t \
   --output_path "$OUTPUT_PATH" \
+  --disable_wandb_log \
+  "${EXTRA_ARGS[@]}" \
   --task sft:data_process

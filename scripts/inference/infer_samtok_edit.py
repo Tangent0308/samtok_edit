@@ -82,6 +82,7 @@ def run_edit(
     cfg_scale=4.0,
     mt_cot=None,
     enable_samtok_cot=True,
+    samtok_max_new_tokens=128,
 ):
     return pipe(
         prompt,
@@ -95,6 +96,7 @@ def run_edit(
         zero_cond_t=True,
         mt_cot=mt_cot,
         enable_samtok_cot=enable_samtok_cot,
+        samtok_max_new_tokens=samtok_max_new_tokens,
     )
 
 
@@ -117,6 +119,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--num_inference_steps", type=int, default=40)
     parser.add_argument("--cfg_scale", type=float, default=4.0)
+    parser.add_argument("--samtok_max_new_tokens", type=int, default=128)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--sam2_ckpt", type=Path, default=None)
     parser.add_argument("--mask_tokenizer_ckpt", type=Path, default=None)
@@ -140,6 +143,7 @@ def main():
         cfg_scale=args.cfg_scale,
         mt_cot=args.mt_cot,
         enable_samtok_cot=not args.disable_cot,
+        samtok_max_new_tokens=args.samtok_max_new_tokens,
     )
     args.save_path.parent.mkdir(parents=True, exist_ok=True)
     output.save(args.save_path)

@@ -7,8 +7,9 @@ import argparse
 import io
 import json
 import os
+import random
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -87,6 +88,142 @@ def _label_for_row(phrases: dict, canonical_type: str, instruction: str) -> str:
     return sanitize_label(label or instruction)
 
 
+def canonical_source_parquet(name: str) -> str:
+    """Match parquet provenance to the image-directory filename normalization."""
+
+    return Path(name).stem.replace(" ", "_") + ".parquet"
+
+
+def source_identity_from_row(row: dict) -> tuple[str, int] | None:
+    """Recover the original CrispEdit parquet row from generated metadata."""
+
+    provenance = row.get("provenance") or {}
+    source_parquet = provenance.get("source_parquet")
+    row_idx = provenance.get("row_idx")
+    if source_parquet is not None and row_idx is not None:
+        return canonical_source_parquet(str(source_parquet)), int(row_idx)
+
+    edit_image = row.get("edit_image")
+    if not isinstance(edit_image, str):
+        return None
+    path = Path(edit_image)
+    row_prefix, separator, _ = path.name.partition("_source.")
+    if not separator or not row_prefix.isdigit() or not path.parent.name:
+        return None
+    return f"{path.parent.name}.parquet", int(row_prefix)
+
+
+def load_excluded_source_ids(paths: list[Path]) -> tuple[set[tuple[str, int]], Counter]:
+    """Load source identities already used by one or more metadata files."""
+
+    excluded = set()
+    stats = Counter()
+    for path in paths:
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, 1):
+                if not line.strip():
+                    continue
+                stats["metadata_rows"] += 1
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Invalid JSON in {path}:{line_number}") from exc
+                identity = source_identity_from_row(row)
+                if identity is None:
+                    stats["unidentifiable_rows"] += 1
+                    continue
+                if identity in excluded:
+                    stats["duplicate_identities"] += 1
+                else:
+                    excluded.add(identity)
+                    stats["source_identities"] += 1
+                stats[f"identified_type:{row.get('sample_type', 'unknown')}"] += 1
+    return excluded, stats
+
+
+def collect_candidates(
+    pairs: list[tuple[Path, Path]],
+    ascii_only: bool,
+    excluded_source_ids: set[tuple[str, int]] | None = None,
+) -> tuple[list[tuple[str, int, str]], Counter]:
+    """Collect globally sampleable rows without decoding images or loading the codec."""
+    candidates = []
+    stats = Counter()
+    for raw_path, mask_path in tqdm(pairs, desc="Scanning eligible CrispEdit rows"):
+        raw_rows = pq.read_table(raw_path, columns=["instruction", "type"]).to_pylist()
+        mask_rows = pq.read_table(
+            mask_path,
+            columns=[
+                "row_idx",
+                "instruction",
+                "filter_decision",
+                "phrases_json",
+                "canonical_type",
+            ],
+        ).to_pylist()
+        for mask_row in mask_rows:
+            if mask_row.get("filter_decision") != "keep":
+                stats["filter_drop"] += 1
+                continue
+            row_idx = int(mask_row["row_idx"])
+            source_identity = (canonical_source_parquet(mask_path.name), row_idx)
+            if excluded_source_ids and source_identity in excluded_source_ids:
+                stats["excluded_source"] += 1
+                continue
+            if not 0 <= row_idx < len(raw_rows):
+                raise IndexError(
+                    f"{mask_path.name}: row_idx {row_idx} outside raw parquet"
+                )
+            raw = raw_rows[row_idx]
+            instruction = raw["instruction"]
+            if instruction != mask_row["instruction"]:
+                raise ValueError(
+                    f"Instruction mismatch in {mask_path.name} row {row_idx}"
+                )
+            try:
+                phrases = json.loads(mask_row.get("phrases_json") or "{}")
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Bad phrases_json in {mask_path.name} row {row_idx}"
+                ) from exc
+            canonical_type = mask_row.get("canonical_type") or raw.get("type") or ""
+            is_empty_cot = bool(phrases.get("is_global") or phrases.get("is_noop"))
+            label = _label_for_row(phrases, canonical_type, instruction)
+            if ascii_only and (
+                not instruction.isascii() or (not is_empty_cot and not label.isascii())
+            ):
+                stats["non_ascii_drop"] += 1
+                continue
+            candidates.append((mask_path.name, row_idx, canonical_type))
+            stats["eligible"] += 1
+            stats[f"eligible_type:{canonical_type}"] += 1
+    return candidates, stats
+
+
+def sample_candidates(
+    candidates: list[tuple[str, int, str]],
+    sample_rows: int,
+    seed: int,
+) -> list[tuple[str, int, str]]:
+    if sample_rows < 1:
+        raise ValueError("sample_rows must be positive")
+    if sample_rows > len(candidates):
+        raise ValueError(
+            f"Requested {sample_rows} rows from only {len(candidates)} eligible rows"
+        )
+    return random.Random(seed).sample(candidates, sample_rows)
+
+
+def partition_pairs(
+    pairs: list[tuple[Path, Path]], num_workers: int, worker_index: int
+) -> list[tuple[Path, Path]]:
+    if num_workers < 1:
+        raise ValueError("num_workers must be positive")
+    if not 0 <= worker_index < num_workers:
+        raise ValueError("worker_index must be in [0, num_workers)")
+    return pairs[worker_index::num_workers]
+
+
 def _atomic_jsonl(rows, path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -114,6 +251,7 @@ def process_parquet_pair(
     codec: SamtokCodec,
     codec_batch_size: int,
     remaining_rows: int | None,
+    selected_row_indices: set[int] | None = None,
 ):
     raw_rows = pq.read_table(
         raw_path, columns=["input_img", "instruction", "output_img", "type"]
@@ -123,12 +261,14 @@ def process_parquet_pair(
     stats = Counter()
 
     for mask_row in mask_rows:
+        row_idx = int(mask_row["row_idx"])
+        if selected_row_indices is not None and row_idx not in selected_row_indices:
+            continue
         if mask_row.get("filter_decision") != "keep":
             stats["filter_drop"] += 1
             continue
         if remaining_rows is not None and len(selected) >= remaining_rows:
             break
-        row_idx = int(mask_row["row_idx"])
         if not 0 <= row_idx < len(raw_rows):
             raise IndexError(f"{mask_path.name}: row_idx {row_idx} outside raw parquet")
         raw = raw_rows[row_idx]
@@ -236,13 +376,79 @@ def main():
     parser.add_argument("--codec_batch_size", type=int, default=4)
     parser.add_argument("--max_files", type=int, default=None)
     parser.add_argument("--max_rows", type=int, default=None)
+    parser.add_argument(
+        "--sample_rows",
+        type=int,
+        default=None,
+        help="Globally sample this many eligible rows with --seed instead of prefix truncation",
+    )
+    parser.add_argument(
+        "--all_eligible",
+        action="store_true",
+        help=(
+            "Build every globally eligible row after ASCII and metadata exclusions. "
+            "Unlike legacy prefix mode, this performs the same preflight checks as "
+            "--sample_rows before loading the codec."
+        ),
+    )
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--ascii_only",
+        action="store_true",
+        help="Exclude rows whose prompt or non-empty CoT label contains non-ASCII text",
+    )
+    parser.add_argument(
+        "--exclude_metadata_jsonl",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Metadata whose original CrispEdit source rows must be excluded. "
+            "May be provided multiple times."
+        ),
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=1,
+        help="Number of independent parquet workers sharing output_root",
+    )
+    parser.add_argument(
+        "--worker_index",
+        type=int,
+        default=0,
+        help="This worker's zero-based parquet partition index",
+    )
+    parser.add_argument(
+        "--skip_combine",
+        action="store_true",
+        help="Write atomic metadata shards only; combine them in a final --combine_only run",
+    )
+    parser.add_argument(
+        "--combine_only",
+        action="store_true",
+        help="Verify and combine all expected metadata shards without loading the codec",
+    )
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     if args.codec_batch_size < 1:
         raise ValueError("codec_batch_size must be positive")
+    if args.max_rows is not None and (args.sample_rows is not None or args.all_eligible):
+        raise ValueError("--max_rows cannot be combined with global eligible selection")
+    if args.sample_rows is not None and args.all_eligible:
+        raise ValueError("--sample_rows and --all_eligible cannot be combined")
     if args.resume and args.max_rows is not None:
         raise ValueError("--resume and --max_rows cannot be combined")
+    if (args.ascii_only or args.exclude_metadata_jsonl) and not (
+        args.sample_rows is not None or args.all_eligible
+    ):
+        raise ValueError(
+            "--ascii_only and --exclude_metadata_jsonl require --sample_rows or "
+            "--all_eligible so filtering is applied globally"
+        )
+    if args.num_workers > 1 and not args.skip_combine:
+        raise ValueError("Multi-worker construction requires --skip_combine")
     output_root = args.output_root.resolve()
     edit_mt_path = args.edit_mt_jsonl or output_root / "edit_mt.jsonl"
     edit_path = args.edit_jsonl or output_root / "edit.jsonl"
@@ -251,12 +457,65 @@ def main():
     mask_paths = sorted(args.mask_dir.glob("*.parquet"))
     if args.max_files is not None:
         mask_paths = mask_paths[: args.max_files]
-    pairs = []
+    all_pairs = []
     for mask_path in mask_paths:
         raw_path = args.crispedit_dir / mask_path.name
         if not raw_path.is_file():
             raise FileNotFoundError(raw_path)
-        pairs.append((raw_path, mask_path))
+        all_pairs.append((raw_path, mask_path))
+
+    if args.combine_only:
+        mt_shards = [
+            shard_dir / f"{mask_path.stem}.edit_mt.jsonl"
+            for _, mask_path in all_pairs
+        ]
+        edit_shards = [
+            shard_dir / f"{mask_path.stem}.edit.jsonl"
+            for _, mask_path in all_pairs
+        ]
+        missing = [path for path in mt_shards + edit_shards if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"Cannot combine: {len(missing)} metadata shards are missing; first={missing[0]}"
+            )
+        _combine_shards(mt_shards, edit_mt_path)
+        _combine_shards(edit_shards, edit_path)
+        print(
+            json.dumps(
+                {
+                    "output_root": str(output_root),
+                    "edit_mt_metadata": str(edit_mt_path),
+                    "edit_metadata": str(edit_path),
+                    "combined_parquet_shards": len(all_pairs),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    selection_stats = Counter()
+    excluded_source_ids, exclusion_stats = load_excluded_source_ids(
+        args.exclude_metadata_jsonl
+    )
+    selected_by_file = None
+    if args.sample_rows is not None or args.all_eligible:
+        candidates, selection_stats = collect_candidates(
+            all_pairs,
+            args.ascii_only,
+            excluded_source_ids=excluded_source_ids,
+        )
+        selected_candidates = (
+            sample_candidates(candidates, args.sample_rows, args.seed)
+            if args.sample_rows is not None
+            else candidates
+        )
+        selected_by_file = defaultdict(set)
+        for filename, row_idx, canonical_type in selected_candidates:
+            selected_by_file[filename].add(row_idx)
+            selection_stats[f"selected_type:{canonical_type}"] += 1
+        selection_stats["selected"] = len(selected_candidates)
+        selection_stats["selected_parquet_files"] = len(selected_by_file)
+    pairs = partition_pairs(all_pairs, args.num_workers, args.worker_index)
 
     codec = SamtokCodec(
         args.sam2_ckpt,
@@ -282,6 +541,11 @@ def main():
             codec,
             args.codec_batch_size,
             remaining,
+            (
+                selected_by_file.get(mask_path.name, set())
+                if selected_by_file is not None
+                else None
+            ),
         )
         _atomic_jsonl(edit_mt_rows, mt_shard)
         _atomic_jsonl(edit_rows, edit_shard)
@@ -293,14 +557,37 @@ def main():
             if remaining <= 0:
                 break
 
-    _combine_shards(completed_mt, edit_mt_path)
-    _combine_shards(completed_edit, edit_path)
+    if not args.skip_combine:
+        _combine_shards(completed_mt, edit_mt_path)
+        _combine_shards(completed_edit, edit_path)
     print(
         json.dumps(
             {
                 "output_root": str(output_root),
                 "edit_mt_metadata": str(edit_mt_path),
                 "edit_metadata": str(edit_path),
+                "combined": not args.skip_combine,
+                "worker": {
+                    "index": args.worker_index,
+                    "count": args.num_workers,
+                    "assigned_parquet_shards": len(pairs),
+                },
+                "selection": {
+                    "mode": (
+                        "global_random"
+                        if args.sample_rows is not None
+                        else "all_eligible"
+                        if args.all_eligible
+                        else "prefix"
+                    ),
+                    "seed": args.seed if args.sample_rows is not None else None,
+                    "ascii_only": args.ascii_only,
+                    "stats": dict(selection_stats),
+                },
+                "exclusion": {
+                    "metadata": [str(path) for path in args.exclude_metadata_jsonl],
+                    "stats": dict(exclusion_stats),
+                },
                 "stats": dict(totals),
                 "important": "SAMTok codes were encoded on input/source images",
             },

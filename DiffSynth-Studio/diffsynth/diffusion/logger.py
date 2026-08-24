@@ -35,8 +35,17 @@ class WandbLogger:
     def __init__(self, project_name="DiffSynth-Studio", log_dir=None):
         import wandb
         project_name = os.environ.get("WANDB_PROJECT", project_name)
+        if log_dir is not None:
+            os.makedirs(log_dir, exist_ok=True)
         self.wandb = wandb
-        self.run = self.wandb.init(project=project_name, dir=log_dir)
+        init_kwargs = {"project": project_name, "dir": log_dir}
+        entity = os.environ.get("WANDB_ENTITY")
+        run_name = os.environ.get("WANDB_RUN_NAME")
+        if entity:
+            init_kwargs["entity"] = entity
+        if run_name:
+            init_kwargs["name"] = run_name
+        self.run = self.wandb.init(**init_kwargs)
         print(f"Wandb is enabled. Project: {project_name}")
 
     def log(self, key, value, step):

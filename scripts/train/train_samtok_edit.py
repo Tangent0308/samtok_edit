@@ -8,6 +8,8 @@ import json
 import math
 import os
 import sys
+from collections import Counter
+from pathlib import Path
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 _DIFFSYNTH_ROOT = os.path.join(_REPO_ROOT, "DiffSynth-Studio")
@@ -57,13 +59,19 @@ def trainable_parameter_audit(model):
         or not (".lora_A." in name or ".lora_B." in name)
     ]
     dtypes = {}
+    frozen_dtypes = {}
     for _, parameter in trainable:
         dtype = str(parameter.dtype).removeprefix("torch.")
         dtypes[dtype] = dtypes.get(dtype, 0) + parameter.numel()
+    for parameter in model.parameters():
+        if not parameter.requires_grad:
+            dtype = str(parameter.dtype).removeprefix("torch.")
+            frozen_dtypes[dtype] = frozen_dtypes.get(dtype, 0) + parameter.numel()
     report = {
         "trainable_tensors": len(trainable),
         "trainable_parameters": sum(parameter.numel() for _, parameter in trainable),
         "trainable_parameter_dtypes": dtypes,
+        "frozen_parameter_dtypes": frozen_dtypes,
         "text_encoder_trainable_parameters": sum(
             parameter.numel()
             for name, parameter in trainable
@@ -90,6 +98,82 @@ def trainable_parameter_audit(model):
         )
     if any(parameter.dtype != torch.float32 for _, parameter in trainable):
         raise RuntimeError("Stage-1 text-encoder LoRA parameters must remain fp32")
+    return report
+
+
+def stage2_trainable_parameter_audit(model):
+    """Validate that Stage 2 exposes only the official DiT LoRA tensors."""
+
+    trainable = [
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    invalid = [
+        name
+        for name, _ in trainable
+        if not name.startswith("pipe.dit.")
+        or not (".lora_A." in name or ".lora_B." in name)
+    ]
+    dtype_counts = Counter()
+    frozen_dtype_counts = Counter()
+    for _, parameter in trainable:
+        dtype_counts[str(parameter.dtype).removeprefix("torch.")] += parameter.numel()
+    for parameter in model.parameters():
+        if not parameter.requires_grad:
+            frozen_dtype_counts[
+                str(parameter.dtype).removeprefix("torch.")
+            ] += parameter.numel()
+    target_families = Counter()
+    for name, _ in trainable:
+        for family in [
+            "to_q",
+            "to_k",
+            "to_v",
+            "add_q_proj",
+            "add_k_proj",
+            "add_v_proj",
+            "to_out.0",
+            "to_add_out",
+            "img_mlp.net.2",
+            "img_mod.1",
+            "txt_mlp.net.2",
+            "txt_mod.1",
+        ]:
+            if f".{family}." in name:
+                target_families[family] += 1
+                break
+    report = {
+        "trainable_tensors": len(trainable),
+        "trainable_parameters": sum(parameter.numel() for _, parameter in trainable),
+        "trainable_parameter_dtypes": dict(dtype_counts),
+        "frozen_parameter_dtypes": dict(frozen_dtype_counts),
+        "dit_trainable_parameters": sum(
+            parameter.numel()
+            for name, parameter in trainable
+            if name.startswith("pipe.dit.")
+        ),
+        "text_encoder_trainable_parameters": sum(
+            parameter.numel()
+            for name, parameter in trainable
+            if name.startswith("pipe.text_encoder.")
+        ),
+        "vae_trainable_parameters": sum(
+            parameter.numel()
+            for name, parameter in trainable
+            if name.startswith("pipe.vae.")
+        ),
+        "target_family_trainable_tensors": dict(sorted(target_families.items())),
+        "invalid_trainable_names": invalid[:10],
+    }
+    if not trainable:
+        raise RuntimeError("Stage 2 found no trainable DiT LoRA parameters")
+    if invalid:
+        raise RuntimeError(f"Stage 2 trainable boundary is invalid: {invalid[:10]}")
+    if any(parameter.dtype != torch.bfloat16 for _, parameter in trainable):
+        raise RuntimeError("Official Stage-2 DiT LoRA parameters must be bfloat16")
+    if not target_families:
+        raise RuntimeError("Stage 2 did not match any official DiT LoRA target family")
     return report
 
 
@@ -122,6 +206,460 @@ def gradient_audit(model):
         "frozen_grad_tensors": frozen_gradient_tensors,
         "gradients_finite": finite,
     }
+
+
+def gather_scalar(accelerator, value, dtype=torch.float32):
+    """Gather one scalar from every rank as a rank-ordered Python list."""
+
+    tensor = torch.tensor([value], dtype=dtype, device=accelerator.device)
+    return accelerator.gather(tensor).detach().cpu().tolist()
+
+
+def scalar_range(values):
+    values = [float(value) for value in values]
+    return {
+        "min": min(values),
+        "max": max(values),
+        "mean": sum(values) / len(values),
+    }
+
+
+def tensor_tree_summary(value):
+    """Return JSON-safe cache structure/dtype/shape metadata."""
+
+    if isinstance(value, torch.Tensor):
+        return {
+            "shape": list(value.shape),
+            "dtype": str(value.dtype).removeprefix("torch."),
+            "finite": bool(torch.isfinite(value).all().item())
+            if value.is_floating_point()
+            else True,
+        }
+    if isinstance(value, dict):
+        return {key: tensor_tree_summary(item) for key, item in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [tensor_tree_summary(item) for item in value]
+    return type(value).__name__
+
+
+class IndexedCacheDataset(torch.utils.data.Dataset):
+    """Expose the physical cache file alongside each repeated cache item."""
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, index):
+        cache_index = index % len(self.dataset.cached_data)
+        return {
+            "inputs": self.dataset[index],
+            "cache_path": self.dataset.cached_data[cache_index],
+            "cache_index": cache_index,
+        }
+
+
+def launch_data_process_task_samtok(
+    accelerator,
+    dataset,
+    model,
+    model_logger,
+    args=None,
+    **kwargs,
+):
+    """Stage 2a cache runner with row/type/tensor provenance sidecars."""
+
+    if args is None:
+        raise ValueError("SAMTok Stage 2a requires parsed arguments")
+    if args.enable_model_cpu_offload or args.enable_optimizer_cpu_offload:
+        raise ValueError("Stage 2a smoke audit does not support CPU offload")
+    if accelerator.is_main_process:
+        save_training_args(args)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        shuffle=False,
+        collate_fn=lambda batch: batch[0],
+        num_workers=args.dataset_num_workers,
+    )
+    model.to(device=accelerator.device)
+    model, dataloader = accelerator.prepare(model, dataloader)
+    if len(dataset) != len(dataloader) * accelerator.num_processes:
+        raise RuntimeError(
+            "Stage 2a requires exact cache sharding: "
+            f"global={len(dataset)}, local={len(dataloader)}, "
+            f"world={accelerator.num_processes}"
+        )
+
+    global_type_counts = Counter()
+    for data_id, data in enumerate(
+        tqdm(dataloader, disable=not accelerator.is_local_main_process)
+    ):
+        source_row_id = int(data.get("_samtok_source_row_id", -1))
+        sample_type = data.get("sample_type", "edit")
+        sample_type_id = {"edit_mt": 0, "edit": 1}.get(sample_type, -1)
+        if source_row_id < 0 or sample_type_id < 0:
+            raise RuntimeError(
+                f"Invalid Stage 2a provenance: row={source_row_id}, type={sample_type}"
+            )
+        rank_source_rows = gather_scalar(
+            accelerator, source_row_id, dtype=torch.int64
+        )
+        expected_rows = list(
+            range(
+                data_id * accelerator.num_processes,
+                (data_id + 1) * accelerator.num_processes,
+            )
+        )
+        if rank_source_rows != expected_rows:
+            raise RuntimeError(
+                f"Stage 2a DDP row sharding mismatch: {rank_source_rows} != {expected_rows}"
+            )
+        rank_type_ids = gather_scalar(
+            accelerator, sample_type_id, dtype=torch.int64
+        )
+        global_type_counts.update(
+            "edit_mt" if type_id == 0 else "edit" for type_id in rank_type_ids
+        )
+
+        with torch.no_grad():
+            cached_inputs = model(data)
+        if not isinstance(cached_inputs, tuple) or len(cached_inputs) != 3:
+            raise RuntimeError("Stage 2a cache must be a (shared, positive, negative) tuple")
+        shared, positive, negative = cached_inputs
+        required_shared = {"input_latents", "edit_latents"}
+        required_positive = {"prompt_emb"}
+        if not required_shared.issubset(shared) or not required_positive.issubset(positive):
+            raise RuntimeError(
+                "Stage 2a cache is missing required tensors: "
+                f"shared={sorted(shared)}, positive={sorted(positive)}"
+            )
+        forbidden = {"samtok_cot_hidden", "samtok_cot_labels"}
+        if forbidden.intersection(shared) or forbidden.intersection(positive):
+            raise RuntimeError("Stage 2a unexpectedly cached NTP-only tensors")
+        cache_summary = tensor_tree_summary(cached_inputs)
+
+        rank_dir = Path(model_logger.output_path) / str(accelerator.process_index)
+        rank_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = rank_dir / f"{data_id}.pth"
+        torch.save(cached_inputs, cache_path)
+        sidecar = {
+            "cache_path": str(cache_path),
+            "worker_rank": accelerator.process_index,
+            "world_size": accelerator.num_processes,
+            "local_cache_index": data_id,
+            "metadata_index": source_row_id,
+            "sample_type": sample_type,
+            "prompt": data.get("prompt"),
+            "has_mt_cot": bool(data.get("mt_cot")),
+            "mt_cot_is_empty": data.get("mt_cot") == "```json\n[]\n```",
+            "provenance": data.get("provenance"),
+            "target_image_size": list(data["image"].size),
+            "source_image_sizes": [list(image.size) for image in data["edit_image"]],
+            "preset_te_lora_path": args.preset_lora_path,
+            "cache_summary": cache_summary,
+        }
+        temporary = cache_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(sidecar, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(cache_path.with_suffix(".json"))
+        if args.debug_train_metrics:
+            accelerator.print(
+                "[SamtokDebug][stage2_cache] "
+                + json.dumps(
+                    {
+                        "local_cache_index": data_id,
+                        "rank_source_rows": rank_source_rows,
+                        "rank_sample_type_ids": rank_type_ids,
+                        "global_type_counts_so_far": dict(global_type_counts),
+                        "local_cache": sidecar,
+                    },
+                    sort_keys=True,
+                )
+            )
+    expected_counts = Counter(
+        row.get("sample_type", "edit") for row in dataset.data
+    )
+    if global_type_counts != expected_counts:
+        raise RuntimeError(
+            f"Stage 2a type counts changed under DDP: {global_type_counts} != {expected_counts}"
+        )
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        print(
+            "[SamtokDebug][stage2_cache_summary] "
+            + json.dumps(
+                {
+                    "world_size": accelerator.num_processes,
+                    "metadata_rows": len(dataset),
+                    "cache_rows": sum(global_type_counts.values()),
+                    "sample_type_counts": dict(global_type_counts),
+                    "preset_te_lora_path": args.preset_lora_path,
+                },
+                sort_keys=True,
+            )
+        )
+    accelerator.end_training()
+
+
+def launch_training_task_stage2_debug(
+    accelerator,
+    dataset,
+    model,
+    model_logger,
+    args=None,
+    **kwargs,
+):
+    """Mirror the official Stage 2 runner while auditing every DDP step."""
+
+    if args is None:
+        raise ValueError("SAMTok Stage 2b debug runner requires parsed arguments")
+    if not dataset.load_from_cache:
+        raise ValueError("Stage 2b must read Stage 2a .pth cache files")
+    if args.enable_model_cpu_offload or args.enable_optimizer_cpu_offload:
+        raise ValueError("Stage 2b smoke audit does not support CPU offload")
+    if accelerator.is_main_process:
+        save_training_args(args)
+
+    cache_manifests = {}
+    physical_type_counts = Counter()
+    physical_source_rows = set()
+    for cache_file in dataset.cached_data:
+        cache_path = Path(cache_file)
+        sidecar_path = cache_path.with_suffix(".json")
+        if not sidecar_path.is_file():
+            raise FileNotFoundError(f"Missing Stage 2a cache sidecar: {sidecar_path}")
+        record = json.loads(sidecar_path.read_text(encoding="utf-8"))
+        cache_manifests[str(cache_path)] = record
+        physical_type_counts[record["sample_type"]] += 1
+        physical_source_rows.add(int(record["metadata_index"]))
+    if len(physical_source_rows) != len(dataset.cached_data):
+        raise RuntimeError("Stage 2a cache metadata indices are not one-to-one")
+
+    optimizer = get_optimizer_class(args.customized_optimizer)(
+        model.trainable_modules(),
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    indexed_dataset = IndexedCacheDataset(dataset)
+    dataloader = torch.utils.data.DataLoader(
+        indexed_dataset,
+        shuffle=True,
+        collate_fn=lambda batch: batch[0],
+        num_workers=args.dataset_num_workers,
+    )
+    model.to(device=accelerator.device)
+    model, optimizer, dataloader, scheduler = accelerator.prepare(
+        model, optimizer, dataloader, scheduler
+    )
+    initialize_deepspeed_gradient_checkpointing(accelerator)
+
+    audit = stage2_trainable_parameter_audit(accelerator.unwrap_model(model))
+    optimizer_group = optimizer.param_groups[0]
+    runtime_audit = {
+        "world_size": accelerator.num_processes,
+        "distributed_type": str(accelerator.distributed_type),
+        "accelerate_mixed_precision": accelerator.mixed_precision,
+        "pipeline_dtype": str(
+            accelerator.unwrap_model(model).pipe.torch_dtype
+        ).removeprefix("torch."),
+        "physical_cache_rows": len(dataset.cached_data),
+        "physical_cache_type_counts": dict(physical_type_counts),
+        "dataset_repeat": args.dataset_repeat,
+        "dataset_rows_per_epoch": len(dataset),
+        "micro_steps_per_rank_per_epoch": len(dataloader),
+        "num_epochs": args.num_epochs,
+        "total_optimizer_steps": len(dataloader) * args.num_epochs,
+        "gradient_accumulation_steps": args.gradient_accumulation_steps,
+        "effective_global_batch_size": (
+            accelerator.num_processes * args.gradient_accumulation_steps
+        ),
+        "optimizer": type(optimizer).__name__,
+        "optimizer_betas": list(optimizer_group["betas"]),
+        "weight_decay": optimizer_group["weight_decay"],
+        "base_learning_rate": args.learning_rate,
+        "scheduler": type(scheduler.scheduler).__name__
+        if hasattr(scheduler, "scheduler")
+        else type(scheduler).__name__,
+        "scheduler_note": "official ConstantLR defaults: factor=1/3, total_iters=5",
+        "gradient_clipping_enabled": False,
+        "zero_cond_t": args.zero_cond_t,
+        "gradient_checkpointing": args.use_gradient_checkpointing,
+        "find_unused_parameters": args.find_unused_parameters,
+        "seed": args.seed,
+    }
+    if accelerator.is_main_process:
+        print("[SamtokDebug][stage2_parameter_audit] " + json.dumps(audit, sort_keys=True))
+        print("[SamtokDebug][stage2_runtime_audit] " + json.dumps(runtime_audit, sort_keys=True))
+
+    probe_name, probe_parameter = None, None
+    for name, parameter in accelerator.unwrap_model(model).named_parameters():
+        if parameter.requires_grad and ".lora_B." in name:
+            probe_name, probe_parameter = name, parameter
+            break
+    if probe_parameter is None:
+        raise RuntimeError("No Stage 2 LoRA B tensor found for update audit")
+
+    optimizer_step = 0
+    for epoch_id in range(args.num_epochs):
+        epoch_type_counts = Counter()
+        epoch_source_counts = Counter()
+        for micro_step_in_epoch, batch in enumerate(
+            tqdm(dataloader, disable=not accelerator.is_local_main_process), 1
+        ):
+            with accelerator.accumulate(model):
+                cache_path = Path(batch["cache_path"])
+                cache_record = cache_manifests[str(cache_path)]
+                sample_type_id = {"edit_mt": 0, "edit": 1}.get(
+                    cache_record["sample_type"], -1
+                )
+                if sample_type_id < 0:
+                    raise RuntimeError(f"Bad cached sample type: {cache_record}")
+                rank_type_ids = gather_scalar(
+                    accelerator, sample_type_id, dtype=torch.int64
+                )
+                rank_source_rows = gather_scalar(
+                    accelerator,
+                    cache_record["metadata_index"],
+                    dtype=torch.int64,
+                )
+                epoch_type_counts.update(
+                    "edit_mt" if type_id == 0 else "edit"
+                    for type_id in rank_type_ids
+                )
+                epoch_source_counts.update(int(row_id) for row_id in rank_source_rows)
+
+                loss = model({}, inputs=batch["inputs"])
+                if loss.dtype != torch.float32 or not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        f"Stage 2 FM loss must be finite fp32, got {loss} ({loss.dtype})"
+                    )
+                flow_debug = (
+                    getattr(accelerator.unwrap_model(model).pipe, "last_flow_match_debug", None)
+                    or {}
+                )
+                if (
+                    flow_debug.get("input_latents_shape")
+                    != flow_debug.get("noise_pred_shape")
+                    or flow_debug.get("input_latents_shape")
+                    != flow_debug.get("training_target_shape")
+                ):
+                    raise RuntimeError(f"Stage 2 FM tensor alignment failed: {flow_debug}")
+                if flow_debug.get("loss_fm_dtype") != "float32":
+                    raise RuntimeError(f"Stage 2 FM loss dtype audit failed: {flow_debug}")
+                rank_losses = gather_scalar(accelerator, float(loss.detach().item()))
+                rank_timesteps = gather_scalar(
+                    accelerator, flow_debug.get("timestep", -1.0)
+                )
+
+                accelerator.backward(loss)
+                local_gradient_audit = gradient_audit(
+                    accelerator.unwrap_model(model)
+                )
+                if not local_gradient_audit["gradients_finite"]:
+                    raise FloatingPointError("Non-finite Stage 2 gradients")
+                if local_gradient_audit["nonzero_grad_tensors"] == 0:
+                    raise RuntimeError("No non-zero Stage 2 LoRA gradients")
+                if local_gradient_audit["frozen_grad_tensors"]:
+                    raise RuntimeError("A frozen Stage 2 parameter received a gradient")
+                rank_grad_norms = gather_scalar(
+                    accelerator, local_gradient_audit["grad_norm_before_clip"]
+                )
+
+                probe_before = probe_parameter.detach().float().clone()
+                learning_rate_used = float(optimizer.param_groups[0]["lr"])
+                optimizer.step()
+                scheduler.step()
+                optimizer_step += int(accelerator.sync_gradients)
+                probe_after = probe_parameter.detach().float()
+                probe_update = float((probe_after - probe_before).norm().item())
+                rank_probe_updates = gather_scalar(accelerator, probe_update)
+                rank_probe_norms = gather_scalar(
+                    accelerator, float(probe_after.norm().item())
+                )
+                if max(rank_probe_norms) - min(rank_probe_norms) > 1e-5 * max(
+                    1.0, max(rank_probe_norms)
+                ):
+                    raise RuntimeError(
+                        f"Stage 2 LoRA parameters diverged across ranks: {rank_probe_norms}"
+                    )
+                optimizer.zero_grad(set_to_none=True)
+
+                debug_metrics = {
+                    **local_gradient_audit,
+                    "optimizer_step": optimizer_step,
+                    "learning_rate_used": learning_rate_used,
+                    "learning_rate_next": float(optimizer.param_groups[0]["lr"]),
+                    "probe_update_l2_norm": probe_update,
+                    "sync_gradients": int(accelerator.sync_gradients),
+                }
+                if micro_step_in_epoch % args.debug_log_steps == 0:
+                    record = {
+                        "epoch": epoch_id,
+                        "micro_step_in_epoch": micro_step_in_epoch,
+                        "optimizer_step": optimizer_step,
+                        "sample_type": cache_record["sample_type"],
+                        "metadata_index": cache_record["metadata_index"],
+                        "cache_path": str(cache_path),
+                        "rank_sample_type_ids": rank_type_ids,
+                        "rank_source_row_ids": rank_source_rows,
+                        "rank_loss_fm": rank_losses,
+                        "rank_loss_summary": scalar_range(rank_losses),
+                        "rank_timesteps": rank_timesteps,
+                        "rank_grad_norm_before_clip": rank_grad_norms,
+                        "rank_grad_norm_summary": scalar_range(rank_grad_norms),
+                        "rank_probe_update_l2_norm": rank_probe_updates,
+                        "rank_probe_parameter_l2_norm": rank_probe_norms,
+                        "probe_parameter": probe_name,
+                        **flow_debug,
+                        **debug_metrics,
+                    }
+                    accelerator.print(
+                        "[SamtokDebug][stage2_step] "
+                        + json.dumps(record, sort_keys=True)
+                    )
+                model_logger.on_step_end(
+                    accelerator,
+                    model,
+                    args.save_steps,
+                    loss=loss,
+                    debug_metrics=debug_metrics,
+                )
+
+        expected_type_counts = Counter(
+            {
+                sample_type: count * args.dataset_repeat
+                for sample_type, count in physical_type_counts.items()
+            }
+        )
+        expected_source_counts = Counter(
+            {index: args.dataset_repeat for index in physical_source_rows}
+        )
+        if epoch_type_counts != expected_type_counts:
+            raise RuntimeError(
+                f"Stage 2 epoch type ratio mismatch: {epoch_type_counts} != {expected_type_counts}"
+            )
+        if epoch_source_counts != expected_source_counts:
+            raise RuntimeError("Stage 2 did not consume every cache row exactly repeat times")
+        if accelerator.is_main_process:
+            print(
+                "[SamtokDebug][stage2_epoch_audit] "
+                + json.dumps(
+                    {
+                        "epoch": epoch_id,
+                        "sample_type_counts": dict(epoch_type_counts),
+                        "unique_metadata_rows": len(epoch_source_counts),
+                        "uses_per_metadata_row": sorted(set(epoch_source_counts.values())),
+                        "optimizer_step": optimizer_step,
+                    },
+                    sort_keys=True,
+                )
+            )
+        if args.save_steps is None:
+            model_logger.on_epoch_end(accelerator, model, epoch_id)
+
+    model_logger.on_training_end(accelerator, model, args.save_steps)
+    accelerator.end_training()
 
 
 def launch_training_task_ordered(
@@ -172,9 +710,45 @@ def launch_training_task_ordered(
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     initialize_deepspeed_gradient_checkpointing(accelerator)
 
-    if args.debug_train_metrics and accelerator.is_main_process:
+    if args.debug_train_metrics:
         audit = trainable_parameter_audit(accelerator.unwrap_model(model))
-        print("[SamtokDebug][parameter_audit] " + json.dumps(audit, sort_keys=True))
+        runtime_audit = {
+            "world_size": accelerator.num_processes,
+            "distributed_type": str(accelerator.distributed_type),
+            "accelerate_mixed_precision": accelerator.mixed_precision,
+            "pipeline_dtype": str(
+                accelerator.unwrap_model(model).pipe.torch_dtype
+            ).removeprefix("torch."),
+            "dataset_schedule_rows_global": len(dataset),
+            "micro_steps_per_rank": len(dataloader) * args.num_epochs,
+            "optimizer_steps": total_steps,
+            "gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "sample_type_ratio": args.sample_type_ratio,
+            "learning_rate": args.learning_rate,
+            "weight_decay": args.weight_decay,
+            "max_grad_norm": args.max_grad_norm,
+            "warmup_ratio": args.warmup_ratio,
+            "warmup_steps": int(args.warmup_ratio * total_steps),
+            "ntp_loss_weight": args.ntp_loss_weight,
+            "fm_loss_weight": args.fm_loss_weight,
+            "seed": args.seed,
+            "rank_seed": args.seed + accelerator.process_index,
+        }
+        if len(dataset) != len(dataloader) * accelerator.num_processes:
+            raise RuntimeError(
+                "Prepared DDP dataloader did not partition the schedule exactly: "
+                f"global={len(dataset)}, local={len(dataloader)}, "
+                f"world={accelerator.num_processes}"
+            )
+        if accelerator.is_main_process:
+            print(
+                "[SamtokDebug][parameter_audit] "
+                + json.dumps(audit, sort_keys=True)
+            )
+            print(
+                "[SamtokDebug][runtime_audit] "
+                + json.dumps(runtime_audit, sort_keys=True)
+            )
 
     probe_name, probe_parameter = None, None
     if args.debug_train_metrics:
@@ -190,12 +764,137 @@ def launch_training_task_ordered(
         for data in tqdm(dataloader, disable=not accelerator.is_local_main_process):
             with accelerator.accumulate(model):
                 micro_step += 1
+                accumulation_slot = (
+                    (micro_step - 1) % args.gradient_accumulation_steps
+                ) + 1
                 sample_type = data.get("sample_type", "edit")
-                loss = model(data)
-                accelerator.backward(loss)
                 debug_metrics = {}
+                debug_record_fields = {}
                 if args.debug_train_metrics:
-                    debug_metrics.update(gradient_audit(accelerator.unwrap_model(model)))
+                    sample_type_id = {
+                        "edit_mt": 0,
+                        "edit_ntp": 1,
+                        "edit": 2,
+                    }.get(sample_type, -1)
+                    rank_type_ids = gather_scalar(
+                        accelerator, sample_type_id, dtype=torch.int64
+                    )
+                    if sample_type_id < 0 or len(set(rank_type_ids)) != 1:
+                        raise RuntimeError(
+                            f"DDP sample types diverged at micro-step {micro_step}: "
+                            f"{rank_type_ids}"
+                        )
+                    schedule_position = data.get("_samtok_schedule_position")
+                    if schedule_position is None:
+                        raise RuntimeError("Missing runtime schedule provenance")
+                    rank_schedule_positions = gather_scalar(
+                        accelerator, schedule_position, dtype=torch.int64
+                    )
+                    first_position = min(rank_schedule_positions)
+                    expected_positions = list(
+                        range(first_position, first_position + accelerator.num_processes)
+                    )
+                    if (
+                        rank_schedule_positions != expected_positions
+                        or first_position % accelerator.num_processes
+                    ):
+                        raise RuntimeError(
+                            "Accelerate did not shard one homogeneous schedule group "
+                            f"across ranks: {rank_schedule_positions}"
+                        )
+                    rank_source_row_ids = gather_scalar(
+                        accelerator,
+                        data.get("_samtok_source_row_id", -1),
+                        dtype=torch.int64,
+                    )
+                    debug_metrics.update(
+                        {
+                            "ddp_sample_type_consistent": 1,
+                            "ddp_schedule_group_consecutive": 1,
+                            "world_size": accelerator.num_processes,
+                            "fresh_accumulation_gradients": int(
+                                accumulation_slot == 1
+                            ),
+                        }
+                    )
+                    debug_record_fields.update(
+                        {
+                            "rank_sample_type_ids": rank_type_ids,
+                            "rank_schedule_positions": rank_schedule_positions,
+                            "rank_source_row_ids": rank_source_row_ids,
+                        }
+                    )
+                loss = model(data)
+                components = {}
+                if args.debug_train_metrics:
+                    pipe = accelerator.unwrap_model(model).pipe
+                    components = getattr(pipe, "last_loss_log", None) or {}
+                    expected_components = {
+                        "edit_mt": {"loss_ntp", "loss_fm"},
+                        "edit_ntp": {"loss_ntp"},
+                        "edit": {"loss_fm"},
+                    }[sample_type]
+                    if set(components) != expected_components:
+                        raise RuntimeError(
+                            f"Loss dispatch mismatch for {sample_type}: {components}"
+                        )
+                    if loss.dtype != torch.float32:
+                        raise RuntimeError(
+                            f"Stage-1 loss must be fp32, got {loss.dtype}"
+                        )
+                    expected_total = (
+                        args.ntp_loss_weight * components.get("loss_ntp", 0.0)
+                        + args.fm_loss_weight * components.get("loss_fm", 0.0)
+                    )
+                    local_loss = float(loss.detach().item())
+                    identity_error = abs(local_loss - expected_total)
+                    if identity_error > 1e-5 * max(1.0, abs(expected_total)):
+                        raise RuntimeError(
+                            f"Weighted loss identity failed for {sample_type}: "
+                            f"loss={local_loss}, expected={expected_total}"
+                        )
+                    rank_loss_total = gather_scalar(accelerator, local_loss)
+                    if not all(math.isfinite(value) for value in rank_loss_total):
+                        raise FloatingPointError(
+                            f"Non-finite rank loss at micro-step {micro_step}: "
+                            f"{rank_loss_total}"
+                        )
+                    rank_component_losses = {
+                        name: gather_scalar(accelerator, components[name])
+                        for name in sorted(expected_components)
+                    }
+                    rank_identity_errors = gather_scalar(
+                        accelerator, identity_error
+                    )
+                    training_debug = getattr(pipe, "last_training_debug", None) or {}
+                    if sample_type in {"edit_mt", "edit_ntp"}:
+                        if not training_debug.get("ntp_shift_alignment_ok"):
+                            raise RuntimeError(
+                                f"Missing valid shifted NTP alignment for {sample_type}"
+                            )
+                    elif training_debug.get("cot_tokens") != 0:
+                        raise RuntimeError("Pure edit sample unexpectedly has NTP labels")
+                    debug_metrics.update(
+                        {
+                            "loss_identity_error": identity_error,
+                            "rank_loss_total_min": min(rank_loss_total),
+                            "rank_loss_total_max": max(rank_loss_total),
+                        }
+                    )
+                    debug_record_fields.update(
+                        {
+                            "rank_loss_total": rank_loss_total,
+                            "rank_component_losses": rank_component_losses,
+                            "rank_loss_identity_error": rank_identity_errors,
+                            "rank_loss_total_summary": scalar_range(rank_loss_total),
+                        }
+                    )
+                accelerator.backward(loss)
+                if args.debug_train_metrics:
+                    local_gradient_audit = gradient_audit(
+                        accelerator.unwrap_model(model)
+                    )
+                    debug_metrics.update(local_gradient_audit)
                     if not debug_metrics["gradients_finite"]:
                         raise FloatingPointError(
                             f"Non-finite Stage-1 gradients at micro-step {micro_step}"
@@ -208,6 +907,21 @@ def launch_training_task_ordered(
                         raise RuntimeError(
                             "A frozen parameter unexpectedly received a .grad tensor"
                         )
+                    rank_grad_norms = gather_scalar(
+                        accelerator, debug_metrics["grad_norm_before_clip"]
+                    )
+                    rank_nonzero_grad_tensors = gather_scalar(
+                        accelerator,
+                        debug_metrics["nonzero_grad_tensors"],
+                        dtype=torch.int64,
+                    )
+                    debug_record_fields.update(
+                        {
+                            "rank_grad_norm_before_clip": rank_grad_norms,
+                            "rank_nonzero_grad_tensors": rank_nonzero_grad_tensors,
+                            "rank_grad_norm_summary": scalar_range(rank_grad_norms),
+                        }
+                    )
 
                 clip_norm = None
                 if accelerator.sync_gradients:
@@ -232,16 +946,31 @@ def launch_training_task_ordered(
 
                 if args.debug_train_metrics:
                     pipe = accelerator.unwrap_model(model).pipe
-                    components = getattr(pipe, "last_loss_log", None) or {}
-                    expected_components = {
-                        "edit_mt": {"loss_ntp", "loss_fm"},
-                        "edit_ntp": {"loss_ntp"},
-                        "edit": {"loss_fm"},
-                    }[sample_type]
-                    if set(components) != expected_components:
-                        raise RuntimeError(
-                            f"Loss dispatch mismatch for {sample_type}: {components}"
+                    if probe_after is not None:
+                        probe_update = float(
+                            (probe_after - probe_before).norm().item()
                         )
+                        rank_probe_updates = gather_scalar(
+                            accelerator, probe_update
+                        )
+                        rank_probe_norms = gather_scalar(
+                            accelerator, float(probe_after.norm().item())
+                        )
+                        if max(rank_probe_norms) - min(rank_probe_norms) > 1e-5 * max(
+                            1.0, max(rank_probe_norms)
+                        ):
+                            raise RuntimeError(
+                                "LoRA parameters diverged across DDP ranks after an "
+                                f"optimizer step: {rank_probe_norms}"
+                            )
+                        debug_record_fields.update(
+                            {
+                                "rank_probe_update_l2_norm": rank_probe_updates,
+                                "rank_probe_parameter_l2_norm": rank_probe_norms,
+                            }
+                        )
+                    else:
+                        probe_update = None
                     debug_metrics.update(
                         {
                             "sync_gradients": int(accelerator.sync_gradients),
@@ -253,9 +982,7 @@ def launch_training_task_ordered(
                                 else float(clip_norm) if clip_norm is not None else None
                             ),
                             "probe_update_l2_norm": (
-                                float((probe_after - probe_before).norm().item())
-                                if probe_before is not None and probe_after is not None
-                                else None
+                                probe_update
                             ),
                         }
                     )
@@ -263,15 +990,14 @@ def launch_training_task_ordered(
                         record = {
                             "epoch": epoch_id,
                             "micro_step": micro_step,
-                            "accumulation_slot": (
-                                (micro_step - 1) % args.gradient_accumulation_steps
-                            )
-                            + 1,
+                            "accumulation_slot": accumulation_slot,
                             "sample_type": sample_type,
                             "loss_total": float(loss.detach().float().item()),
                             **components,
                             **(getattr(pipe, "last_training_debug", None) or {}),
+                            **(getattr(pipe, "last_loss_debug", None) or {}),
                             **debug_metrics,
+                            **debug_record_fields,
                             "probe_parameter": probe_name,
                         }
                         accelerator.print(
@@ -288,6 +1014,7 @@ def launch_training_task_ordered(
         if args.save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
     model_logger.on_training_end(accelerator, model, args.save_steps)
+    accelerator.end_training()
 
 
 class SamtokModelLogger(ModelLogger):
@@ -581,18 +1308,66 @@ class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
         if self.task == "sft":
             shared, positive, _ = inputs
             cot_labels = positive.get("samtok_cot_labels")
+            cot_hidden = positive.get("samtok_cot_hidden")
             prompt_mask = positive.get("prompt_emb_mask")
+            prompt_emb = positive.get("prompt_emb")
             input_latents = shared.get("input_latents")
             edit_latents = shared.get("edit_latents")
             if edit_latents is not None and not isinstance(edit_latents, list):
                 edit_latents = [edit_latents]
+            alignment = getattr(self.pipe, "last_ntp_alignment", None) or {}
+            if cot_labels is not None:
+                if cot_hidden is None or cot_hidden.shape[:2] != cot_labels.shape:
+                    raise RuntimeError(
+                        "NTP hidden positions do not align one-to-one with labels"
+                    )
+                if not alignment.get("ntp_shift_alignment_ok"):
+                    raise RuntimeError("NTP supervision boundary audit is missing")
+                if int(cot_labels[0, -1].item()) != self.pipe.im_end_id:
+                    raise RuntimeError("NTP supervision does not end on <|im_end|>")
+            elif cot_hidden is not None:
+                raise RuntimeError("NTP hidden exists without NTP labels")
+            expected_fm = data.get("sample_type", "edit") in {"edit_mt", "edit"}
+            if (input_latents is not None) != expected_fm:
+                raise RuntimeError(
+                    "FM target dispatch mismatch: target latents must come from the "
+                    "metadata image field only for edit_mt/edit"
+                )
             self.pipe.last_training_debug = {
                 "cot_tokens": int(cot_labels.numel()) if cot_labels is not None else 0,
+                "cot_hidden_shape": (
+                    list(cot_hidden.shape) if cot_hidden is not None else None
+                ),
+                "cot_label_shape": (
+                    list(cot_labels.shape) if cot_labels is not None else None
+                ),
+                "cot_hidden_dtype": (
+                    str(cot_hidden.dtype).removeprefix("torch.")
+                    if cot_hidden is not None
+                    else None
+                ),
+                "cot_label_dtype": (
+                    str(cot_labels.dtype).removeprefix("torch.")
+                    if cot_labels is not None
+                    else None
+                ),
                 "prompt_tokens": (
                     int(prompt_mask.sum().item()) if prompt_mask is not None else 0
                 ),
+                "prompt_emb_dtype": (
+                    str(prompt_emb.dtype).removeprefix("torch.")
+                    if prompt_emb is not None
+                    else None
+                ),
                 "has_ntp_loss": cot_labels is not None,
                 "has_fm_loss": input_latents is not None,
+                "fm_target_is_metadata_image": input_latents is not None,
+                "conditioning_is_metadata_edit_image": bool(edit_latents),
+                "target_latent_dtype": (
+                    str(input_latents.dtype).removeprefix("torch.")
+                    if input_latents is not None
+                    else None
+                ),
                 "target_latent_shape": (
                     list(input_latents.shape) if input_latents is not None else None
                 ),
@@ -601,6 +1376,7 @@ class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
                     if edit_latents is not None
                     else []
                 ),
+                **alignment,
             }
         return self.task_to_loss[self.task](self.pipe, *inputs)
 
@@ -610,12 +1386,25 @@ def samtok_parser():
         description="SAMTokEdit Stage-1/Stage-2 training"
     )
     parser = add_general_config(parser)
+    # SAMTok experiments use WandB by default. The launcher validates the
+    # account environment, while direct Python invocation is also checked
+    # before any model is loaded. Offline runs must opt out explicitly.
+    parser.set_defaults(
+        enable_wandb_log=True,
+        wandb_project=os.environ.get("WANDB_PROJECT"),
+    )
+    parser.add_argument(
+        "--disable_wandb_log",
+        dest="enable_wandb_log",
+        action="store_false",
+        help="Explicitly disable the default WandB logger for an offline run.",
+    )
     parser = add_image_size_config(parser)
     parser.add_argument("--tokenizer_path", type=str, default=None)
     parser.add_argument("--processor_path", type=str, default=None)
     parser.add_argument("--zero_cond_t", default=False, action="store_true")
     parser.add_argument("--initialize_model_on_cpu", default=False, action="store_true")
-    parser.add_argument("--ntp_loss_weight", type=float, default=1.0)
+    parser.add_argument("--ntp_loss_weight", type=float, default=0.05)
     parser.add_argument("--fm_loss_weight", type=float, default=1.0)
     parser.add_argument(
         "--sample_type_ratio", type=str, default="edit_mt:2,edit_ntp:1,edit:1"
@@ -629,10 +1418,35 @@ def samtok_parser():
     return parser
 
 
+def validate_wandb_credentials(args):
+    """Fail before model loading when the default WandB logger lacks account data."""
+
+    # Data processing only writes latent/cache shards and never initializes a
+    # training logger; it does not require an experiment account.
+    if args.task.endswith(":data_process") or not args.enable_wandb_log:
+        return
+    missing = [
+        name
+        for name in ("WANDB_API_KEY", "WANDB_ENTITY")
+        if not os.environ.get(name)
+    ]
+    if not args.wandb_project:
+        missing.append("WANDB_PROJECT or --wandb_project")
+    if missing:
+        raise RuntimeError(
+            "WandB logging is enabled by default for SAMTokEdit. Set the account "
+            "environment before training; missing: "
+            + ", ".join(missing)
+            + ". WANDB_API_KEY is never persisted to training_args.json. "
+            "Use --disable_wandb_log only for an explicit offline run."
+        )
+
+
 def main():
     args = samtok_parser().parse_args()
     if args.debug_log_steps < 1:
         raise ValueError("debug_log_steps must be positive")
+    validate_wandb_credentials(args)
     accelerator = accelerate.Accelerator(
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         kwargs_handlers=[
@@ -641,6 +1455,9 @@ def main():
             )
         ],
     )
+    # Keep the metadata schedule identical on all ranks while giving each rank
+    # independent timestep/noise RNG streams.
+    accelerate.utils.set_seed(args.seed, device_specific=True)
 
     edit_image_operator = RouteByType(
         operator_map=[
@@ -727,9 +1544,13 @@ def main():
         run_config=vars(args),
     )
     launcher = {
-        "sft:data_process": launch_data_process_task,
+        "sft:data_process": launch_data_process_task_samtok,
         "sft": launch_training_task_ordered,
-        "sft:train": launch_training_task,
+        "sft:train": (
+            launch_training_task_stage2_debug
+            if args.debug_train_metrics
+            else launch_training_task
+        ),
     }[args.task]
     launcher(accelerator, dataset, model, model_logger, args=args)
 

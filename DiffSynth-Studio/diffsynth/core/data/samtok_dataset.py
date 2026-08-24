@@ -284,12 +284,26 @@ class SamtokEditingDataset(UnifiedDataset):
 
     def __getitem__(self, data_id):
         if self.schedule is None:
-            return super().__getitem__(data_id)
-        row = self.data[self.schedule[data_id]].copy()
+            row = super().__getitem__(data_id)
+            # Stage 2a bypasses the ratio schedule but still needs stable row
+            # provenance for cache/distributed audits.  These fields are read
+            # by the SAMTok data-process runner and never enter cached model
+            # inputs.  Cache-mode rows remain untouched.
+            if not self.load_from_cache and isinstance(row, dict):
+                row["_samtok_schedule_position"] = int(data_id)
+                row["_samtok_source_row_id"] = int(data_id % len(self.data))
+            return row
+        source_row_id = self.schedule[data_id]
+        row = self.data[source_row_id].copy()
         for key in self.data_file_keys:
             if key in row:
                 operator = self.special_operator_map.get(key, self.main_data_operator)
                 row[key] = operator(row[key])
         row.setdefault("mt_cot", None)
         row.setdefault("sample_type", "edit")
+        # Runtime-only provenance used by the distributed smoke audit.  Accelerate
+        # shards this ordered index stream by rank, so a healthy DDP micro-step
+        # must observe one consecutive group of ``num_processes`` positions.
+        row["_samtok_schedule_position"] = int(data_id)
+        row["_samtok_source_row_id"] = int(source_row_id)
         return row

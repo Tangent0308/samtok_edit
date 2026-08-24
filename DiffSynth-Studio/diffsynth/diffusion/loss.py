@@ -28,8 +28,36 @@ def FlowMatchSFTLoss(pipe: BasePipeline, **inputs):
         noise_pred = noise_pred[:, :, 1:]
         training_target = training_target[:, :, 1:]
     
-    loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
-    loss = loss * pipe.scheduler.training_weight(timestep)
+    mse = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
+    training_weight = pipe.scheduler.training_weight(timestep)
+    loss = mse * training_weight
+    training_weight_value = (
+        float(training_weight.detach().float().reshape(-1)[0].item())
+        if torch.is_tensor(training_weight)
+        else float(training_weight)
+    )
+    pipe.last_flow_match_debug = {
+        "timestep_id": int(timestep_id.item()),
+        "timestep": float(timestep.detach().float().reshape(-1)[0].item()),
+        "input_latents_shape": list(inputs["input_latents"].shape),
+        "input_latents_dtype": str(inputs["input_latents"].dtype).removeprefix("torch."),
+        "noise_dtype": str(noise.dtype).removeprefix("torch."),
+        "noise_pred_shape": list(noise_pred.shape),
+        "noise_pred_dtype": str(noise_pred.dtype).removeprefix("torch."),
+        "training_target_shape": list(training_target.shape),
+        "training_target_dtype": str(training_target.dtype).removeprefix("torch."),
+        "mse_fp32": float(mse.detach().float().item()),
+        "training_weight": training_weight_value,
+        "loss_fm_dtype": str(loss.dtype).removeprefix("torch."),
+    }
+    pipe.last_loss_log = {"loss_fm": float(loss.detach().float().item())}
+    pipe.last_loss_debug = {
+        "loss_total_dtype": str(loss.dtype).removeprefix("torch."),
+        "loss_ntp_dtype": None,
+        "loss_fm_dtype": str(loss.dtype).removeprefix("torch."),
+        "ntp_loss_weight": 0.0,
+        "fm_loss_weight": 1.0,
+    }
     return loss
 
 
@@ -71,6 +99,21 @@ def SamtokEditingLoss(
         raise ValueError(f"Unknown SAMTok editing sample_type: {sample_type!r}")
     pipe.last_loss_log = {
         name: value.detach().float().item() for name, value in components.items()
+    }
+    pipe.last_loss_debug = {
+        "loss_total_dtype": str(loss.dtype).removeprefix("torch."),
+        "loss_ntp_dtype": (
+            str(components["loss_ntp"].dtype).removeprefix("torch.")
+            if "loss_ntp" in components
+            else None
+        ),
+        "loss_fm_dtype": (
+            str(components["loss_fm"].dtype).removeprefix("torch.")
+            if "loss_fm" in components
+            else None
+        ),
+        "ntp_loss_weight": float(ntp_weight),
+        "fm_loss_weight": float(fm_weight),
     }
     return loss
 

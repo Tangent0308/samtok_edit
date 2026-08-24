@@ -99,7 +99,7 @@ All shell paths can be overridden with environment variables documented near the
 top of each script. CSV loss logging is enabled by default; WandB can be enabled
 by adding the standard DiffSynth flags.
 
-## 4. Infer and evaluate
+## 4. Infer and run the Stage 1 evaluation
 
 ```bash
 python scripts/inference/infer_samtok_edit.py \
@@ -111,7 +111,13 @@ python scripts/inference/infer_samtok_edit.py \
 ```
 
 `scripts/inference/validate.py` runs a small JSONL set with one loaded pipeline.
-`scripts/eval/run_valset.py` produces source/A-stock/B-predicted/C-GT-CoT/D-no-CoT/pass-1-mask panels and, when mask decoder paths are supplied, per-tag cIoU/gIoU.
+`scripts/eval/run_stage1_eval.py` is the dedicated Stage 1 evaluation entry point.
+It compares stock Qwen-Image-Edit-2511, the initial SAMTok TE, direct editing
+with the Stage 1 TE, online predicted-CoT editing, and GT-CoT editing. It writes
+per-setting outputs/JSONL records and source/target/S1-S5 comparison panels.
+`scripts/eval/run_stage1_eval_8gpu.sh` runs settings 1 through 5 sequentially;
+each setting uses eight independent torchrun ranks and shards the 64 validation
+rows evenly across the GPUs before rank 0 aggregates that setting.
 
 ## Tests
 
