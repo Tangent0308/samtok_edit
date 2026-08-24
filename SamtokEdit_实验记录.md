@@ -14,7 +14,9 @@
 Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 2
 8 卡 smoke metadata、Stage 2a 离线 cache 和 Stage 2b 30-step 训练均已完整结束并通过
 强审计；Stage 2 DiT LoRA checkpoint、CSV 和 W&B 曲线均已保存；Stage 2 放大规模
-训练数据已完成真实 codec 构建、内容净化与 8 卡分片验收。
+训练数据已完成真实 codec 构建、内容净化与 8 卡分片验收。正式 Stage 2 训练仍在另一台
+共享机器上运行；本机已对当时最新完整的 step-4,000 checkpoint 完成 S6–S8 评测，
+并与已有 S1–S5 合并完成 8 setting 审计和可视化。
 
 ## 实验索引
 
@@ -31,6 +33,8 @@ Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 
 | E9 | Stage 2 8 卡 smoke 数据构建 | 准备每卡同比例的 `edit_mt + edit` 小规模 metadata | 通过 |
 | E10 | Stage 2 8 卡 smoke 训练 | 验证 TE 融合/cache、纯 FM、DiT LoRA 梯度和 DDP 更新 | 通过（30/30 step） |
 | E11 | Stage 2 放大规模数据构建 | 使用全部安全 `edit_mt`，按 2:1 配纯 edit 并做内容级验证隔离 | 通过 |
+| E12 | Stage 2 正式 8 卡训练 | 融合 Stage 1 TE 并在 165,960 份 cache 上训练 DiT LoRA | 运行中 |
+| E13 | Stage 2 step-4,000 三 setting 评测 | 评测 direct/online CoT/GT CoT 并与 S1–S5 汇总 | 完成（192/192） |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -1197,6 +1201,129 @@ W&B run name 为 `stage2-full-8gpu-1ep-20260824-020317`，entity/project 为
 - [Stage 2 cache](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_cache>)；
 - [Stage 2b 输出](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_dit_lora>)。
 
+## E13：Stage 2 step-4,000 三 setting 评测与八 setting 汇总
+
+### 开发、环境与 checkpoint 快照
+
+为不影响另一台机器正在使用的 `dev`，本次从 commit `fb54476` 创建了独立
+worktree `/opt/tiger/tanyue/samtok_edit_eval_stage2`，分支为 `dev-eval-stage2`；原
+`/opt/tiger/tanyue/samtok_edit` 仍保持在 `dev` 且工作区无修改。评测代码没有拆出
+Stage 2 专用 Python 实现，而是把 S1–S8 统一到 `scripts/eval/run_eval.py`；
+Stage 1/Stage 2 shell 只是选择 setting 和调度 8 个 rank 的 wrapper。
+
+本 worktree 按文档直接执行 `bash setup_env.sh`，环境位于
+`/opt/tiger/tanyue/samtok_edit_eval_stage2/.venv`。首次 bootstrap 时 ByteDance 内部
+PyPI 只有 uv 0.11.28，没有文档固定的 0.11.32，因此在项目依赖安装前失败。
+`setup_env.sh` 随后改为：仅当内部源缺少同一精确 uv 版本时，回退到可配置的公共
+PyPI；其余项目依赖仍使用内部源。修改后一次执行成功，实际验收环境为
+Python 3.11.2、uv 0.11.32、PyTorch 2.8.0+cu128、CUDA runtime 12.8、
+Transformers 5.12.1，`diffsynth.__file__` 指向当前 worktree 内的 editable
+DiffSynth-Studio。代码语法、shell 语法、`git diff --check` 和 26/26 单元测试通过。
+
+2026-08-24 15:13 UTC 启动评测时，正式 Stage 2 输出中最新完整文件为：
+
+```text
+stage2_dit_lora/step-4000.safetensors
+size     472,047,184 bytes
+SHA256   ed8d0450ee8e4f10bfb34af4c5dd5262b7444e39fa5876fd4a2eafc1ef8206b5
+```
+
+启动脚本当时将该绝对路径固定给 S6–S8，避免训练继续写出更新 checkpoint
+时混用权重。预检确认该 checkpoint 包含 1,440 个 BF16 tensor、720 对 LoRA
+A/B、235,929,600 个参数，精确覆盖正式 12 类 DiT target module。正式训练为 8 卡、
+per-device batch 1、gradient accumulation 1，因此 step 4,000 对应全局已消费
+`4,000 * 8 = 32,000` 个含重复样本 presentation，约占整个含 repeat epoch
+331,920 份样本的 9.64%；这不是 32,000 个唯一物理 row。本次完成评测时
+共享目录中最新完整 checkpoint 仍为 step-4,000。
+
+### 评测 setting 与运行结果
+
+数据严格复用 E7 的同一 64 条 metadata，SHA256 为
+`b4122cf8016915e8c7158e592f30b61bab8bd2f6219c075feb0924392cbed02e`。三组均加载
+Stage 1 `step-5000` TE LoRA（SHA256
+`940da3dbf49b8bd8352f92efca008ddb46caa622fb52938c014e2dc2b0347c52`）和上述
+Stage 2 DiT LoRA，并继续使用与 S1–S5 相同的 seed、40 steps、CFG 4.0、bf16、
+`edit_image_auto_resize=True` 和 `zero_cond_t=True`：
+
+6. `s6_stage2_direct`：`mt_cot=None, enable_samtok_cot=False`，不生成也不注入 CoT；
+7. `s7_stage2_online_cot`：用 Stage 1 TE 在线 greedy 生成 canonical mask-token CoT 再出图；
+8. `s8_stage2_gt_cot`：不生成 pass-1，直接使用验证行 canonical GT CoT。
+
+8 rank 严格串行运行 S6→S7→S8，每个 setting 中每卡 8 张。任务于
+15:13:18 UTC 启动，16:01:03 UTC 含离线审计全部完成，controller
+`status=complete`：
+
+| setting | PNG/sidecar | parser 分布 | 单样本平均耗时 |
+|---|---:|---|---:|
+| S6 Stage 2 direct | 64/64 | null 64 | 95.19 s |
+| S7 Stage 2 online CoT | 64/64 | strict 39, empty 25 | 95.62 s |
+| S8 Stage 2 GT CoT | 64/64 | provided:strict 39, provided:empty 25 | 95.19 s |
+
+运行时路由审计全部通过：S6 的 conditioning/pass-1/parser 为 64/64 null；
+S7 与旧 S4 使用同一 Stage 1 TE，`conditioned_mt_cot`、`pass1_raw`、
+`parse_layer` 均为 64/64 相等；S5/S8 的实际 conditioning 均为 64/64 与 GT 精确相等。
+因此 Stage 2 DiT LoRA 只改变出图阶段，没有污染或改变 online CoT 生成。
+
+### 八 setting 完整性与输出差异
+
+离线审计将已有 S1–S5 与新 S6–S8 按 metadata index 对齐。8 组各 64 张，
+512/512 个 PNG 全部可解码，每组均有 64 个唯一输出 hash；每条的 seed、steps、
+CFG、prompt、source/target、GT CoT、输出尺寸和 `world_size=8` 全部一致。
+
+Stage 1→Stage 2 的同 setting 对中没有任何逐字节相同图片，归一化 RGB MAE 均值为：
+
+| 对比 | byte-identical | normalized RGB MAE mean / median |
+|---|---:|---:|
+| S3 Stage 1 direct → S6 Stage 2 direct | 0/64 | 0.1411 / 0.1404 |
+| S4 Stage 1 online → S7 Stage 2 online | 0/64 | 0.1444 / 0.1222 |
+| S5 Stage 1 GT → S8 Stage 2 GT | 0/64 | 0.1439 / 0.1236 |
+| S3 direct → S4 online（Stage 1） | 0/64 | 0.0918 / 0.0564 |
+| S6 direct → S7 online（Stage 2） | 0/64 | 0.0517 / 0.0419 |
+| S4 online → S5 GT（Stage 1） | 27/64 | 0.0105 / 0.0054 |
+| S7 online → S8 GT（Stage 2） | 27/64 | 0.0119 / 0.0047 |
+
+S7/S8 逐字节相同的 27 张恰好对应 online/GT CoT canonical 精确相同的 27 条；
+其中 25 条是空 CoT，2 条是非空 motion。其余 37 条全部产生不同图片，再次证明
+CoT 条件真实进入 Stage 2 生成路径。Stage 2 direct→online 的差异均值低于 Stage 1
+direct→online，但 RGB MAE 只表示图像是否改变，不是语义编辑质量指标。
+
+### 64 张十列 panel 人工检查
+
+逐张检查了全部 64 张 Source/Target/S1–S8 十列 panel。当前可得出的保守结论是：
+
+- Stage 2 已产生明显的、不是简单复用 Stage 1 的行为。相比 S3–S5，S6–S8
+  通常更强地执行编辑和风格化；例如 `#0053` expressionist、`#0054` acrylic、
+  `#0056` neon、`#0058` oil painting、`#0060` stained glass 和 `#0063` glitch 的变化均更明显。
+- Stage 1 CoT 路径已记录的 framing/crop 伪影在对应 Stage 2 结果中全部消失：
+  `#0036` 的黑底圆形、`#0038/#0040` 的椭圆裁切、`#0037/#0055/#0057`
+  的额外画框/圆角边框在 S7/S8 中均不再出现；`#0061` 也不再生成 Stage 1 画框。
+  这是 step-4,000 最明确的改善之一。
+- 对部分 add 定位，CoT 相对 Stage 2 direct 有可见帮助：`#0000` 蝴蝶、`#0001`
+  跑车和 `#0003` 船帆中，S7/S8 的大小/位置通常比 S6 的过大或变形更接近
+  instruction/target。`#0025` 的黑车也没有重现 Stage 1 direct 把整个场景压暗的问题。
+- Stage 2 也有清楚的过强编辑/内容漂移，不能仅根据“改变更大”认定质量更好。
+  `#0023` 饼干改色范围偏大；`#0027` 把跑车的设计/车型也明显改掉；`#0034`
+  把大片建筑区域变成近乎纯白；`#0035` 过度重构蛋糕；`#0051` 把单个机械侧脸
+  改成了整墙显示屏。多个 style 样本（如 `#0053/#0055/#0057/#0058/#0063`）
+  还有鲜艳度/对比度偏高的倾向；`#0062` 的 mosaic 纹理则仍不够明确。
+- S7 与 S8 在多数 panel 中视觉接近，这个 64 条小集合上没有看到 GT CoT 稳定、
+  全面优于 online CoT。对应 27 条精确 CoT 时两者输出逐字节相同；其余差异
+  在 add/color/replace 中更明显，但有好有坏。因此当前更像是 DiT 已学会使用
+  CoT，但输出强度和保真性仍是主要限制；需要更大评测集和盲评/语义指标验证。
+
+本次比较没有引入 CLIP/DINO/编辑成功率等语义 metric；人工观察和 RGB MAE 都不足以
+用于宣称 Stage 2 整体质量已超过 baseline。但路由正确性、产物完整性、Stage 2
+权重的实际效果、CoT 的有效注入和 framing 伪影消失都已由本次完整评测证实。
+
+### 结果文件
+
+- [S6–S8 三组结果与总报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/three_settings>)；
+- [controller log](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/three_settings/logs/controller.log>)；
+- [controller status](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/three_settings/controller.status>)；
+- [8 setting 定量审计](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/eight_setting_audit.json>)；
+- [64 张 Source/Target/S1–S8 十列 panel](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/panels_with_instruction>)；
+- [7 类代表样本总览](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/panels_with_instruction/overview_representative_7types.jpg>)。
+
 ## 当前结论和下一步
 
 - Stage 1 单卡和 8 卡 smoke 训练链路均已跑通，DDP、loss、GT 监督、梯度、精度和
@@ -1216,3 +1343,8 @@ W&B run name 为 `stage2-full-8gpu-1ep-20260824-020317`，entity/project 为
   checkpoint、CSV 和 W&B 均符合当前方案与官方 runner 的实际语义。
 - Stage 2 放大规模训练数据已构建完成；最终 165,960 行保持 2:1 和逐卡同比例，并与 E7
   验证集在 identity、路径与图像 SHA256 层面严格互斥，可作为后续正式 Stage 2a 输入。
+- Stage 2 正式训练尚未结束；已对最新完整的 step-4,000 DiT LoRA（32,000 个含重复
+  sample presentation）完成 S6–S8 192/192 出图，并与 S1–S5 完成 512/512 审计和
+  64 张十列可视化。Stage 2 明显增强编辑/风格强度并消除了已知 CoT framing
+  伪影，但也存在过度编辑、内容漂移和过饱和；GT CoT 在该小集合上没有稳定视觉优势，
+  后续应对更新 checkpoint 做同协议对比，并增加语义指标或人工盲评。

@@ -16,6 +16,8 @@ Environment overrides:
   SAMTOK_EDIT_VENV           virtualenv path (default: <repo>/.venv)
   SAMTOK_EDIT_PYTHON         Python 3.11 executable (default: python3.11)
   SAMTOK_EDIT_INDEX          package index (default: ByteDance PyPI)
+  SAMTOK_EDIT_UV_BOOTSTRAP_INDEX
+                             uv fallback index (default: public PyPI)
   SAMTOK_EDIT_UV_VERSION     uv version used only when bootstrapping uv
   SAMTOK_EDIT_TORCH_BACKEND  uv PyTorch backend (default: cu128)
   SAMTOK_EDIT_REQUIRE_CUDA   require a usable CUDA device: 1 or 0 (default: 1)
@@ -92,7 +94,11 @@ if [[ -z "$UV_EXECUTABLE" ]]; then
     echo "Install uv==$UV_VERSION, then rerun with UV_BIN=/path/to/uv." >&2
     exit 1
   fi
-  "$PYTHON_BIN" -m pip install --user --index-url "$PACKAGE_INDEX" "uv==$UV_VERSION"
+  if ! "$PYTHON_BIN" -m pip install --user --index-url "$PACKAGE_INDEX" "uv==$UV_VERSION"; then
+    UV_BOOTSTRAP_INDEX="${SAMTOK_EDIT_UV_BOOTSTRAP_INDEX:-https://pypi.org/simple}"
+    echo "[setup] uv==$UV_VERSION is unavailable from the project index; retrying ${UV_BOOTSTRAP_INDEX}"
+    "$PYTHON_BIN" -m pip install --user --index-url "$UV_BOOTSTRAP_INDEX" "uv==$UV_VERSION"
+  fi
   UV_EXECUTABLE="${HOME}/.local/bin/uv"
 fi
 if [[ ! -x "$UV_EXECUTABLE" ]]; then

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Run the five-setting SAMTokEdit Stage 1 image-editing evaluation.
+"""Run the unified eight-setting SAMTokEdit image-editing evaluation.
 
 The script deliberately separates the stock Qwen-Image-Edit-2511 text encoder,
-the initial SAMTok gres-ft text encoder, and the Stage-1 TE-LoRA checkpoint.  A
-``--dry_run`` performs all metadata/model-artifact checks without loading a
-model or producing an image.
+the initial SAMTok gres-ft text encoder, the Stage-1 TE-LoRA checkpoint, and an
+optional Stage-2 DiT-LoRA checkpoint.  A ``--dry_run`` performs all metadata/
+model-artifact checks without loading a model or producing an image.
 """
 
 from __future__ import annotations
@@ -14,11 +14,13 @@ import gc
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from collections import Counter
 from dataclasses import asdict, dataclass
 from glob import glob
+from math import prod
 from pathlib import Path
 
 import torch
@@ -129,6 +131,30 @@ SETTING_SPECS = (
         cot_mode="ground_truth",
         description="Stage-1 TE edits with validation-row ground-truth CoT",
     ),
+    SettingSpec(
+        key="s6_stage2_direct",
+        number=6,
+        text_encoder="Qwen2.5-VL-7B-SAMTok-gres-ft + Stage-1 TE LoRA",
+        stage1_te_lora=True,
+        cot_mode="disabled",
+        description="Stage-2 DiT LoRA direct edit, no CoT generation",
+    ),
+    SettingSpec(
+        key="s7_stage2_online_cot",
+        number=7,
+        text_encoder="Qwen2.5-VL-7B-SAMTok-gres-ft + Stage-1 TE LoRA",
+        stage1_te_lora=True,
+        cot_mode="online",
+        description="Stage-2 DiT LoRA edit with online mask-token CoT",
+    ),
+    SettingSpec(
+        key="s8_stage2_gt_cot",
+        number=8,
+        text_encoder="Qwen2.5-VL-7B-SAMTok-gres-ft + Stage-1 TE LoRA",
+        stage1_te_lora=True,
+        cot_mode="ground_truth",
+        description="Stage-2 DiT LoRA edit with validation ground-truth CoT",
+    ),
 )
 SETTING_BY_KEY = {spec.key: spec for spec in SETTING_SPECS}
 SETTING_ALIASES = {
@@ -159,7 +185,7 @@ def parse_settings(values: list[str]) -> list[SettingSpec]:
             key = SETTING_ALIASES.get(token, token)
             if key not in SETTING_BY_KEY:
                 allowed = ", ".join(spec.key for spec in SETTING_SPECS)
-                raise ValueError(f"Unknown setting {token!r}; expected 1-5 or one of: {allowed}")
+                raise ValueError(f"Unknown setting {token!r}; expected 1-8 or one of: {allowed}")
             if key not in keys:
                 keys.append(key)
     return [SETTING_BY_KEY[key] for key in keys]
@@ -173,7 +199,7 @@ def initialize_distributed(device: str) -> tuple[DistributedContext, str]:
     if not context.enabled:
         return context, device
     if not torch.cuda.is_available():
-        raise RuntimeError("Distributed Stage 1 evaluation requires CUDA")
+        raise RuntimeError("Distributed SAMTokEdit evaluation requires CUDA")
     if local_rank >= torch.cuda.device_count():
         raise RuntimeError(
             f"LOCAL_RANK={local_rank} exceeds visible CUDA device count "
@@ -340,14 +366,161 @@ def _require_files(label: str, paths: list[Path]) -> None:
         raise FileNotFoundError(f"Missing {label}: {missing[:5]}")
 
 
+DIT_TARGET_FAMILIES = (
+    "to_q",
+    "to_k",
+    "to_v",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_out.0",
+    "to_add_out",
+    "img_mlp.net.2",
+    "img_mod.1",
+    "txt_mlp.net.2",
+    "txt_mod.1",
+)
+CHECKPOINT_PATTERN = re.compile(r"^step-(\d+)\.safetensors$")
+
+
+def _lora_family(key: str) -> str | None:
+    for family in DIT_TARGET_FAMILIES:
+        if f".{family}.lora_" in key:
+            return family
+    return None
+
+
+def validate_stage2_checkpoint(
+    checkpoint: Path,
+    *,
+    training_world_size: int,
+) -> dict:
+    """Strongly validate that ``checkpoint`` is the formal DiT-only LoRA."""
+
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Stage-2 DiT LoRA does not exist: {checkpoint}")
+    match = CHECKPOINT_PATTERN.fullmatch(checkpoint.name)
+    if match is None:
+        raise ValueError(
+            "Stage-2 checkpoint filename must be step-<N>.safetensors, got "
+            f"{checkpoint.name!r}"
+        )
+    checkpoint_step = int(match.group(1))
+    if checkpoint_step <= 0 or training_world_size <= 0:
+        raise ValueError("checkpoint step and training_world_size must be positive")
+
+    dtype_counts: Counter[str] = Counter()
+    family_counts: Counter[str] = Counter()
+    parameter_count = 0
+    with safe_open(checkpoint, framework="pt", device="cpu") as handle:
+        keys = list(handle.keys())
+        key_set = set(keys)
+        for key in keys:
+            tensor_slice = handle.get_slice(key)
+            dtype_counts[str(tensor_slice.get_dtype())] += 1
+            parameter_count += prod(tensor_slice.get_shape())
+            family = _lora_family(key)
+            if family is None:
+                raise ValueError(
+                    f"Stage-2 checkpoint contains a non-target DiT LoRA key: {key}"
+                )
+            family_counts[family] += 1
+
+    lora_a = [key for key in keys if ".lora_A." in key]
+    lora_b = [key for key in keys if ".lora_B." in key]
+    non_lora = [
+        key for key in keys if ".lora_A." not in key and ".lora_B." not in key
+    ]
+    missing_pairs = []
+    for key in lora_a:
+        partner = key.replace(".lora_A.", ".lora_B.", 1)
+        if partner not in key_set:
+            missing_pairs.append((key, partner))
+    for key in lora_b:
+        partner = key.replace(".lora_B.", ".lora_A.", 1)
+        if partner not in key_set:
+            missing_pairs.append((key, partner))
+    if non_lora or missing_pairs or len(lora_a) != len(lora_b):
+        raise ValueError(
+            "Stage-2 checkpoint must contain paired DiT LoRA A/B tensors only; "
+            f"keys={len(keys)}, A={len(lora_a)}, B={len(lora_b)}, "
+            f"non_lora={len(non_lora)}, missing_pairs={len(missing_pairs)}"
+        )
+    if len(keys) != 1440 or len(lora_a) != 720:
+        raise ValueError(
+            "Stage-2 checkpoint does not match the official 2511 rank-32 target "
+            f"layout: keys={len(keys)}, pairs={len(lora_a)}"
+        )
+    if set(dtype_counts) != {"BF16"}:
+        raise ValueError(
+            f"Stage-2 checkpoint must be entirely BF16, got {dict(dtype_counts)}"
+        )
+    expected_family_counts = {family: 120 for family in DIT_TARGET_FAMILIES}
+    if dict(family_counts) != expected_family_counts:
+        raise ValueError(
+            "Unexpected Stage-2 target-family counts: "
+            f"{dict(family_counts)} != {expected_family_counts}"
+        )
+
+    training_args_path = checkpoint.parent / "training_args.json"
+    training_args = None
+    if training_args_path.is_file():
+        training_args = json.loads(training_args_path.read_text(encoding="utf-8"))
+        expected = {
+            "lora_base_model": "dit",
+            "lora_rank": 32,
+            "dataset_repeat": 2,
+            "num_epochs": 1,
+            "gradient_accumulation_steps": 1,
+        }
+        mismatches = {
+            key: {"expected": value, "actual": training_args.get(key)}
+            for key, value in expected.items()
+            if training_args.get(key) != value
+        }
+        if mismatches:
+            raise ValueError(
+                f"Stage-2 training_args do not match the formal run: {mismatches}"
+            )
+
+    gradient_accumulation_steps = (
+        int(training_args["gradient_accumulation_steps"]) if training_args else 1
+    )
+    samples_per_optimizer_step = training_world_size * gradient_accumulation_steps
+    return {
+        "dit_lora": str(checkpoint.resolve()),
+        "dit_lora_sha256": sha256_file(checkpoint),
+        "dit_lora_size_bytes": checkpoint.stat().st_size,
+        "dit_lora_tensor_keys": len(keys),
+        "dit_lora_pairs": len(lora_a),
+        "dit_lora_parameter_count": parameter_count,
+        "dit_lora_dtypes": dict(dtype_counts),
+        "dit_lora_target_family_counts": dict(sorted(family_counts.items())),
+        "checkpoint_step": checkpoint_step,
+        "training_args": str(training_args_path.resolve())
+        if training_args_path.is_file()
+        else None,
+        "training_world_size": training_world_size,
+        "samples_per_optimizer_step": samples_per_optimizer_step,
+        "samples_consumed_with_repeat": checkpoint_step
+        * samples_per_optimizer_step,
+        "consumption_note": (
+            "Counts repeated sample presentations consumed by all training ranks "
+            "through this checkpoint; it is not a unique-physical-row count."
+        ),
+    }
+
+
 def validate_model_artifacts(
     qwen_2511_dir: Path,
     samtok_te_dir: Path,
     merged_te_dir: Path,
     stage1_te_lora: Path,
+    stage2_dit_lora: Path | None,
+    training_world_size: int,
     settings: list[SettingSpec],
 ) -> dict:
-    """Check exact model roles and the Stage-1 checkpoint without loading weights."""
+    """Check exact base/LoRA model roles without loading full model tensors."""
 
     model_index_path = qwen_2511_dir / "model_index.json"
     _require_files("Qwen-Image-Edit-2511 model index", [model_index_path])
@@ -450,6 +623,16 @@ def validate_model_artifacts(
                 "stage1_te_lora_tensor_keys": len(keys),
                 "stage1_te_lora_pairs": lora_a,
             }
+        )
+    needs_stage2 = any(spec.number >= 6 for spec in settings)
+    if needs_stage2:
+        if stage2_dit_lora is None:
+            raise ValueError("--dit_lora is required for settings 6-8")
+        report.update(
+            validate_stage2_checkpoint(
+                stage2_dit_lora,
+                training_world_size=training_world_size,
+            )
         )
     return report
 
@@ -766,6 +949,9 @@ def make_panels(
             3: "S3 Stage-1 direct",
             4: "S4 Online CoT",
             5: "S5 GT CoT",
+            6: "S6 Stage-2 direct",
+            7: "S7 Stage-2 online CoT",
+            8: "S8 Stage-2 GT CoT",
         }.get(spec.number, f"S{spec.number}")
         for spec in settings
     ]
@@ -872,8 +1058,13 @@ def build_run_config(
     context: DistributedContext | None = None,
 ):
     context = context or DistributedContext()
+    has_stage2 = any(spec.number >= 6 for spec in settings)
     return {
-        "protocol": "samtok_edit_stage1_evaluation_v1",
+        "protocol": (
+            "samtok_edit_unified_evaluation_v2"
+            if has_stage2
+            else "samtok_edit_stage1_evaluation_v1"
+        ),
         "settings": [asdict(spec) for spec in settings],
         "generation": {
             "seed_rule": f"{args.seed} + metadata_index",
@@ -886,7 +1077,11 @@ def build_run_config(
             "zero_cond_t": True,
             "height_width": "source image size; pipeline rounds each dimension up to /16",
             "torch_dtype": "bfloat16",
-            "dit_weights": "Qwen-Image-Edit-2511 stock for all settings",
+            "dit_weights": (
+                "Qwen-Image-Edit-2511 + explicit Stage-2 DiT LoRA for S6-S8"
+                if has_stage2
+                else "Qwen-Image-Edit-2511 stock for all settings"
+            ),
         },
         "data": data_report,
         "models": model_report,
@@ -928,10 +1123,20 @@ def main(argv: list[str] | None = None):
     parser.add_argument("--merged_te_dir", type=Path, default=DEFAULT_MERGED_TE)
     parser.add_argument("--stage1_te_lora", type=Path, default=DEFAULT_STAGE1_TE_LORA)
     parser.add_argument(
+        "--dit_lora",
+        type=Path,
+        default=None,
+        help="required for Stage-2 settings S6-S8; ignored by S1-S5",
+    )
+    parser.add_argument("--training_world_size", type=int, default=8)
+    parser.add_argument(
         "--settings",
         nargs="+",
-        default=["all"],
-        help="all, numbers 1-5, or full setting keys (space/comma separated)",
+        default=["1", "2", "3", "4", "5"],
+        help=(
+            "default: 1-5 for backward compatibility; use all, numbers 1-8, "
+            "or full setting keys (space/comma separated)"
+        ),
     )
     parser.add_argument("--num_inference_steps", type=int, default=40)
     parser.add_argument("--cfg_scale", type=float, default=4.0)
@@ -952,7 +1157,7 @@ def main(argv: list[str] | None = None):
     parser.add_argument(
         "--finalize_only",
         action="store_true",
-        help="aggregate five completed per-setting runs and build panels; load no model",
+        help="aggregate the selected completed per-setting runs and build panels; load no model",
     )
     args = parser.parse_args(argv)
 
@@ -972,7 +1177,7 @@ def main(argv: list[str] | None = None):
     if context.enabled and len(settings) != 1:
         parser.error(
             "A distributed invocation must run exactly one setting; use the 8-GPU "
-            "controller to run settings 1-5 sequentially"
+            "controller to run the selected settings sequentially"
         )
     if context.enabled and args.finalize_only:
         parser.error("--finalize_only must run in one process")
@@ -986,6 +1191,8 @@ def main(argv: list[str] | None = None):
             args.samtok_te_dir,
             args.merged_te_dir,
             args.stage1_te_lora,
+            args.dit_lora,
+            args.training_world_size,
             settings,
         )
         return selected_rows, selected_data_report, selected_model_report
@@ -1023,8 +1230,6 @@ def main(argv: list[str] | None = None):
         return
 
     if args.finalize_only:
-        if settings != list(SETTING_SPECS):
-            parser.error("--finalize_only requires --settings all")
         if not args.output_dir.is_dir():
             parser.error(f"Output directory does not exist: {args.output_dir}")
         setting_configs = []
@@ -1056,6 +1261,15 @@ def main(argv: list[str] | None = None):
                 raise RuntimeError(
                     "Per-setting metadata hashes do not match finalization metadata"
                 )
+            if any(spec.number >= 6 for spec in settings):
+                dit_hashes = {
+                    config["models"]["dit_lora_sha256"]
+                    for config in setting_configs
+                }
+                if dit_hashes != {model_report["dit_lora_sha256"]}:
+                    raise RuntimeError(
+                        "Per-setting Stage-2 DiT LoRA hashes do not match finalization"
+                    )
             final_context = DistributedContext(world_size=world_sizes.pop())
             run_config = build_run_config(
                 args, settings, data_report, model_report, final_context
@@ -1184,6 +1398,35 @@ def main(argv: list[str] | None = None):
             device=args.device,
         )
         for spec in stage1_specs:
+            records_by_setting[spec.key] = run_one_setting(
+                pipe,
+                spec,
+                worker_rows,
+                args.dataset_base,
+                args.output_dir,
+                args.seed,
+                args.num_inference_steps,
+                args.cfg_scale,
+                args.samtok_max_new_tokens,
+                args.resume,
+                context.rank,
+                context.world_size,
+                not context.enabled,
+            )
+        del pipe
+        release_cuda_memory()
+
+    stage2_specs = [spec for spec in settings if spec.number in {6, 7, 8}]
+    if stage2_specs:
+        pipe = build_pipeline(
+            args.qwen_2511_dir,
+            args.samtok_te_dir,
+            args.merged_te_dir,
+            te_lora=args.stage1_te_lora,
+            dit_lora=args.dit_lora,
+            device=args.device,
+        )
+        for spec in stage2_specs:
             records_by_setting[spec.key] = run_one_setting(
                 pipe,
                 spec,

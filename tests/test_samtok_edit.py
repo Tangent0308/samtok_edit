@@ -57,7 +57,7 @@ from train_samtok_edit import (  # noqa: E402
     samtok_parser,
     validate_wandb_credentials,
 )
-from run_stage1_eval import (  # noqa: E402
+from run_eval import (  # noqa: E402
     SETTING_SPECS,
     load_and_validate_rows,
     parse_settings,
@@ -227,7 +227,7 @@ class SamtokEditTests(unittest.TestCase):
 
     def test_stage1_eval_five_setting_contract(self):
         settings = parse_settings(["1", "s2", "3,4", "s5"])
-        self.assertEqual(settings, list(SETTING_SPECS))
+        self.assertEqual(settings, list(SETTING_SPECS[:5]))
         self.assertEqual(
             [setting.cot_mode for setting in settings],
             ["disabled", "disabled", "disabled", "online", "ground_truth"],
@@ -244,7 +244,7 @@ class SamtokEditTests(unittest.TestCase):
             "cfg_scale": 4.0,
             "samtok_max_new_tokens": 128,
         }
-        with mock.patch("run_stage1_eval.run_edit", return_value="output") as run:
+        with mock.patch("run_eval.run_edit", return_value="output") as run:
             for setting in settings[1:]:
                 with self.subTest(setting=setting.key):
                     run.reset_mock()
@@ -280,6 +280,48 @@ class SamtokEditTests(unittest.TestCase):
         self.assertEqual((kwargs["height"], kwargs["width"]), (1024, 1235))
         self.assertTrue(kwargs["edit_image_auto_resize"])
         self.assertTrue(kwargs["zero_cond_t"])
+
+    def test_stage2_eval_three_setting_contract(self):
+        settings = parse_settings(["6", "s7", "s8_stage2_gt_cot"])
+        self.assertEqual(settings, list(SETTING_SPECS[5:]))
+        self.assertEqual(
+            [setting.cot_mode for setting in settings],
+            ["disabled", "online", "ground_truth"],
+        )
+        self.assertEqual(
+            [setting.stage1_te_lora for setting in settings],
+            [True, True, True],
+        )
+        self.assertEqual(
+            [setting.number for setting in settings],
+            [6, 7, 8],
+        )
+
+        row = {"prompt": "Turn the cat blue", "mt_cot": to_cot([])}
+        common = {
+            "seed": 7,
+            "num_inference_steps": 40,
+            "cfg_scale": 4.0,
+            "samtok_max_new_tokens": 128,
+        }
+        with mock.patch("run_eval.run_edit", return_value="output") as run:
+            for setting in settings:
+                with self.subTest(setting=setting.key):
+                    run.reset_mock()
+                    self.assertEqual(
+                        run_samtok_setting(object(), setting, row, "source", common),
+                        "output",
+                    )
+                    kwargs = run.call_args.kwargs
+                    if setting.number == 6:
+                        self.assertFalse(kwargs["enable_samtok_cot"])
+                        self.assertIsNone(kwargs["mt_cot"])
+                    elif setting.number == 7:
+                        self.assertTrue(kwargs["enable_samtok_cot"])
+                        self.assertIsNone(kwargs["mt_cot"])
+                    else:
+                        self.assertFalse(kwargs["enable_samtok_cot"])
+                        self.assertEqual(kwargs["mt_cot"], row["mt_cot"])
 
     def test_stage1_eval_metadata_validation_checks_all_rows_before_slicing(self):
         with tempfile.TemporaryDirectory() as folder:
