@@ -64,12 +64,54 @@ from run_eval import (  # noqa: E402
     run_samtok_setting,
     stock_edit,
 )
+from make_stage1_category_comparisons import (  # noqa: E402
+    crop_decoded_mask_cells,
+    validate_matching_online_records,
+)
 
 
 SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
 
 
 class SamtokEditTests(unittest.TestCase):
+    def test_category_comparison_requires_identical_stage1_stage2_online_cot(self):
+        stage1 = [
+            {
+                "metadata_index": 0,
+                "source": "source.jpg",
+                "target": "target.jpg",
+                "prompt": "edit it",
+                "gt_mt_cot": "[]",
+                "conditioned_mt_cot": "[]",
+                "pass1_raw": "[]<|im_end|>",
+                "parse_layer": "empty",
+            }
+        ]
+        stage2 = [dict(stage1[0])]
+        audit = validate_matching_online_records(stage1, stage2)
+        self.assertTrue(audit["all_equal"])
+        self.assertEqual(audit["matching_records"], 1)
+
+        stage2[0]["conditioned_mt_cot"] = "different"
+        with self.assertRaisesRegex(ValueError, "conditioned_mt_cot"):
+            validate_matching_online_records(stage1, stage2)
+
+    def test_category_mask_sheet_uses_separate_decoded_cells(self):
+        panel = Image.new("RGB", (1600, 410), "white")
+        for column, color in enumerate(
+            [(10, 10, 10), (240, 20, 20), (20, 240, 20), (20, 20, 240), (80, 80, 80)]
+        ):
+            panel.paste(
+                Image.new("RGB", (320, 320), color),
+                (column * 320, 90),
+            )
+
+        gt, online = crop_decoded_mask_cells(panel)
+        self.assertEqual(gt.size, (320, 320))
+        self.assertEqual(online.size, (320, 320))
+        self.assertEqual(gt.getpixel((10, 10)), (20, 240, 20))
+        self.assertEqual(online.getpixel((10, 10)), (240, 20, 20))
+
     def test_uv_environment_definition_has_no_lockfile_workflow(self):
         with (REPO_ROOT / "pyproject.toml").open("rb") as handle:
             project = tomllib.load(handle)["project"]

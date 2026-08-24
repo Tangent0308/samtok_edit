@@ -388,7 +388,10 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 │   ├── eval/run_eval.py                   # S1–S8 统一评测入口
 │   ├── eval/run_stage1_eval_8gpu.sh
 │   ├── eval/run_stage2_eval_8gpu.sh
-│   └── eval/analyze_eight_setting_eval.py
+│   ├── eval/analyze_stage1_eval.py
+│   ├── eval/analyze_stage1_cot_masks.py
+│   ├── eval/analyze_eight_setting_eval.py
+│   └── eval/make_stage1_category_comparisons.py
 ├── tests/test_samtok_edit.py
 └── SamtokEdit_训练方案_当前实现.md
 ```
@@ -1112,6 +1115,32 @@ mask 和 GT decoded mask 相对原始标注的重合度，以区分 Online CoT �
 `report.json` 保存逐样本/汇总指标，`panels/` 保存 Source、Online decoded、GT decoded、
 raw annotation 和 Online-vs-GT overlap 可视化，颜色分别为红、绿、蓝。
 
+`scripts/eval/make_stage1_category_comparisons.py` 在上述完整出图和 mask decode 审计之后，
+按 `provenance.edit_type` 生成分类汇总图：
+
+```bash
+python scripts/eval/make_stage1_category_comparisons.py
+```
+
+该步骤不加载任何模型。每个类别生成两张大图：`<type>_final_results.jpg` 逐行展示该类
+全部样本，七列固定为 Original、GT edited image、S1–S5；`<type>_mask_comparison.jpg`
+逐行展示 raw GT raster mask、GT token decode 和 online token decode。三种 mask 都在各自
+独立的 source-image overlay 面板中展示，不使用把三种 mask 混到同一张图上的 overlap
+表示；颜色分别为蓝、绿、红。空 CoT 使用原图加显式 `EMPTY ... TOKEN MASK` 标记。
+每行顶部保留 metadata index 和完整 instruction。脚本同时写 `manifest.json`，记录每类
+样本 index、非空 CoT/raw mask 数量、图片尺寸、绝对路径和 SHA256；默认输出目录是
+`five_settings/analysis/category_comparisons/`。
+
+同一脚本也负责 S1–S8 的分类汇总，不另设 Stage 2 可视化实现。传入
+`--stage2_root <S6-S8结果目录>` 后，最终结果大图扩展为 Original、GT edited image、
+S1–S8 共十列；mask 大图扩展为四个彼此独立的 source-image overlay：raw GT raster、
+GT token decode、Stage 1 online token decode、Stage 2 online token decode。S7 的在线
+CoT 仍由与 S4 相同的 Stage 1 TE 产生；脚本会先对 64 条 S4/S7 的 metadata、输入、GT、
+conditioned CoT、pass-1 原文和 parser 层逐字段硬校验。全部相等时，两列各自展示同一组
+真实 codec decode 的独立副本，并在 manifest 记录复用依据；任一字段不同则拒绝生成，
+避免把未经 decode 的 Stage 2 token 错配进图中。默认输出到同 step 的
+`eight_settings_comparison/analysis/category_comparisons/`。
+
 ### 4.12 Stage 2 三 setting 评测与八 setting 汇总
 
 `scripts/eval/run_eval.py` 是 S1–S8 共用的统一入口。它在与 Stage 1 完全相同的 64 条验证集
@@ -1154,4 +1183,6 @@ python -m unittest tests/test_samtok_edit.py
 
 测试覆盖 canonical CoT、分层 parser、DDP schedule、非 canonical 拒绝、codec 空 mask 拒绝、
 英文模板、全局随机抽样与 worker 分区、state-dict converter、KV-cache 转发和新版 DiffSynth
-分片路径兼容。测试运行结果和训练/数据实验结果统一记录在 `SamtokEdit_实验记录.md`。
+分片路径兼容，以及分类 mask 大图从审计 panel 中提取 GT/online 独立面板的列顺序、
+S1–S8 分类汇总对 S4/S7 在线 CoT 完全一致性的强制校验。
+测试运行结果和训练/数据实验结果统一记录在 `SamtokEdit_实验记录.md`。

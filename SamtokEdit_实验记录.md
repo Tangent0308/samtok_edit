@@ -784,6 +784,46 @@ setting 读错结果；但 RGB MAE 仅用于检查“条件是否改变输出”
 - decoded mask 空间重合报告和 39 张叠图：
   `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/decoded_mask_overlap/`。
 
+### 按 edit type 汇总的对比大图
+
+为便于逐类别检查全部样本，又执行了无模型的汇总步骤：
+
+```bash
+.venv/bin/python scripts/eval/make_stage1_category_comparisons.py
+```
+
+脚本直接读取已经完成的 S1–S5 PNG、source/GT 图片、原始 CrispEdit raster mask，以及
+`analyze_stage1_cot_masks.py` 已验收的独立 decoded-mask overlay，不重新加载
+Qwen、SAMTok codec 或其他模型，也没有干扰正在运行的 Stage 2 训练。7 个 edit type
+各生成两张图，共 14 张：
+
+1. `<type>_final_results.jpg`：该类别全部样本，每行写完整 instruction，七列依次为
+   Original、GT edited image、S1 Stock 2511、S2 Initial direct、S3 Stage-1 direct、
+   S4 Online CoT、S5 GT CoT。
+2. `<type>_mask_comparison.jpg`：该类别全部样本，三列分别为蓝色 raw GT raster mask、
+   绿色 GT mask-token decode、红色 online mask-token decode。三种结果分别 overlay
+   在三个独立原图面板上，没有把三种 mask 混合到同一个面板。
+
+分类结果路径：
+
+| edit type | 样本数 | 最终出图对比 | mask 对比 |
+|---|---:|---|---|
+| add | 10 | [add_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/add_final_results.jpg>) | [add_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/add_mask_comparison.jpg>) |
+| background | 13 | [background_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/background_final_results.jpg>) | [background_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/background_mask_comparison.jpg>) |
+| color | 13 | [color_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/color_final_results.jpg>) | [color_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/color_mask_comparison.jpg>) |
+| motion | 5 | [motion_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/motion_final_results.jpg>) | [motion_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/motion_mask_comparison.jpg>) |
+| remove | 6 | [remove_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/remove_final_results.jpg>) | [remove_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/remove_mask_comparison.jpg>) |
+| replace | 6 | [replace_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/replace_final_results.jpg>) | [replace_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/replace_mask_comparison.jpg>) |
+| style | 11 | [style_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/style_final_results.jpg>) | [style_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/style_mask_comparison.jpg>) |
+
+`background` 的 13 条和 `style` 的 11 条 raw raster mask 非空，但按当前 CoT 数据规范，
+GT 和 online CoT 都是 canonical 空表，因此两列 token decode 使用原图并显式标记
+`EMPTY ... TOKEN MASK`；这不是 decode 缺失。5 条 `motion` 中另有 1 条 raw/GT/online
+mask 全为空。其他 39 条均使用此前真实 codec decode 后的独立 overlay。
+
+- [分类汇总目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/>)
+- [manifest.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/manifest.json>)：记录 14 张图的尺寸、SHA256、各类 metadata index 和逐样本 mask 状态。
+
 ## E9：Stage 2 8 卡 smoke 数据构建
 
 ### 目标与配比
@@ -1207,7 +1247,8 @@ W&B run name 为 `stage2-full-8gpu-1ep-20260824-020317`，entity/project 为
 
 为不影响另一台机器正在使用的 `dev`，本次从 commit `fb54476` 创建了独立
 worktree `/opt/tiger/tanyue/samtok_edit_eval_stage2`，分支为 `dev-eval-stage2`；原
-`/opt/tiger/tanyue/samtok_edit` 仍保持在 `dev` 且工作区无修改。评测代码没有拆出
+`/opt/tiger/tanyue/samtok_edit` 仍保持在 `dev` 且工作区无修改。分类展示开发前又将
+最新 `dev` commit `be18076` 合入本分支，以其 Stage 1 分类图实现为共同基线。评测代码没有拆出
 Stage 2 专用 Python 实现，而是把 S1–S8 统一到 `scripts/eval/run_eval.py`；
 Stage 1/Stage 2 shell 只是选择 setting 和调度 8 个 rank 的 wrapper。
 
@@ -1315,6 +1356,41 @@ direct→online，但 RGB MAE 只表示图像是否改变，不是语义编辑�
 用于宣称 Stage 2 整体质量已超过 baseline。但路由正确性、产物完整性、Stage 2
 权重的实际效果、CoT 的有效注入和 framing 伪影消失都已由本次完整评测证实。
 
+### 按 edit type 汇总的八 setting 对比大图
+
+在合入最新 `dev` 的 Stage 1 分类展示实现后，使用同一个
+`make_stage1_category_comparisons.py` 增加可选的 `--stage2_root`，没有复制一套 Stage 2
+可视化代码。本次执行：
+
+```bash
+.venv/bin/python scripts/eval/make_stage1_category_comparisons.py \
+  --stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/three_settings
+```
+
+排版、分类、单元尺寸、完整 instruction 和颜色语义均沿用 Stage 1 实现。每个 edit type
+生成两张大图：最终结果图为 Original、GT edited image、S1–S8 共十个独立列；mask 图为
+raw GT raster、GT mask-token decode、Stage 1 online mask-token decode、Stage 2 online
+mask-token decode 共四个独立的 source-image overlay，未将多种 mask 混合在同一格。
+
+S7 仍由冻结的 Stage 1 TE 生成在线 CoT。脚本在出图前对 S4/S7 的 64 条记录逐项核对
+metadata index、source、target、prompt、GT CoT、实际 conditioned CoT、pass-1 原文和
+parser 层，64/64 全部相等。因此两个 online 列分别展示同一真实 codec decode overlay
+的独立副本；这不是缺少 Stage 2 decode，而是相同 mask token 必然得到相同 decode 的结果。
+
+| edit type | 样本数 | S1–S8 最终出图对比 | 四列 mask overlay 对比 |
+|---|---:|---|---|
+| add | 10 | [add_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/add_final_results.jpg>) | [add_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/add_mask_comparison.jpg>) |
+| background | 13 | [background_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/background_final_results.jpg>) | [background_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/background_mask_comparison.jpg>) |
+| color | 13 | [color_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/color_final_results.jpg>) | [color_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/color_mask_comparison.jpg>) |
+| motion | 5 | [motion_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/motion_final_results.jpg>) | [motion_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/motion_mask_comparison.jpg>) |
+| remove | 6 | [remove_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/remove_final_results.jpg>) | [remove_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/remove_mask_comparison.jpg>) |
+| replace | 6 | [replace_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/replace_final_results.jpg>) | [replace_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/replace_mask_comparison.jpg>) |
+| style | 11 | [style_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/style_final_results.jpg>) | [style_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/style_mask_comparison.jpg>) |
+
+14/14 张 JPEG 均完成解码和 SHA256 复核；最终结果图宽度为 2,800 px，mask 图宽度为
+1,280 px，各类别样本数之和为 64。完整逐样本路由、mask 状态、图片尺寸和 SHA256 见
+[manifest.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/manifest.json>)。
+
 ### 结果文件
 
 - [S6–S8 三组结果与总报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/three_settings>)；
@@ -1323,6 +1399,7 @@ direct→online，但 RGB MAE 只表示图像是否改变，不是语义编辑�
 - [8 setting 定量审计](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/eight_setting_audit.json>)；
 - [64 张 Source/Target/S1–S8 十列 panel](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/panels_with_instruction>)；
 - [7 类代表样本总览](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/panels_with_instruction/overview_representative_7types.jpg>)。
+- [7 类共 14 张 S1–S8 分类大图](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/eight_settings_comparison/analysis/category_comparisons/>)。
 
 ## 当前结论和下一步
 
