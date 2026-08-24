@@ -65,6 +65,7 @@ from run_eval import (  # noqa: E402
     stock_edit,
 )
 from make_stage1_category_comparisons import (  # noqa: E402
+    build_comparison_labels,
     crop_decoded_mask_cells,
     validate_matching_online_records,
 )
@@ -74,6 +75,17 @@ SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
 
 
 class SamtokEditTests(unittest.TestCase):
+    def test_category_comparison_builds_multi_checkpoint_columns(self):
+        final_labels, mask_labels, title = build_comparison_labels([4000, 8000])
+        self.assertEqual(len(final_labels), 13)
+        self.assertEqual(len(mask_labels), 5)
+        self.assertEqual(title, "S1-S11 checkpoint comparison")
+        self.assertEqual(final_labels[7], "S6 Stage-2 step-4000 direct")
+        self.assertEqual(final_labels[10], "S9 Stage-2 step-8000 direct")
+        self.assertEqual(
+            mask_labels[-1], "Stage-2 step-8000 online token decode (red)"
+        )
+
     def test_category_comparison_requires_identical_stage1_stage2_online_cot(self):
         stage1 = [
             {

@@ -1141,6 +1141,14 @@ conditioned CoT、pass-1 原文和 parser 层逐字段硬校验。全部相等�
 避免把未经 decode 的 Stage 2 token 错配进图中。默认输出到同 step 的
 `eight_settings_comparison/analysis/category_comparisons/`。
 
+若需要跨 Stage 2 checkpoint 比较，可在主 `--stage2_root` 之外重复传入
+`--additional_stage2_root`。脚本从每个 root 的 `preflight.json` 读取并校验 checkpoint
+step，按传入顺序为每个 checkpoint 追加 direct、online CoT、GT CoT 三列，并为每个
+checkpoint 的 online mask-token decode 追加一个独立 overlay 列。例如 step-4,000 与
+step-8,000 同时比较时，最终结果图为 Original、GT、S1–S11 共 13 列，mask 图为 raw GT、
+GT token、Stage 1 online、step-4,000 online、step-8,000 online 共 5 列；布局、单元尺寸、
+instruction 和空 mask 标记与单 checkpoint 模式保持一致。
+
 ### 4.12 Stage 2 三 setting 评测与八 setting 汇总
 
 `scripts/eval/run_eval.py` 是 S1–S8 共用的统一入口。它在与 Stage 1 完全相同的 64 条验证集

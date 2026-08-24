@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build model-free, per-category Stage 1 or S1-S8 comparison sheets.
+"""Build model-free, per-category Stage 1 or multi-checkpoint comparison sheets.
 
 The final-result sheets read completed evaluation PNGs directly. The mask
 sheets use the raw CrispEdit raster mask and the independent GT/online decoded
-overlay cells already produced by analyze_stage1_cot_masks.py. Passing a Stage
-2 result root enables the eight-setting layout. No model is loaded.
+overlay cells already produced by analyze_stage1_cot_masks.py. Passing one or
+more Stage 2 result roots enables checkpoint comparison layouts. No model is
+loaded.
 """
 
 from __future__ import annotations
@@ -80,6 +81,11 @@ EIGHT_MASK_LABELS = (
     "Stage-1 online token decode (red)",
     "Stage-2 online token decode (red)",
 )
+STAGE2_VARIANT_LABELS = (
+    "direct",
+    "online CoT",
+    "GT CoT",
+)
 FINAL_CELL_SIZE = (280, 280)
 MASK_CELL_SIZE = (320, 320)
 
@@ -92,8 +98,18 @@ def parse_args():
         type=Path,
         default=None,
         help=(
-            "completed S6-S8 result root; when set, generate the S1-S8 layout "
-            "instead of the backward-compatible Stage 1 layout"
+            "primary completed S6-S8 result root; when set, append its three "
+            "settings to the backward-compatible Stage 1 layout"
+        ),
+    )
+    parser.add_argument(
+        "--additional_stage2_root",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "additional completed S6-S8 result root to append as three new "
+            "comparison settings; may be passed more than once"
         ),
     )
     parser.add_argument("--raw_mask_dir", type=Path, default=DEFAULT_RAW_MASK_DIR)
@@ -109,8 +125,8 @@ def parse_args():
         default=None,
         help=(
             "default: ROOT/analysis/category_comparisons for Stage 1, or "
-            "STAGE2_ROOT/../eight_settings_comparison/analysis/"
-            "category_comparisons for S1-S8"
+            "the newest Stage 2 root's sibling N_settings_comparison/analysis/"
+            "category_comparisons for checkpoint comparisons"
         ),
     )
     parser.add_argument("--jpeg_quality", type=int, default=92)
@@ -173,6 +189,45 @@ def validate_matching_online_records(
         "fields": list(identity_fields),
         "all_equal": True,
     }
+
+
+def load_checkpoint_step(root: Path) -> int:
+    path = root / "preflight.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    step = int(payload["models"]["checkpoint_step"])
+    checkpoint = Path(payload["models"]["dit_lora"])
+    if checkpoint.stem != f"step-{step}":
+        raise ValueError(
+            f"Stage 2 preflight checkpoint mismatch in {path}: {checkpoint} vs step={step}"
+        )
+    return step
+
+
+def build_comparison_labels(
+    checkpoint_steps: list[int],
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    """Return final/mask columns and title for zero or more Stage 2 roots."""
+
+    if not checkpoint_steps:
+        return STAGE1_FINAL_LABELS, STAGE1_MASK_LABELS, "Stage 1 evaluation"
+    if len(checkpoint_steps) == 1:
+        return EIGHT_FINAL_LABELS, EIGHT_MASK_LABELS, "S1-S8 evaluation"
+
+    final_labels = list(STAGE1_FINAL_LABELS)
+    mask_labels = list(STAGE1_MASK_LABELS)
+    for checkpoint_number, step in enumerate(checkpoint_steps):
+        setting_start = 6 + checkpoint_number * len(STAGE2_SETTINGS)
+        final_labels.extend(
+            f"S{setting_start + offset} Stage-2 step-{step} {variant}"
+            for offset, variant in enumerate(STAGE2_VARIANT_LABELS)
+        )
+        mask_labels.append(f"Stage-2 step-{step} online token decode (red)")
+    total_settings = len(STAGE1_SETTINGS) + len(STAGE2_SETTINGS) * len(checkpoint_steps)
+    return (
+        tuple(final_labels),
+        tuple(mask_labels),
+        f"S1-S{total_settings} checkpoint comparison",
+    )
 
 
 def load_mask_metrics(root: Path) -> dict[int, dict]:
@@ -358,12 +413,38 @@ def main():
     args = parse_args()
     if not 1 <= args.jpeg_quality <= 100:
         raise ValueError("--jpeg_quality must be in [1, 100]")
+    if args.additional_stage2_root and args.stage2_root is None:
+        raise ValueError("--additional_stage2_root requires --stage2_root")
+    stage2_roots = (
+        [args.stage2_root, *args.additional_stage2_root]
+        if args.stage2_root is not None
+        else []
+    )
+    resolved_stage2_roots = [root.resolve() for root in stage2_roots]
+    if len(set(resolved_stage2_roots)) != len(resolved_stage2_roots):
+        raise ValueError("Stage 2 result roots must be unique")
+    checkpoint_steps = [load_checkpoint_step(root) for root in stage2_roots]
+    if len(set(checkpoint_steps)) != len(checkpoint_steps):
+        raise ValueError(f"Stage 2 checkpoint steps must be unique: {checkpoint_steps}")
+    final_labels, mask_labels, evaluation_title = build_comparison_labels(
+        checkpoint_steps
+    )
     if args.output_dir is not None:
         output_dir = args.output_dir
-    elif args.stage2_root is not None:
+    elif stage2_roots:
+        total_settings = len(STAGE1_SETTINGS) + len(STAGE2_SETTINGS) * len(stage2_roots)
+        comparison_name = (
+            "eight_settings_comparison"
+            if len(stage2_roots) == 1
+            else (
+                "eleven_settings_comparison"
+                if total_settings == 11
+                else f"{total_settings}_settings_comparison"
+            )
+        )
         output_dir = (
-            args.stage2_root.parent
-            / "eight_settings_comparison"
+            stage2_roots[-1].parent
+            / comparison_name
             / "analysis"
             / "category_comparisons"
         )
@@ -374,37 +455,17 @@ def main():
         or args.root / "analysis" / "decoded_mask_overlap" / "panels"
     )
     records = load_online_records(args.root, STAGE1_ONLINE_SETTING)
-    stage2_records = (
-        load_online_records(args.stage2_root, STAGE2_ONLINE_SETTING)
-        if args.stage2_root is not None
-        else None
-    )
-    online_match_audit = (
+    stage2_record_sets = [
+        load_online_records(root, STAGE2_ONLINE_SETTING) for root in stage2_roots
+    ]
+    online_match_audits = [
         validate_matching_online_records(records, stage2_records)
-        if stage2_records is not None
-        else None
-    )
-    stage2_by_index = (
+        for stage2_records in stage2_record_sets
+    ]
+    stage2_by_index_sets = [
         {int(record["metadata_index"]): record for record in stage2_records}
-        if stage2_records is not None
-        else {}
-    )
-    final_labels = (
-        EIGHT_FINAL_LABELS if args.stage2_root is not None else STAGE1_FINAL_LABELS
-    )
-    mask_labels = (
-        EIGHT_MASK_LABELS if args.stage2_root is not None else STAGE1_MASK_LABELS
-    )
-    settings = (
-        STAGE1_SETTINGS + STAGE2_SETTINGS
-        if args.stage2_root is not None
-        else STAGE1_SETTINGS
-    )
-    evaluation_title = (
-        "S1-S8 evaluation"
-        if args.stage2_root is not None
-        else "Stage 1 evaluation"
-    )
+        for stage2_records in stage2_record_sets
+    ]
     metrics = load_mask_metrics(args.root)
     by_type: defaultdict[str, list[dict]] = defaultdict(list)
     for record in records:
@@ -415,12 +476,14 @@ def main():
 
     def final_cells(record: dict) -> list[Image.Image]:
         index = int(record["metadata_index"])
-        paths = [Path(record["source"]), Path(record["target"])]
-        for setting in settings:
-            setting_root = (
-                args.stage2_root if setting in STAGE2_SETTINGS else args.root
-            )
-            paths.append(setting_root / setting / f"{index:04d}.png")
+        paths = [Path(record["source"]), Path(record["target"])] + [
+            args.root / setting / f"{index:04d}.png" for setting in STAGE1_SETTINGS
+        ]
+        paths.extend(
+            stage2_root / setting / f"{index:04d}.png"
+            for stage2_root in stage2_roots
+            for setting in STAGE2_SETTINGS
+        )
         return [load_fitted(path, FINAL_CELL_SIZE) for path in paths]
 
     def mask_cells(record: dict) -> list[Image.Image]:
@@ -458,7 +521,7 @@ def main():
             gt_cell = add_empty_badge(clean_source, "EMPTY GT TOKEN MASK")
             online_badge = (
                 "EMPTY STAGE-1 ONLINE MASK"
-                if args.stage2_root is not None
+                if stage2_roots
                 else "EMPTY ONLINE TOKEN MASK"
             )
             online_cell = add_empty_badge(clean_source, online_badge)
@@ -466,33 +529,44 @@ def main():
                 raise ValueError(f"Unexpected decoded mask metrics for empty GT index={index}")
 
         cells = [raw_cell, gt_cell, online_cell]
-        stage2_items = None
-        if args.stage2_root is not None:
+        stage2_mask_audit = {}
+        for step, stage2_by_index in zip(
+            checkpoint_steps, stage2_by_index_sets, strict=True
+        ):
             stage2_record = stage2_by_index[index]
             stage2_items = parse_cot(stage2_record["conditioned_mt_cot"])
             if gt_items:
-                # S7 uses the same frozen Stage 1 TE as S4. The full-record
-                # equality audit above proves these are exactly the same mask
-                # tokens, so their codec decode is exactly the same image. Keep
-                # a distinct cell to make the requested four-way comparison.
+                # Every Stage 2 online setting uses the same frozen Stage 1 TE
+                # as S4. The per-root full-record equality audits prove these
+                # are exactly the same tokens, hence the same codec decode.
+                # Keep a distinct cell for every checkpoint comparison column.
                 stage2_online_cell = online_cell.copy()
             else:
                 stage2_online_cell = add_empty_badge(
                     fit_cell(source, MASK_CELL_SIZE),
-                    "EMPTY STAGE-2 ONLINE MASK",
+                    f"EMPTY STEP-{step} ONLINE MASK",
                 )
             cells.append(stage2_online_cell)
+            stage2_mask_audit[f"step-{step}"] = {
+                "online_cot_nonempty": bool(stage2_items),
+                "stage1_online_cot_equal": (
+                    record["conditioned_mt_cot"]
+                    == stage2_record["conditioned_mt_cot"]
+                ),
+            }
 
         mask_audit[index] = {
             "gt_cot_nonempty": bool(gt_items),
             "stage1_online_cot_nonempty": bool(online_items),
+            "stage2_checkpoints": stage2_mask_audit,
             "stage2_online_cot_nonempty": (
-                bool(stage2_items) if stage2_items is not None else None
+                next(iter(stage2_mask_audit.values()))["online_cot_nonempty"]
+                if len(stage2_mask_audit) == 1
+                else None
             ),
             "stage1_stage2_online_cot_equal": (
-                record["conditioned_mt_cot"]
-                == stage2_by_index[index]["conditioned_mt_cot"]
-                if args.stage2_root is not None
+                next(iter(stage2_mask_audit.values()))["stage1_online_cot_equal"]
+                if len(stage2_mask_audit) == 1
                 else None
             ),
             "raw_mask_nonempty": bool(raw_mask.any()),
@@ -507,11 +581,13 @@ def main():
         "status": "complete",
         "root": str(args.root),
         "stage2_root": str(args.stage2_root) if args.stage2_root else None,
+        "stage2_roots": [str(root) for root in stage2_roots],
+        "stage2_checkpoint_steps": checkpoint_steps,
         "output_dir": str(output_dir),
         "generation": (
-            "model-free aggregation of completed S1-S8 outputs and audited "
-            "decoded-mask panels"
-            if args.stage2_root is not None
+            f"model-free aggregation of completed S1-S{len(STAGE1_SETTINGS) + len(STAGE2_SETTINGS) * len(stage2_roots)} "
+            "outputs and audited decoded-mask panels"
+            if stage2_roots
             else "model-free aggregation of completed S1-S5 outputs and audited decoded-mask panels"
         ),
         "final_columns": list(final_labels),
@@ -521,13 +597,20 @@ def main():
             "no cell combines multiple masks."
         ),
         "stage2_online_decode_note": (
-            "S7 uses the same frozen Stage 1 TE as S4. All 64 source/target/prompt/"
-            "GT/conditioned/pass1/parser fields were proven equal, so the S4 codec "
-            "decode is reused in a distinct S7 overlay cell."
-            if args.stage2_root is not None
+            "Every Stage 2 online setting uses the same frozen Stage 1 TE as S4. "
+            "For every checkpoint, all 64 source/target/prompt/GT/conditioned/"
+            "pass1/parser fields were proven equal, so the S4 codec decode is "
+            "reused in a distinct overlay cell for each checkpoint."
+            if stage2_roots
             else None
         ),
-        "stage1_stage2_online_match_audit": online_match_audit,
+        "stage1_stage2_online_match_audits": {
+            f"step-{step}": audit
+            for step, audit in zip(checkpoint_steps, online_match_audits, strict=True)
+        },
+        "stage1_stage2_online_match_audit": (
+            online_match_audits[0] if len(online_match_audits) == 1 else None
+        ),
         "decoded_panel_dir": str(decoded_panel_dir),
         "raw_mask_dir": str(args.raw_mask_dir),
         "categories": {},
