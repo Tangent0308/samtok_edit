@@ -780,6 +780,46 @@ setting 读错结果；但 RGB MAE 仅用于检查“条件是否改变输出”
 - decoded mask 空间重合报告和 39 张叠图：
   `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/decoded_mask_overlap/`。
 
+### 按 edit type 汇总的对比大图
+
+为便于逐类别检查全部样本，又执行了无模型的汇总步骤：
+
+```bash
+.venv/bin/python scripts/eval/make_stage1_category_comparisons.py
+```
+
+脚本直接读取已经完成的 S1–S5 PNG、source/GT 图片、原始 CrispEdit raster mask，以及
+`analyze_stage1_cot_masks.py` 已验收的独立 decoded-mask overlay，不重新加载
+Qwen、SAMTok codec 或其他模型，也没有干扰正在运行的 Stage 2 训练。7 个 edit type
+各生成两张图，共 14 张：
+
+1. `<type>_final_results.jpg`：该类别全部样本，每行写完整 instruction，七列依次为
+   Original、GT edited image、S1 Stock 2511、S2 Initial direct、S3 Stage-1 direct、
+   S4 Online CoT、S5 GT CoT。
+2. `<type>_mask_comparison.jpg`：该类别全部样本，三列分别为蓝色 raw GT raster mask、
+   绿色 GT mask-token decode、红色 online mask-token decode。三种结果分别 overlay
+   在三个独立原图面板上，没有把三种 mask 混合到同一个面板。
+
+分类结果路径：
+
+| edit type | 样本数 | 最终出图对比 | mask 对比 |
+|---|---:|---|---|
+| add | 10 | [add_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/add_final_results.jpg>) | [add_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/add_mask_comparison.jpg>) |
+| background | 13 | [background_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/background_final_results.jpg>) | [background_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/background_mask_comparison.jpg>) |
+| color | 13 | [color_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/color_final_results.jpg>) | [color_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/color_mask_comparison.jpg>) |
+| motion | 5 | [motion_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/motion_final_results.jpg>) | [motion_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/motion_mask_comparison.jpg>) |
+| remove | 6 | [remove_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/remove_final_results.jpg>) | [remove_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/remove_mask_comparison.jpg>) |
+| replace | 6 | [replace_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/replace_final_results.jpg>) | [replace_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/replace_mask_comparison.jpg>) |
+| style | 11 | [style_final_results.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/style_final_results.jpg>) | [style_mask_comparison.jpg](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/style_mask_comparison.jpg>) |
+
+`background` 的 13 条和 `style` 的 11 条 raw raster mask 非空，但按当前 CoT 数据规范，
+GT 和 online CoT 都是 canonical 空表，因此两列 token decode 使用原图并显式标记
+`EMPTY ... TOKEN MASK`；这不是 decode 缺失。5 条 `motion` 中另有 1 条 raw/GT/online
+mask 全为空。其他 39 条均使用此前真实 codec decode 后的独立 overlay。
+
+- [分类汇总目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/>)
+- [manifest.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings/analysis/category_comparisons/manifest.json>)：记录 14 张图的尺寸、SHA256、各类 metadata index 和逐样本 mask 状态。
+
 ## E9：Stage 2 8 卡 smoke 数据构建
 
 ### 目标与配比
