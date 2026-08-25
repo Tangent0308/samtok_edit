@@ -565,6 +565,7 @@ L2 分别为 3.2656 和 0.2348。末段更新较小符合 cosine LR 接近 0，�
 
 - [train.log](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_20k_mt/train_8gpu_lambda_0.05_1/train.log>)
 - [loss.csv](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_20k_mt/train_8gpu_lambda_0.05_1/loss.csv>)
+- [loss_curves_smoothed.png](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_20k_mt/train_8gpu_lambda_0.05_1/loss_curves_smoothed.png>)：总 loss、未加权 NTP/FM 分量，含淡化原始曲线和 101-observation rolling mean。
 - [training_args.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_20k_mt/train_8gpu_lambda_0.05_1/training_args.json>)
 - [launcher.pid](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_20k_mt/train_8gpu_lambda_0.05_1/launcher.pid>)
 - [step-2000.safetensors](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_20k_mt/train_8gpu_lambda_0.05_1/step-2000.safetensors>)，SHA256
