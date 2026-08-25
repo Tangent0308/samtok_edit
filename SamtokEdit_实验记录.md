@@ -15,9 +15,9 @@ Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 
 8 卡 smoke metadata、Stage 2a 离线 cache 和 Stage 2b 30-step 训练均已完整结束并通过
 强审计；Stage 2 DiT LoRA checkpoint、CSV 和 W&B 曲线均已保存；Stage 2 放大规模
 训练数据已完成真实 codec 构建、内容净化与 8 卡分片验收。正式 Stage 2 训练仍在另一台
-共享机器上运行；本机已先后对 step-4,000 和 step-8,000 checkpoint 完成同协议的
-direct/online CoT/GT CoT 评测，并将已有 S1–S5 与两组 Stage 2 结果合并完成 11 setting
-分类审计和可视化。
+共享机器上运行；本机已先后对 step-4,000、step-8,000 和 step-16,000 checkpoint
+完成同协议的 direct/online CoT/GT CoT 评测，并将已有 S1–S5 与三组 Stage 2 结果
+合并完成 14 setting 分类审计和可视化。
 
 ## 实验索引
 
@@ -37,6 +37,7 @@ direct/online CoT/GT CoT 评测，并将已有 S1–S5 与两组 Stage 2 结果�
 | E12 | Stage 2 正式 8 卡训练 | 融合 Stage 1 TE 并在 165,960 份 cache 上训练 DiT LoRA | 运行中 |
 | E13 | Stage 2 step-4,000 三 setting 评测 | 评测 direct/online CoT/GT CoT 并与 S1–S5 汇总 | 完成（192/192） |
 | E14 | Stage 2 step-8,000 三 setting 评测 | 复用 E13 协议并与 S1–S5、step-4,000 合并比较 | 完成（192/192） |
+| E15 | Stage 2 step-16,000 三 setting 评测 | 复用 E13 协议并与 S1–S5、step-4,000/8,000 合并比较 | 完成（192/192） |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -1520,6 +1521,123 @@ step-4,000 online decode、step-8,000 online decode；没有将三种 mask 叠�
 - [共享目录内 S1–S11 分类大图](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-8000/eleven_settings_comparison/analysis/category_comparisons>)；
 - [仓库内 S1–S11 分类大图](docs/assets/evaluation/stage2_step4000_step8000_category_comparisons/)。
 
+## E15：Stage 2 step-16,000 三 setting 评测与十四 setting 跨 checkpoint 汇总
+
+### Checkpoint 快照与评测结果
+
+本次继续使用 `dev-eval-stage2` 分支、统一的 `run_eval.py` 和已验收的
+`/opt/tiger/tanyue/samtok_edit_eval_stage2/.venv`。启动前显式锁定以下完整 checkpoint，
+没有使用运行期间可能变化的“最新文件”软选择：
+
+```text
+stage2_dit_lora/step-16000.safetensors
+size     472,047,184 bytes
+SHA256   6b0227a2fa8989e7b753c3bf46fc75e382a95173e91fc67135ca1a13ebc75538
+```
+
+预检确认 checkpoint 包含 1,440 个 BF16 tensor、720 对 LoRA A/B、235,929,600 个参数，
+精确覆盖 12 类 DiT target module。正式训练 world size 为 8，per-device batch 与 gradient
+accumulation 均为 1，所以 step 16,000 对应全局累计 `16,000 * 8 = 128,000` 个含重复
+sample presentation；这不是 128,000 个唯一物理 row。
+
+评测严格复用前两轮的 64 条验证 metadata（SHA256
+`b4122cf8016915e8c7158e592f30b61bab8bd2f6219c075feb0924392cbed02e`）、Stage 1
+`step-5000` TE LoRA、metadata-index seed、40 inference steps、CFG 4.0、bf16、
+`edit_image_auto_resize=True` 和 `zero_cond_t=True`。三组语义不变：
+
+1. `s6_stage2_direct`：不生成、不注入 mask-token CoT，使用原生 direct inference；
+2. `s7_stage2_online_cot`：先由 Stage 1 TE 在线 greedy 生成 mask-token CoT，再条件出图；
+3. `s8_stage2_gt_cot`：跳过 pass-1，直接使用验证行 canonical GT CoT 条件出图。
+
+8 rank 严格串行运行 S6→S7→S8，每卡每组 8 张。任务于 2026-08-25 03:35:41 UTC
+启动，04:22:19 UTC 含最终审计全部结束，controller `status=complete`：
+
+| setting | PNG/sidecar | parser 分布 | 单样本平均耗时 |
+|---|---:|---|---:|
+| Stage 2 step-16,000 direct | 64/64 | null 64 | 95.23 s |
+| Stage 2 step-16,000 online CoT | 64/64 | strict 39, empty 25 | 95.82 s |
+| Stage 2 step-16,000 GT CoT | 64/64 | provided:strict 39, provided:empty 25 | 95.34 s |
+
+192/192 张 PNG 与 192/192 个 JSON sidecar 均完整。八 setting 审计中 512/512 张 PNG
+全部可解码，每组均有 64 个唯一输出 hash；64 条的 seed、steps、CFG、prompt、source、
+target、GT CoT、输出尺寸和 world size 全部一致。S6 的 conditioning/pass-1/parser
+为 64/64 null，S8 的实际 conditioning 为 64/64 与 GT 精确相等。
+
+S7 仍使用冻结的 Stage 1 TE，因此 Stage 1、step-4,000、step-8,000、step-16,000
+四个 online setting 的 metadata index、source、target、prompt、GT CoT、conditioned CoT、
+pass-1 原文和 parser 层 64/64 逐字段相等。checkpoint 只改变 DiT 出图，不改变在线
+mask-token CoT。
+
+### Step-8,000 与 step-16,000 输出差异
+
+三组对应 setting 的 step-8,000→step-16,000 结果均为 0/64 逐字节相同，确认新权重
+实际生效。归一化 RGB MAE 如下；该数值只反映像素变化，不代表编辑质量：
+
+| 同 setting 跨 checkpoint 对比 | byte-identical | normalized RGB MAE mean / median |
+|---|---:|---:|
+| direct：step-8,000 → step-16,000 | 0/64 | 0.0718 / 0.0607 |
+| online CoT：step-8,000 → step-16,000 | 0/64 | 0.0717 / 0.0616 |
+| GT CoT：step-8,000 → step-16,000 | 0/64 | 0.0715 / 0.0606 |
+
+step-16,000 内部 direct→online 为 0/64 相同，MAE mean/median 为 0.0519/0.0367；
+online→GT 有 27/64 逐字节相同，MAE 为 0.0126/0.0056。27 条仍精确对应 online/GT
+canonical CoT 相同的样本，CoT conditioning 路由继续有效。
+
+按类别看，step-8,000→step-16,000 的改变在 direct 的 motion/style 最大
+（MAE mean 0.117/0.111），在 remove/replace 最小（均约 0.041）；online/GT 中 style
+最大（均约 0.106），remove 最小（约 0.039）。逐张人工检查可见：step-16,000 多数
+background/remove 结果较稳定，且没有重新出现 Stage 1 的 framing/crop 伪影；`#0035`
+相较 step-8,000 更保留原蛋糕结构，只增加白色和金色元素，是一个可能的改善。另一方面，
+`#0034` 建筑改白仍会大面积过度编辑，`#0051` 仍倾向于单个机械侧脸/大屏，而非
+step-4,000 更符合指令的多块 holographic displays；style 类仍有较强的饱和度与对比度。
+所以该 64 条非盲检查不足以宣称 step-16,000 整体优于 step-8,000，仍需语义指标或
+人工盲评选择最佳 checkpoint。
+
+### 按 edit type 汇总的十四 setting 对比大图
+
+继续使用统一的 `make_stage1_category_comparisons.py`，在 E14 命令上再追加一个 root：
+
+```bash
+.venv/bin/python scripts/eval/make_stage1_category_comparisons.py \
+  --stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/three_settings \
+  --additional_stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-8000/three_settings \
+  --additional_stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/three_settings
+```
+
+最终结果图共 16 个独立列：Original、GT、S1–S5、step-4,000 三组（S6–S8）、
+step-8,000 三组（S9–S11）和 step-16,000 三组（S12–S14）。mask 图共 6 个独立
+source overlay 列：raw GT raster、GT token decode、Stage 1 online decode，以及三个
+Stage 2 checkpoint 各自的 online decode；没有把多种 mask 混在同一个 cell。三个
+Stage 2 online 列虽然因 CoT 完全相同而复用同一真实 codec decode，但仍各自单列展示。
+空 CoT badge 使用可完整显示的 `EMPTY S2-<step> ONLINE MASK`。
+
+下表 14 张最终版大图已复制到仓库，可直接在文档中查看：
+
+| edit type | 样本数 | S1–S14 最终出图对比 | 六列 mask overlay 对比 |
+|---|---:|---|---|
+| add | 10 | [![step-4000/8000/16000 add final](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/add_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/add_final_results.jpg) | [![step-4000/8000/16000 add masks](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/add_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/add_mask_comparison.jpg) |
+| background | 13 | [![step-4000/8000/16000 background final](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/background_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/background_final_results.jpg) | [![step-4000/8000/16000 background masks](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/background_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/background_mask_comparison.jpg) |
+| color | 13 | [![step-4000/8000/16000 color final](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/color_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/color_final_results.jpg) | [![step-4000/8000/16000 color masks](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/color_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/color_mask_comparison.jpg) |
+| motion | 5 | [![step-4000/8000/16000 motion final](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/motion_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/motion_final_results.jpg) | [![step-4000/8000/16000 motion masks](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/motion_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/motion_mask_comparison.jpg) |
+| remove | 6 | [![step-4000/8000/16000 remove final](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/remove_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/remove_final_results.jpg) | [![step-4000/8000/16000 remove masks](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/remove_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/remove_mask_comparison.jpg) |
+| replace | 6 | [![step-4000/8000/16000 replace final](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/replace_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/replace_final_results.jpg) | [![step-4000/8000/16000 replace masks](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/replace_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/replace_mask_comparison.jpg) |
+| style | 11 | [![step-4000/8000/16000 style final](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/style_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/style_final_results.jpg) | [![step-4000/8000/16000 style masks](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/style_mask_comparison.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/style_mask_comparison.jpg) |
+
+14/14 张 JPEG 均完成解码和 SHA256 复核；最终结果图宽 4,480 px，mask 图宽 1,920 px，
+七类样本数之和为 64。完整列定义、checkpoint root、逐类别 index、尺寸、SHA256 和
+三组 online 一致性审计见
+[manifest.json](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/manifest.json)。
+
+### 结果文件
+
+- [step-16,000 三组结果与总报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/three_settings>)；
+- [controller log](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/three_settings/logs/controller.log>)；
+- [controller status](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/three_settings/controller.status>)；
+- [step-16,000 的 8 setting 定量审计](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/eight_settings_comparison/analysis/eight_setting_audit.json>)；
+- [64 张 Source/Target/S1–S8 十列 panel](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/eight_settings_comparison/panels_with_instruction>)；
+- [共享目录内 S1–S14 分类大图](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/14_settings_comparison/analysis/category_comparisons>)；
+- [仓库内 S1–S14 分类大图](docs/assets/evaluation/stage2_step4000_step8000_step16000_category_comparisons/)。
+
 ## 当前结论和下一步
 
 - Stage 1 单卡和 8 卡 smoke 训练链路均已跑通，DDP、loss、GT 监督、梯度、精度和
@@ -1539,9 +1657,10 @@ step-4,000 online decode、step-8,000 online decode；没有将三种 mask 叠�
   checkpoint、CSV 和 W&B 均符合当前方案与官方 runner 的实际语义。
 - Stage 2 放大规模训练数据已构建完成；最终 165,960 行保持 2:1 和逐卡同比例，并与 E7
   验证集在 identity、路径与图像 SHA256 层面严格互斥，可作为后续正式 Stage 2a 输入。
-- Stage 2 正式训练尚未结束；step-4,000 和 step-8,000 均已按同协议完成 S6–S8
-  192/192 出图、8 setting 审计，并与 S1–S5 合并为 11 setting 分类图。step-8,000
-  对应 64,000 个含重复 sample presentation，三组输出均与 step-4,000 明确不同；变化在
-  style 最大、remove 最小。两个 checkpoint 均消除了已知 CoT framing 伪影，但仍有
-  过度编辑、内容漂移和过饱和，且 GT CoT 在该 64 条集合上没有稳定视觉优势。下一步应
-  对后续 checkpoint 继续使用相同协议，并加入语义指标或人工盲评后再判断最佳 checkpoint。
+- Stage 2 正式训练尚未结束；step-4,000、step-8,000 和 step-16,000 均已按同协议完成
+  S6–S8 192/192 出图、8 setting 审计，并与 S1–S5 合并为 14 setting 分类图。
+  step-16,000 对应 128,000 个含重复 sample presentation，三组输出均与 step-8,000
+  明确不同；background/remove 相对稳定，motion/style 变化更大。三个 checkpoint 均消除
+  已知 CoT framing 伪影，但仍有过度编辑、内容漂移和过饱和，且 GT CoT 在该 64 条集合
+  上没有稳定视觉优势。下一步应继续同协议评测后续 checkpoint，并加入语义指标或人工
+  盲评后再判断最佳 checkpoint。

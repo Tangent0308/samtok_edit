@@ -544,7 +544,7 @@ def main():
             else:
                 stage2_online_cell = add_empty_badge(
                     fit_cell(source, MASK_CELL_SIZE),
-                    f"EMPTY STEP-{step} ONLINE MASK",
+                    f"EMPTY S2-{step} ONLINE MASK",
                 )
             cells.append(stage2_online_cell)
             stage2_mask_audit[f"step-{step}"] = {
