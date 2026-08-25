@@ -87,14 +87,15 @@ class SamtokEditTests(unittest.TestCase):
         )
 
         final_labels, mask_labels, title = build_comparison_labels(
-            [4000, 8000, 16000]
+            [4000, 8000, 16000, 24000]
         )
-        self.assertEqual(len(final_labels), 16)
-        self.assertEqual(len(mask_labels), 6)
-        self.assertEqual(title, "S1-S14 checkpoint comparison")
+        self.assertEqual(len(final_labels), 19)
+        self.assertEqual(len(mask_labels), 7)
+        self.assertEqual(title, "S1-S17 checkpoint comparison")
         self.assertEqual(final_labels[13], "S12 Stage-2 step-16000 direct")
+        self.assertEqual(final_labels[16], "S15 Stage-2 step-24000 direct")
         self.assertEqual(
-            mask_labels[-1], "Stage-2 step-16000 online token decode (red)"
+            mask_labels[-1], "Stage-2 step-24000 online token decode (red)"
         )
 
     def test_category_comparison_requires_identical_stage1_stage2_online_cot(self):
