@@ -36,7 +36,7 @@ direct/online CoT/GT CoT 评测，并将已有 S1–S5 与六组 Stage 2 结果�
 | E10 | Stage 2 8 卡 smoke 训练 | 验证 TE 融合/cache、纯 FM、DiT LoRA 梯度和 DDP 更新 | 通过（30/30 step） |
 | E11 | Stage 2 放大规模数据构建 | 使用全部安全 `edit_mt`，按 2:1 配纯 edit 并做内容级验证隔离 | 通过 |
 | E12 | Stage 2 正式 8 卡训练 | 融合 Stage 1 TE 并在 165,960 份 cache 上训练 DiT LoRA | 完成（41,490 步） |
-| E16 | Stage 2 checkpoint 统一评测与结果对比（持续追加） | 统一评测 step-4,000/8,000/16,000/24,000/32,000/最终，后续 step 继续追加 | 进行中（已完成 6 个 checkpoint） |
+| E13 | Stage 2 训练结果评测 | 在固定 64 张验证集上评测中间及最终 checkpoint 的 direct/online CoT/GT CoT | 完成（6 个 checkpoint，S1–S23 对比） |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -1204,9 +1204,9 @@ W&B run name 为 `stage2-full-8gpu-1ep-20260824-020317`，entity/project 为
 - [Stage 2 cache](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_cache>)；
 - [Stage 2b 输出](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_dit_lora>)。
 
-## E16：Stage 2 checkpoint 统一评测与结果对比（持续追加）
+## E13：Stage 2 训练结果评测
 
-本节作为一个持续实验记录。后续新增的 Stage 2 checkpoint 继续追加到本节，不再新建实验编号。
+在相同协议下评测 Stage 2 训练的中间及最终 checkpoint，并与 Stage 1 结果统一可视化。
 
 ### 评测协议与已测 checkpoint
 
@@ -1282,5 +1282,4 @@ S1–S23 结果对比图，完整分类图保存在[仓库目录](docs/assets/ev
 - Stage 2 放大规模训练数据已构建完成；最终 165,960 行保持 2:1 和逐卡同比例，并与 E7
   验证集在 identity、路径与图像 SHA256 层面严格互斥，可作为后续正式 Stage 2a 输入。
 - Stage 2 checkpoint 统一评测实验已按同一协议完成 step-4,000、step-8,000、step-16,000、
-  step-24,000、step-32,000 和最终 step-41,490 的 S6–S8 评测，并合并生成 S1–S23 对比图。后续新增 checkpoint
-  直接在 E16 的已测列表、运行命令和结果路径中追加，不再新建实验编号。
+  step-24,000、step-32,000 和最终 step-41,490 的 S6–S8 评测，并合并生成 S1–S23 对比图。
