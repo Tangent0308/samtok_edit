@@ -7,17 +7,19 @@
     "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-8000/three_settings",
     "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/three_settings",
     "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-24000/three_settings",
-    "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/three_settings"
+    "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/three_settings",
+    "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/three_settings"
   ],
   "stage2_checkpoint_steps": [
     4000,
     8000,
     16000,
     24000,
-    32000
+    32000,
+    41490
   ],
-  "output_dir": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons",
-  "generation": "model-free aggregation of completed S1-S20 outputs and audited decoded-mask panels",
+  "output_dir": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons",
+  "generation": "model-free aggregation of completed S1-S23 outputs and audited decoded-mask panels",
   "final_columns": [
     "Original",
     "GT edited image",
@@ -40,7 +42,10 @@
     "S17 Stage-2 step-24000 GT CoT",
     "S18 Stage-2 step-32000 direct",
     "S19 Stage-2 step-32000 online CoT",
-    "S20 Stage-2 step-32000 GT CoT"
+    "S20 Stage-2 step-32000 GT CoT",
+    "S21 Stage-2 step-41490 direct",
+    "S22 Stage-2 step-41490 online CoT",
+    "S23 Stage-2 step-41490 GT CoT"
   ],
   "mask_columns": [
     "GT raster mask (blue)",
@@ -50,9 +55,10 @@
     "Stage-2 step-8000 online token decode (red)",
     "Stage-2 step-16000 online token decode (red)",
     "Stage-2 step-24000 online token decode (red)",
-    "Stage-2 step-32000 online token decode (red)"
+    "Stage-2 step-32000 online token decode (red)",
+    "Stage-2 step-41490 online token decode (red)"
   ],
-  "mask_layout_note": "The 8 masks are separate source-image overlay panels; no cell combines multiple masks.",
+  "mask_layout_note": "The 9 masks are separate source-image overlay panels; no cell combines multiple masks.",
   "stage2_online_decode_note": "Every Stage 2 online setting uses the same frozen Stage 1 TE as S4. For every checkpoint, all 64 source/target/prompt/GT/conditioned/pass1/parser fields were proven equal, so the S4 codec decode is reused in a distinct overlay cell for each checkpoint.",
   "stage1_stage2_online_match_audits": {
     "step-4000": {
@@ -129,6 +135,21 @@
         "parse_layer"
       ],
       "all_equal": true
+    },
+    "step-41490": {
+      "checked_records": 64,
+      "matching_records": 64,
+      "fields": [
+        "metadata_index",
+        "source",
+        "target",
+        "prompt",
+        "gt_mt_cot",
+        "conditioned_mt_cot",
+        "pass1_raw",
+        "parse_layer"
+      ],
+      "all_equal": true
     }
   },
   "stage1_stage2_online_match_audit": null,
@@ -152,20 +173,20 @@
       "gt_cot_nonempty": 10,
       "raw_mask_nonempty": 10,
       "final_results": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/add_final_results.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/add_final_results.jpg",
         "size": [
-          6160,
+          7000,
           3480
         ],
-        "sha256": "52a4a74a86acb3089e48ff7b33fb852fba4c7d498197cf0019a9dbb1c8b36641"
+        "sha256": "e2d45dae32b5a34dbb94bafff1a4219d82c023dfcffeacd0dab1c6d4bf161c64"
       },
       "mask_comparison": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/add_mask_comparison.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/add_mask_comparison.jpg",
         "size": [
-          2560,
+          2880,
           3880
         ],
-        "sha256": "66ecd431767255ac647abbec0cb7e6d15c54407c482263fa3676569509bb80f0"
+        "sha256": "82e0fd176accc4e0d17a5fb9a61025ff5c9c13ced9c51ac52b284de3975cae33"
       }
     },
     "background": {
@@ -188,20 +209,20 @@
       "gt_cot_nonempty": 0,
       "raw_mask_nonempty": 13,
       "final_results": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/background_final_results.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/background_final_results.jpg",
         "size": [
-          6160,
+          7000,
           4488
         ],
-        "sha256": "95480797e6298f3c03a73384a2517f7efd5176cfc8622133758dc4d52f78f5ba"
+        "sha256": "d8c7a9add6183b2ef5c3d0d0c0b1e7056ac13185bc01e94575a2011bd2803556"
       },
       "mask_comparison": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/background_mask_comparison.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/background_mask_comparison.jpg",
         "size": [
-          2560,
+          2880,
           5008
         ],
-        "sha256": "8af7af259014fe21fd027430bf09971e763cce3a5051236539178b17fb3cbc52"
+        "sha256": "1c86560f4fb05675d1a50f86e7a017df46d5636057320a89f4d7380c2136f568"
       }
     },
     "color": {
@@ -224,20 +245,20 @@
       "gt_cot_nonempty": 13,
       "raw_mask_nonempty": 13,
       "final_results": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/color_final_results.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/color_final_results.jpg",
         "size": [
-          6160,
+          7000,
           4488
         ],
-        "sha256": "5166afe7c7a022672a337ca366838a5dddee8188fc5832a4dabce0a7b4d0594e"
+        "sha256": "5463a67f5b842fc4f402c5907eed5c1d3ac83420bbb874a02634636dbc5df57f"
       },
       "mask_comparison": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/color_mask_comparison.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/color_mask_comparison.jpg",
         "size": [
-          2560,
+          2880,
           5008
         ],
-        "sha256": "13eddd58bce05c638228d7d0d8a57a48fd5e0f83bccafd350bd5baf45fb8168f"
+        "sha256": "eb52b35afb1714dcf4abb3b54751cfab0f8bd00ceea4799ecf8d7da66eceecf3"
       }
     },
     "motion": {
@@ -252,20 +273,20 @@
       "gt_cot_nonempty": 4,
       "raw_mask_nonempty": 4,
       "final_results": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/motion_final_results.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/motion_final_results.jpg",
         "size": [
-          6160,
+          7000,
           1800
         ],
-        "sha256": "b8c73a34203bc7af4bf5cb255280e67c5637d76ac072bd16e4c5895c5ec1eaed"
+        "sha256": "70b993788ab4751cbcab97efbe2eecc186622120590407e58e6bcf786eb9e243"
       },
       "mask_comparison": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/motion_mask_comparison.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/motion_mask_comparison.jpg",
         "size": [
-          2560,
+          2880,
           2000
         ],
-        "sha256": "b03281b5445a18ca3fdf023f5d3bbe6265ed58554c8192565090d74b65f8092a"
+        "sha256": "0cf29e3e36bf8988dd546e821e49c7365e68176f54491cac9f86acb9d49684ca"
       }
     },
     "remove": {
@@ -281,20 +302,20 @@
       "gt_cot_nonempty": 6,
       "raw_mask_nonempty": 6,
       "final_results": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/remove_final_results.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/remove_final_results.jpg",
         "size": [
-          6160,
+          7000,
           2136
         ],
-        "sha256": "4d71203e475333e5e9784d8924e79f2e215279286089de7aba4f779b1e50d55f"
+        "sha256": "5d1e51c248a4c45d460394ed414ca40946a3f0803fc462aadf5255eccf7c70fe"
       },
       "mask_comparison": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/remove_mask_comparison.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/remove_mask_comparison.jpg",
         "size": [
-          2560,
+          2880,
           2376
         ],
-        "sha256": "d66a583200edf048318e98aa357ebf421642cfe67a9a135be7047c5b04ba0dcf"
+        "sha256": "c3bb3cdfc4c34f8e3cfd7cd116098d4ceb90a4f1e90c74954f8c69e37aa8f311"
       }
     },
     "replace": {
@@ -310,20 +331,20 @@
       "gt_cot_nonempty": 6,
       "raw_mask_nonempty": 6,
       "final_results": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/replace_final_results.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/replace_final_results.jpg",
         "size": [
-          6160,
+          7000,
           2136
         ],
-        "sha256": "0ab2cf5cbf0514861bd28aafcfa653371003ccac357070ffa3595ed8dcce0541"
+        "sha256": "0873d548b7aadc7ca6b803047ec753dfc2b87928eac3f4b78e370352a59e9138"
       },
       "mask_comparison": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/replace_mask_comparison.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/replace_mask_comparison.jpg",
         "size": [
-          2560,
+          2880,
           2376
         ],
-        "sha256": "0950720d93286d205880b5fb0357e24fc6abf9428250e9cee3297b1fc594f40b"
+        "sha256": "d2605d0505efb1d01791c0acc356dffcdd318b5745e1cfde60400a0cc01c5525"
       }
     },
     "style": {
@@ -344,20 +365,20 @@
       "gt_cot_nonempty": 0,
       "raw_mask_nonempty": 11,
       "final_results": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/style_final_results.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/style_final_results.jpg",
         "size": [
-          6160,
+          7000,
           3816
         ],
-        "sha256": "a3c577d2cf82d852c6cc648379c88543cb161a4d151897aa514a632e9e9de885"
+        "sha256": "e2f74f3cd623a58ded16b040af1cded6aca7d5360642b1cfa241f4d003431f68"
       },
       "mask_comparison": {
-        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/20_settings_comparison/analysis/category_comparisons/style_mask_comparison.jpg",
+        "path": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-41490/23_settings_comparison/analysis/category_comparisons/style_mask_comparison.jpg",
         "size": [
-          2560,
+          2880,
           4256
         ],
-        "sha256": "7cefa86fe989f55a10e2709ad4ec187ebfc45feb1c2edf0cba047e8f8d02585f"
+        "sha256": "8707e6ca997fe7e035896dbeb3fbc9df173e08376351c3ad59e144f891d4b600"
       }
     }
   },
@@ -383,6 +404,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -416,6 +441,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -445,6 +474,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -478,6 +511,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -507,6 +544,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -540,6 +581,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -569,6 +614,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -602,6 +651,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -631,6 +684,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -664,6 +721,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -693,6 +754,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -726,6 +791,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -755,6 +824,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -788,6 +861,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -817,6 +894,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -850,6 +931,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -879,6 +964,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -912,6 +1001,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -941,6 +1034,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -974,6 +1071,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1003,6 +1104,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -1036,6 +1141,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1065,6 +1174,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -1098,6 +1211,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1127,6 +1244,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1160,6 +1281,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1189,6 +1314,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1222,6 +1351,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1251,6 +1384,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1284,6 +1421,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1313,6 +1454,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1346,6 +1491,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1375,6 +1524,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1408,6 +1561,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1437,6 +1594,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1470,6 +1631,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1499,6 +1664,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1532,6 +1701,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1561,6 +1734,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1594,6 +1771,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1623,6 +1804,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1656,6 +1841,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1685,6 +1874,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1718,6 +1911,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1747,6 +1944,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1780,6 +1981,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1809,6 +2014,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1842,6 +2051,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1871,6 +2084,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1904,6 +2121,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1933,6 +2154,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -1966,6 +2191,10 @@
         "step-32000": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -1995,6 +2224,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": true,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": true,
           "stage1_online_cot_equal": true
         }
@@ -2028,6 +2261,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -2057,6 +2294,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -2090,6 +2331,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -2119,6 +2364,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -2152,6 +2401,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -2181,6 +2434,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -2214,6 +2471,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -2243,6 +2504,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
@@ -2276,6 +2541,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -2307,6 +2576,10 @@
         "step-32000": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
+        },
+        "step-41490": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
         }
       },
       "stage2_online_cot_nonempty": null,
@@ -2336,6 +2609,10 @@
           "stage1_online_cot_equal": true
         },
         "step-32000": {
+          "online_cot_nonempty": false,
+          "stage1_online_cot_equal": true
+        },
+        "step-41490": {
           "online_cot_nonempty": false,
           "stage1_online_cot_equal": true
         }
