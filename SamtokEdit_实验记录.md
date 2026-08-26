@@ -668,7 +668,7 @@ bash scripts/eval/run_stage1_eval_8gpu.sh
 
 ```bash
 torchrun --standalone --nnodes=1 --nproc-per-node=8 --max-restarts=0 \
-  scripts/eval/run_stage1_eval.py --settings <1..5> \
+  scripts/eval/run_eval.py --settings <1..5> \
   --output_dir /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings \
   --no-make_panels
 ```
@@ -695,7 +695,7 @@ GT-CoT setting 为 `provided:strict=39, provided:empty=25`。五组单样本平�
 评测结束后没有重新加载模型或出图，只基于现有 sidecar/PNG 运行：
 
 ```bash
-python scripts/eval/run_stage1_eval.py \
+python scripts/eval/run_eval.py \
   --settings all \
   --output_dir /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings \
   --finalize_only
