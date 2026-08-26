@@ -15,9 +15,9 @@ Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 
 8 卡 smoke metadata、Stage 2a 离线 cache 和 Stage 2b 30-step 训练均已完整结束并通过
 强审计；Stage 2 DiT LoRA checkpoint、CSV 和 W&B 曲线均已保存；Stage 2 放大规模
 训练数据已完成真实 codec 构建、内容净化与 8 卡分片验收。正式 Stage 2 训练仍在另一台
-共享机器上运行；本机已先后对 step-4,000、step-8,000、step-16,000 和
-step-24,000 checkpoint 完成同协议的 direct/online CoT/GT CoT 评测，并将已有
-S1–S5 与四组 Stage 2 结果合并完成 17 setting 分类审计和可视化。
+共享机器上运行；本机已先后对 step-4,000、step-8,000、step-16,000、step-24,000 和
+step-32,000 checkpoint 完成同协议的 direct/online CoT/GT CoT 评测，并将已有
+S1–S5 与五组 Stage 2 结果合并完成 S1–S20 分类审计和可视化。
 
 ## 实验索引
 
@@ -35,7 +35,7 @@ S1–S5 与四组 Stage 2 结果合并完成 17 setting 分类审计和可视化
 | E10 | Stage 2 8 卡 smoke 训练 | 验证 TE 融合/cache、纯 FM、DiT LoRA 梯度和 DDP 更新 | 通过（30/30 step） |
 | E11 | Stage 2 放大规模数据构建 | 使用全部安全 `edit_mt`，按 2:1 配纯 edit 并做内容级验证隔离 | 通过 |
 | E12 | Stage 2 正式 8 卡训练 | 融合 Stage 1 TE 并在 165,960 份 cache 上训练 DiT LoRA | 运行中 |
-| E16 | Stage 2 checkpoint 统一评测与结果对比（持续追加） | 统一评测 step-4,000/8,000/16,000/24,000，后续 step 继续追加 | 进行中（已完成 4 个 checkpoint） |
+| E16 | Stage 2 checkpoint 统一评测与结果对比（持续追加） | 统一评测 step-4,000/8,000/16,000/24,000/32,000，后续 step 继续追加 | 进行中（已完成 5 个 checkpoint） |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -1224,13 +1224,14 @@ W&B run name 为 `stage2-full-8gpu-1ep-20260824-020317`，entity/project 为
 | step-8,000 | `stage2_dit_lora/step-8000.safetensors` | [three_settings](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-8000/three_settings>) | 3×64/64 |
 | step-16,000 | `stage2_dit_lora/step-16000.safetensors` | [three_settings](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/three_settings>) | 3×64/64 |
 | step-24,000 | `stage2_dit_lora/step-24000.safetensors` | [three_settings](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-24000/three_settings>) | 3×64/64 |
+| step-32,000 | `stage2_dit_lora/step-32000.safetensors` | [three_settings](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/three_settings>) | 3×64/64 |
 
 ### 实际运行命令
 
 对每个 checkpoint，将 `DIT_LORA` 替换为对应文件后执行同一条 8 卡调度命令：
 
 ```bash
-DIT_LORA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_dit_lora/step-24000.safetensors \
+DIT_LORA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_full_edit_mt/stage2_dit_lora/step-32000.safetensors \
   bash scripts/eval/run_stage2_eval_8gpu.sh
 ```
 
@@ -1239,22 +1240,23 @@ DIT_LORA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_f
 
 ### 统一可视化
 
-将四个 Stage 2 结果目录一次传入统一分类可视化脚本，与 Stage 1 的 S1–S5
-合并为 S1–S17：
+将五个 Stage 2 结果目录一次传入统一分类可视化脚本，与 Stage 1 的 S1–S5
+合并为 S1–S20：
 
 ```bash
 .venv/bin/python scripts/eval/make_stage1_category_comparisons.py \
   --stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-4000/three_settings \
   --additional_stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-8000/three_settings \
   --additional_stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-16000/three_settings \
-  --additional_stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-24000/three_settings
+  --additional_stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-24000/three_settings \
+  --additional_stage2_root /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage2_evaluation/step-32000/three_settings
 ```
 
-结果图中包含 Original、GT、S1–S17；mask 对比包含 GT raster、GT token decode、
-Stage 1 online decode 和四个 Stage 2 checkpoint 的 online decode。文档仅放一张代表性
-S1–S17 结果对比图，完整分类图保存在[仓库目录](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_category_comparisons/)：
+结果图中包含 Original、GT、S1–S20；mask 对比包含 GT raster、GT token decode、
+Stage 1 online decode 和五个 Stage 2 checkpoint 的 online decode。文档仅放一张代表性
+S1–S20 结果对比图，完整分类图保存在[仓库目录](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_step32000_category_comparisons/)：
 
-[![S1–S17 add 类别结果对比](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_category_comparisons/add_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_category_comparisons/add_final_results.jpg)
+[![S1–S20 add 类别结果对比](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_step32000_category_comparisons/add_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_step32000_category_comparisons/add_final_results.jpg)
 
 
 ## 当前结论和下一步
@@ -1276,6 +1278,6 @@ S1–S17 结果对比图，完整分类图保存在[仓库目录](docs/assets/ev
   checkpoint、CSV 和 W&B 均符合当前方案与官方 runner 的实际语义。
 - Stage 2 放大规模训练数据已构建完成；最终 165,960 行保持 2:1 和逐卡同比例，并与 E7
   验证集在 identity、路径与图像 SHA256 层面严格互斥，可作为后续正式 Stage 2a 输入。
-- Stage 2 checkpoint 统一评测实验已按同一协议完成 step-4,000、step-8,000、step-16,000
-  和 step-24,000 的 S6–S8 评测，并合并生成 S1–S17 对比图。后续新增 checkpoint
+- Stage 2 checkpoint 统一评测实验已按同一协议完成 step-4,000、step-8,000、step-16,000、
+  step-24,000 和 step-32,000 的 S6–S8 评测，并合并生成 S1–S20 对比图。后续新增 checkpoint
   直接在 E16 的已测列表、运行命令和结果路径中追加，不再新建实验编号。
