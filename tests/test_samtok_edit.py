@@ -57,7 +57,7 @@ from train_samtok_edit import (  # noqa: E402
     samtok_parser,
     validate_wandb_credentials,
 )
-from run_stage1_eval import (  # noqa: E402
+from run_eval import (  # noqa: E402
     SETTING_SPECS,
     load_and_validate_rows,
     parse_settings,
@@ -65,7 +65,9 @@ from run_stage1_eval import (  # noqa: E402
     stock_edit,
 )
 from make_stage1_category_comparisons import (  # noqa: E402
+    build_comparison_labels,
     crop_decoded_mask_cells,
+    validate_matching_online_records,
 )
 
 
@@ -73,6 +75,53 @@ SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
 
 
 class SamtokEditTests(unittest.TestCase):
+    def test_category_comparison_builds_multi_checkpoint_columns(self):
+        final_labels, mask_labels, title = build_comparison_labels([4000, 8000])
+        self.assertEqual(len(final_labels), 13)
+        self.assertEqual(len(mask_labels), 5)
+        self.assertEqual(title, "S1-S11 checkpoint comparison")
+        self.assertEqual(final_labels[7], "S6 Stage-2 step-4000 direct")
+        self.assertEqual(final_labels[10], "S9 Stage-2 step-8000 direct")
+        self.assertEqual(
+            mask_labels[-1], "Stage-2 step-8000 online token decode (red)"
+        )
+
+        final_labels, mask_labels, title = build_comparison_labels(
+            [4000, 8000, 16000, 24000, 32000, 41490]
+        )
+        self.assertEqual(len(final_labels), 25)
+        self.assertEqual(len(mask_labels), 9)
+        self.assertEqual(title, "S1-S23 checkpoint comparison")
+        self.assertEqual(final_labels[13], "S12 Stage-2 step-16000 direct")
+        self.assertEqual(final_labels[16], "S15 Stage-2 step-24000 direct")
+        self.assertEqual(final_labels[19], "S18 Stage-2 step-32000 direct")
+        self.assertEqual(final_labels[22], "S21 Stage-2 step-41490 direct")
+        self.assertEqual(
+            mask_labels[-1], "Stage-2 step-41490 online token decode (red)"
+        )
+
+    def test_category_comparison_requires_identical_stage1_stage2_online_cot(self):
+        stage1 = [
+            {
+                "metadata_index": 0,
+                "source": "source.jpg",
+                "target": "target.jpg",
+                "prompt": "edit it",
+                "gt_mt_cot": "[]",
+                "conditioned_mt_cot": "[]",
+                "pass1_raw": "[]<|im_end|>",
+                "parse_layer": "empty",
+            }
+        ]
+        stage2 = [dict(stage1[0])]
+        audit = validate_matching_online_records(stage1, stage2)
+        self.assertTrue(audit["all_equal"])
+        self.assertEqual(audit["matching_records"], 1)
+
+        stage2[0]["conditioned_mt_cot"] = "different"
+        with self.assertRaisesRegex(ValueError, "conditioned_mt_cot"):
+            validate_matching_online_records(stage1, stage2)
+
     def test_category_mask_sheet_uses_separate_decoded_cells(self):
         panel = Image.new("RGB", (1600, 410), "white")
         for column, color in enumerate(
@@ -246,7 +295,7 @@ class SamtokEditTests(unittest.TestCase):
 
     def test_stage1_eval_five_setting_contract(self):
         settings = parse_settings(["1", "s2", "3,4", "s5"])
-        self.assertEqual(settings, list(SETTING_SPECS))
+        self.assertEqual(settings, list(SETTING_SPECS[:5]))
         self.assertEqual(
             [setting.cot_mode for setting in settings],
             ["disabled", "disabled", "disabled", "online", "ground_truth"],
@@ -263,7 +312,7 @@ class SamtokEditTests(unittest.TestCase):
             "cfg_scale": 4.0,
             "samtok_max_new_tokens": 128,
         }
-        with mock.patch("run_stage1_eval.run_edit", return_value="output") as run:
+        with mock.patch("run_eval.run_edit", return_value="output") as run:
             for setting in settings[1:]:
                 with self.subTest(setting=setting.key):
                     run.reset_mock()
@@ -299,6 +348,48 @@ class SamtokEditTests(unittest.TestCase):
         self.assertEqual((kwargs["height"], kwargs["width"]), (1024, 1235))
         self.assertTrue(kwargs["edit_image_auto_resize"])
         self.assertTrue(kwargs["zero_cond_t"])
+
+    def test_stage2_eval_three_setting_contract(self):
+        settings = parse_settings(["6", "s7", "s8_stage2_gt_cot"])
+        self.assertEqual(settings, list(SETTING_SPECS[5:]))
+        self.assertEqual(
+            [setting.cot_mode for setting in settings],
+            ["disabled", "online", "ground_truth"],
+        )
+        self.assertEqual(
+            [setting.stage1_te_lora for setting in settings],
+            [True, True, True],
+        )
+        self.assertEqual(
+            [setting.number for setting in settings],
+            [6, 7, 8],
+        )
+
+        row = {"prompt": "Turn the cat blue", "mt_cot": to_cot([])}
+        common = {
+            "seed": 7,
+            "num_inference_steps": 40,
+            "cfg_scale": 4.0,
+            "samtok_max_new_tokens": 128,
+        }
+        with mock.patch("run_eval.run_edit", return_value="output") as run:
+            for setting in settings:
+                with self.subTest(setting=setting.key):
+                    run.reset_mock()
+                    self.assertEqual(
+                        run_samtok_setting(object(), setting, row, "source", common),
+                        "output",
+                    )
+                    kwargs = run.call_args.kwargs
+                    if setting.number == 6:
+                        self.assertFalse(kwargs["enable_samtok_cot"])
+                        self.assertIsNone(kwargs["mt_cot"])
+                    elif setting.number == 7:
+                        self.assertTrue(kwargs["enable_samtok_cot"])
+                        self.assertIsNone(kwargs["mt_cot"])
+                    else:
+                        self.assertFalse(kwargs["enable_samtok_cot"])
+                        self.assertEqual(kwargs["mt_cot"], row["mt_cot"])
 
     def test_stage1_eval_metadata_validation_checks_all_rows_before_slicing(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -46,7 +46,7 @@ for setting in 1 2 3 4 5; do
     --max-restarts=0 \
     --log-dir="${LOG_DIR}/setting_${setting}" \
     --tee=3 \
-    scripts/eval/run_stage1_eval.py \
+    scripts/eval/run_eval.py \
     --settings "${setting}" \
     --output_dir "${OUTPUT_DIR}" \
     --no-make_panels \
@@ -55,8 +55,8 @@ for setting in 1 2 3 4 5; do
 done
 
 echo "[controller] Finalizing aggregate report and S1-S5 panels"
-"${PYTHON_BIN}" scripts/eval/run_stage1_eval.py \
-  --settings all \
+"${PYTHON_BIN}" scripts/eval/run_eval.py \
+  --settings 1 2 3 4 5 \
   --output_dir "${OUTPUT_DIR}" \
   --finalize_only
 echo "[controller] Stage 1 evaluation complete at $(date -u +%Y-%m-%dT%H:%M:%SZ)"

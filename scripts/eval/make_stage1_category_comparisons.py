@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Build model-free, per-category Stage 1 evaluation comparison sheets.
+"""Build model-free, per-category Stage 1 or multi-checkpoint comparison sheets.
 
-The final-result sheets read the completed S1-S5 PNGs directly. The mask sheets
-use the raw CrispEdit raster mask and the independent GT/online decoded overlay
-cells already produced by analyze_stage1_cot_masks.py. No model is loaded.
+The final-result sheets read completed evaluation PNGs directly. The mask
+sheets use the raw CrispEdit raster mask and the independent GT/online decoded
+overlay cells already produced by analyze_stage1_cot_masks.py. Passing one or
+more Stage 2 result roots enables checkpoint comparison layouts. No model is
+loaded.
 """
 
 from __future__ import annotations
@@ -40,15 +42,21 @@ DEFAULT_RAW_MASK_DIR = Path(
     "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/"
     "CrispEdit-2M-mask-parquet-101697"
 )
-ONLINE_SETTING = "s4_stage1_te_online_cot"
-SETTINGS = (
+STAGE1_ONLINE_SETTING = "s4_stage1_te_online_cot"
+STAGE2_ONLINE_SETTING = "s7_stage2_online_cot"
+STAGE1_SETTINGS = (
     "s1_qwen2511_stock",
     "s2_samtok_initial_direct",
     "s3_stage1_te_direct",
     "s4_stage1_te_online_cot",
     "s5_stage1_te_gt_cot",
 )
-FINAL_LABELS = (
+STAGE2_SETTINGS = (
+    "s6_stage2_direct",
+    "s7_stage2_online_cot",
+    "s8_stage2_gt_cot",
+)
+STAGE1_FINAL_LABELS = (
     "Original",
     "GT edited image",
     "S1 Stock 2511",
@@ -57,10 +65,26 @@ FINAL_LABELS = (
     "S4 Online CoT",
     "S5 GT CoT",
 )
-MASK_LABELS = (
+EIGHT_FINAL_LABELS = STAGE1_FINAL_LABELS + (
+    "S6 Stage-2 direct",
+    "S7 Stage-2 online CoT",
+    "S8 Stage-2 GT CoT",
+)
+STAGE1_MASK_LABELS = (
     "GT raster mask (blue)",
     "GT token decode (green)",
     "Online token decode (red)",
+)
+EIGHT_MASK_LABELS = (
+    "GT raster mask (blue)",
+    "GT token decode (green)",
+    "Stage-1 online token decode (red)",
+    "Stage-2 online token decode (red)",
+)
+STAGE2_VARIANT_LABELS = (
+    "direct",
+    "online CoT",
+    "GT CoT",
 )
 FINAL_CELL_SIZE = (280, 280)
 MASK_CELL_SIZE = (320, 320)
@@ -69,6 +93,25 @@ MASK_CELL_SIZE = (320, 320)
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument(
+        "--stage2_root",
+        type=Path,
+        default=None,
+        help=(
+            "primary completed S6-S8 result root; when set, append its three "
+            "settings to the backward-compatible Stage 1 layout"
+        ),
+    )
+    parser.add_argument(
+        "--additional_stage2_root",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "additional completed S6-S8 result root to append as three new "
+            "comparison settings; may be passed more than once"
+        ),
+    )
     parser.add_argument("--raw_mask_dir", type=Path, default=DEFAULT_RAW_MASK_DIR)
     parser.add_argument(
         "--decoded_panel_dir",
@@ -80,7 +123,11 @@ def parse_args():
         "--output_dir",
         type=Path,
         default=None,
-        help="default: ROOT/analysis/category_comparisons",
+        help=(
+            "default: ROOT/analysis/category_comparisons for Stage 1, or "
+            "the newest Stage 2 root's sibling N_settings_comparison/analysis/"
+            "category_comparisons for checkpoint comparisons"
+        ),
     )
     parser.add_argument("--jpeg_quality", type=int, default=92)
     return parser.parse_args()
@@ -94,20 +141,93 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_online_records(root: Path) -> list[dict]:
-    sidecars = sorted((root / ONLINE_SETTING).glob("[0-9][0-9][0-9][0-9].json"))
+def load_online_records(root: Path, setting: str) -> list[dict]:
+    sidecars = sorted((root / setting).glob("[0-9][0-9][0-9][0-9].json"))
     records = [json.loads(path.read_text(encoding="utf-8")) for path in sidecars]
     indices = [int(record["metadata_index"]) for record in records]
     if len(records) != 64 or indices != list(range(64)):
         raise ValueError(
-            f"Expected metadata indices 0..63 in {root / ONLINE_SETTING}, got {indices}"
+            f"Expected metadata indices 0..63 in {root / setting}, got {indices}"
         )
     for record in records:
         index = int(record["metadata_index"])
-        expected = root / ONLINE_SETTING / f"{index:04d}.png"
+        expected = root / setting / f"{index:04d}.png"
         if Path(record["output"]).resolve() != expected.resolve():
             raise ValueError(f"Online output path mismatch at index={index}")
     return records
+
+
+def validate_matching_online_records(
+    stage1_records: list[dict], stage2_records: list[dict]
+) -> dict:
+    """Prove that S4 and S7 use the same Stage 1 TE pass-1 result."""
+
+    identity_fields = (
+        "metadata_index",
+        "source",
+        "target",
+        "prompt",
+        "gt_mt_cot",
+        "conditioned_mt_cot",
+        "pass1_raw",
+        "parse_layer",
+    )
+    if len(stage1_records) != len(stage2_records):
+        raise ValueError(
+            f"S4/S7 record count mismatch: {len(stage1_records)} != {len(stage2_records)}"
+        )
+    for stage1, stage2 in zip(stage1_records, stage2_records, strict=True):
+        for field in identity_fields:
+            if stage1.get(field) != stage2.get(field):
+                raise ValueError(
+                    "S4/S7 online record mismatch at "
+                    f"index={stage1.get('metadata_index')} field={field}"
+                )
+    return {
+        "checked_records": len(stage1_records),
+        "matching_records": len(stage1_records),
+        "fields": list(identity_fields),
+        "all_equal": True,
+    }
+
+
+def load_checkpoint_step(root: Path) -> int:
+    path = root / "preflight.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    step = int(payload["models"]["checkpoint_step"])
+    checkpoint = Path(payload["models"]["dit_lora"])
+    if checkpoint.stem != f"step-{step}":
+        raise ValueError(
+            f"Stage 2 preflight checkpoint mismatch in {path}: {checkpoint} vs step={step}"
+        )
+    return step
+
+
+def build_comparison_labels(
+    checkpoint_steps: list[int],
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    """Return final/mask columns and title for zero or more Stage 2 roots."""
+
+    if not checkpoint_steps:
+        return STAGE1_FINAL_LABELS, STAGE1_MASK_LABELS, "Stage 1 evaluation"
+    if len(checkpoint_steps) == 1:
+        return EIGHT_FINAL_LABELS, EIGHT_MASK_LABELS, "S1-S8 evaluation"
+
+    final_labels = list(STAGE1_FINAL_LABELS)
+    mask_labels = list(STAGE1_MASK_LABELS)
+    for checkpoint_number, step in enumerate(checkpoint_steps):
+        setting_start = 6 + checkpoint_number * len(STAGE2_SETTINGS)
+        final_labels.extend(
+            f"S{setting_start + offset} Stage-2 step-{step} {variant}"
+            for offset, variant in enumerate(STAGE2_VARIANT_LABELS)
+        )
+        mask_labels.append(f"Stage-2 step-{step} online token decode (red)")
+    total_settings = len(STAGE1_SETTINGS) + len(STAGE2_SETTINGS) * len(checkpoint_steps)
+    return (
+        tuple(final_labels),
+        tuple(mask_labels),
+        f"S1-S{total_settings} checkpoint comparison",
+    )
 
 
 def load_mask_metrics(root: Path) -> dict[int, dict]:
@@ -198,6 +318,7 @@ def make_sheet(
     cell_builder,
     path: Path,
     quality: int,
+    evaluation_title: str,
 ):
     width = cell_size[0] * len(labels)
     title_height = 64
@@ -225,7 +346,7 @@ def make_sheet(
     centered_text(
         draw,
         (0, 0, width, title_height),
-        f"Stage 1 evaluation | category: {category} | samples: {len(records)}",
+        f"{evaluation_title} | category: {category} | samples: {len(records)}",
         title_font,
         fill="white",
     )
@@ -292,12 +413,59 @@ def main():
     args = parse_args()
     if not 1 <= args.jpeg_quality <= 100:
         raise ValueError("--jpeg_quality must be in [1, 100]")
-    output_dir = args.output_dir or args.root / "analysis" / "category_comparisons"
+    if args.additional_stage2_root and args.stage2_root is None:
+        raise ValueError("--additional_stage2_root requires --stage2_root")
+    stage2_roots = (
+        [args.stage2_root, *args.additional_stage2_root]
+        if args.stage2_root is not None
+        else []
+    )
+    resolved_stage2_roots = [root.resolve() for root in stage2_roots]
+    if len(set(resolved_stage2_roots)) != len(resolved_stage2_roots):
+        raise ValueError("Stage 2 result roots must be unique")
+    checkpoint_steps = [load_checkpoint_step(root) for root in stage2_roots]
+    if len(set(checkpoint_steps)) != len(checkpoint_steps):
+        raise ValueError(f"Stage 2 checkpoint steps must be unique: {checkpoint_steps}")
+    final_labels, mask_labels, evaluation_title = build_comparison_labels(
+        checkpoint_steps
+    )
+    if args.output_dir is not None:
+        output_dir = args.output_dir
+    elif stage2_roots:
+        total_settings = len(STAGE1_SETTINGS) + len(STAGE2_SETTINGS) * len(stage2_roots)
+        comparison_name = (
+            "eight_settings_comparison"
+            if len(stage2_roots) == 1
+            else (
+                "eleven_settings_comparison"
+                if total_settings == 11
+                else f"{total_settings}_settings_comparison"
+            )
+        )
+        output_dir = (
+            stage2_roots[-1].parent
+            / comparison_name
+            / "analysis"
+            / "category_comparisons"
+        )
+    else:
+        output_dir = args.root / "analysis" / "category_comparisons"
     decoded_panel_dir = (
         args.decoded_panel_dir
         or args.root / "analysis" / "decoded_mask_overlap" / "panels"
     )
-    records = load_online_records(args.root)
+    records = load_online_records(args.root, STAGE1_ONLINE_SETTING)
+    stage2_record_sets = [
+        load_online_records(root, STAGE2_ONLINE_SETTING) for root in stage2_roots
+    ]
+    online_match_audits = [
+        validate_matching_online_records(records, stage2_records)
+        for stage2_records in stage2_record_sets
+    ]
+    stage2_by_index_sets = [
+        {int(record["metadata_index"]): record for record in stage2_records}
+        for stage2_records in stage2_record_sets
+    ]
     metrics = load_mask_metrics(args.root)
     by_type: defaultdict[str, list[dict]] = defaultdict(list)
     for record in records:
@@ -309,8 +477,13 @@ def main():
     def final_cells(record: dict) -> list[Image.Image]:
         index = int(record["metadata_index"])
         paths = [Path(record["source"]), Path(record["target"])] + [
-            args.root / setting / f"{index:04d}.png" for setting in SETTINGS
+            args.root / setting / f"{index:04d}.png" for setting in STAGE1_SETTINGS
         ]
+        paths.extend(
+            stage2_root / setting / f"{index:04d}.png"
+            for stage2_root in stage2_roots
+            for setting in STAGE2_SETTINGS
+        )
         return [load_fitted(path, FINAL_CELL_SIZE) for path in paths]
 
     def mask_cells(record: dict) -> list[Image.Image]:
@@ -346,31 +519,97 @@ def main():
                 raise ValueError(f"Online CoT is nonempty for empty GT at index={index}")
             clean_source = fit_cell(source, MASK_CELL_SIZE)
             gt_cell = add_empty_badge(clean_source, "EMPTY GT TOKEN MASK")
-            online_cell = add_empty_badge(clean_source, "EMPTY ONLINE TOKEN MASK")
+            online_badge = (
+                "EMPTY STAGE-1 ONLINE MASK"
+                if stage2_roots
+                else "EMPTY ONLINE TOKEN MASK"
+            )
+            online_cell = add_empty_badge(clean_source, online_badge)
             if index in metrics:
                 raise ValueError(f"Unexpected decoded mask metrics for empty GT index={index}")
 
+        cells = [raw_cell, gt_cell, online_cell]
+        stage2_mask_audit = {}
+        for step, stage2_by_index in zip(
+            checkpoint_steps, stage2_by_index_sets, strict=True
+        ):
+            stage2_record = stage2_by_index[index]
+            stage2_items = parse_cot(stage2_record["conditioned_mt_cot"])
+            if gt_items:
+                # Every Stage 2 online setting uses the same frozen Stage 1 TE
+                # as S4. The per-root full-record equality audits prove these
+                # are exactly the same tokens, hence the same codec decode.
+                # Keep a distinct cell for every checkpoint comparison column.
+                stage2_online_cell = online_cell.copy()
+            else:
+                stage2_online_cell = add_empty_badge(
+                    fit_cell(source, MASK_CELL_SIZE),
+                    f"EMPTY S2-{step} ONLINE MASK",
+                )
+            cells.append(stage2_online_cell)
+            stage2_mask_audit[f"step-{step}"] = {
+                "online_cot_nonempty": bool(stage2_items),
+                "stage1_online_cot_equal": (
+                    record["conditioned_mt_cot"]
+                    == stage2_record["conditioned_mt_cot"]
+                ),
+            }
+
         mask_audit[index] = {
             "gt_cot_nonempty": bool(gt_items),
-            "online_cot_nonempty": bool(online_items),
+            "stage1_online_cot_nonempty": bool(online_items),
+            "stage2_checkpoints": stage2_mask_audit,
+            "stage2_online_cot_nonempty": (
+                next(iter(stage2_mask_audit.values()))["online_cot_nonempty"]
+                if len(stage2_mask_audit) == 1
+                else None
+            ),
+            "stage1_stage2_online_cot_equal": (
+                next(iter(stage2_mask_audit.values()))["stage1_online_cot_equal"]
+                if len(stage2_mask_audit) == 1
+                else None
+            ),
             "raw_mask_nonempty": bool(raw_mask.any()),
             "decoded_panel": (
                 str(decoded_panel_dir / f"{index:04d}.jpg") if gt_items else None
             ),
             "mask_iou": metrics.get(index, {}).get("mask_iou"),
         }
-        return [raw_cell, gt_cell, online_cell]
+        return cells
 
     manifest = {
         "status": "complete",
         "root": str(args.root),
+        "stage2_root": str(args.stage2_root) if args.stage2_root else None,
+        "stage2_roots": [str(root) for root in stage2_roots],
+        "stage2_checkpoint_steps": checkpoint_steps,
         "output_dir": str(output_dir),
-        "generation": "model-free aggregation of completed S1-S5 outputs and audited decoded-mask panels",
-        "final_columns": list(FINAL_LABELS),
-        "mask_columns": list(MASK_LABELS),
+        "generation": (
+            f"model-free aggregation of completed S1-S{len(STAGE1_SETTINGS) + len(STAGE2_SETTINGS) * len(stage2_roots)} "
+            "outputs and audited decoded-mask panels"
+            if stage2_roots
+            else "model-free aggregation of completed S1-S5 outputs and audited decoded-mask panels"
+        ),
+        "final_columns": list(final_labels),
+        "mask_columns": list(mask_labels),
         "mask_layout_note": (
-            "The three masks are separate source-image overlay panels; no cell "
-            "combines GT, GT-token decode, and online-token decode."
+            f"The {len(mask_labels)} masks are separate source-image overlay panels; "
+            "no cell combines multiple masks."
+        ),
+        "stage2_online_decode_note": (
+            "Every Stage 2 online setting uses the same frozen Stage 1 TE as S4. "
+            "For every checkpoint, all 64 source/target/prompt/GT/conditioned/"
+            "pass1/parser fields were proven equal, so the S4 codec decode is "
+            "reused in a distinct overlay cell for each checkpoint."
+            if stage2_roots
+            else None
+        ),
+        "stage1_stage2_online_match_audits": {
+            f"step-{step}": audit
+            for step, audit in zip(checkpoint_steps, online_match_audits, strict=True)
+        },
+        "stage1_stage2_online_match_audit": (
+            online_match_audits[0] if len(online_match_audits) == 1 else None
         ),
         "decoded_panel_dir": str(decoded_panel_dir),
         "raw_mask_dir": str(args.raw_mask_dir),
@@ -382,20 +621,22 @@ def main():
         final_size = make_sheet(
             category=category,
             records=category_records,
-            labels=FINAL_LABELS,
+            labels=final_labels,
             cell_size=FINAL_CELL_SIZE,
             cell_builder=final_cells,
             path=final_path,
             quality=args.jpeg_quality,
+            evaluation_title=evaluation_title,
         )
         mask_size = make_sheet(
             category=category,
             records=category_records,
-            labels=MASK_LABELS,
+            labels=mask_labels,
             cell_size=MASK_CELL_SIZE,
             cell_builder=mask_cells,
             path=mask_path,
             quality=args.jpeg_quality,
+            evaluation_title=evaluation_title,
         )
         indices = [int(record["metadata_index"]) for record in category_records]
         manifest["categories"][category] = {

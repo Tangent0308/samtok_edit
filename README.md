@@ -133,12 +133,15 @@ python scripts/inference/infer_samtok_edit.py \
 ```
 
 `scripts/inference/validate.py` runs a small JSONL set with one loaded pipeline.
-`scripts/eval/run_stage1_eval.py` is the dedicated Stage 1 evaluation entry point.
+`scripts/eval/run_eval.py` is the unified S1–S8 evaluation entry point.
 It compares stock Qwen-Image-Edit-2511, the initial SAMTok TE, direct editing
-with the Stage 1 TE, online predicted-CoT editing, and GT-CoT editing. It writes
-per-setting outputs/JSONL records and source/target/S1-S5 comparison panels.
-`scripts/eval/run_stage1_eval_8gpu.sh` runs settings 1 through 5 sequentially;
-each setting uses eight independent torchrun ranks and shards the 64 validation
+with the Stage 1 TE, and Stage-2 direct, online predicted-CoT, and GT-CoT
+editing. It writes per-setting outputs/JSONL records; the companion analyzer
+builds audited source/target/S1–S8 comparison panels.
+`scripts/eval/run_stage1_eval_8gpu.sh` runs the historical settings 1 through 5;
+`scripts/eval/run_stage2_eval_8gpu.sh` runs settings 6 through 8 and then combines
+them with the existing S1–S5 artifacts.
+Each setting uses eight independent torchrun ranks and shards the 64 validation
 rows evenly across the GPUs before rank 0 aggregates that setting.
 
 ## Tests

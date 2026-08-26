@@ -7,7 +7,7 @@
 > 原始方案中的目标与章节组织保留；代码片段和命令以当前实现为准。
 
 当前代码实现包含 Stage 1/Stage 2 训练入口、canonical CoT 数据管线、SAMTok codec 构建器、
-Qwen-Image-Edit-2511 / SAMTok gres-ft 模型适配和 Stage 1 评测入口。实验运行过程与结果单独记录在
+Qwen-Image-Edit-2511 / SAMTok gres-ft 模型适配和 Stage 1/Stage 2 评测入口。实验运行过程与结果单独记录在
 `SamtokEdit_实验记录.md`。
 
 ---
@@ -69,6 +69,11 @@ source .venv/bin/activate
 ByteDance 内部 PyPI 和 `cu128` PyTorch backend；可通过 `bash setup_env.sh --help`
 查看可覆盖参数。安装后执行依赖一致性、关键版本、CUDA、本地 DiffSynth 来源和
 仓库单元测试校验。
+
+如果默认内部 PyPI 暂未同步固定的 uv 版本，bootstrap 会只针对同一个精确 uv 版本回退到
+公共 PyPI；项目其余依赖仍使用 `SAMTOK_EDIT_INDEX`。回退源可由
+`SAMTOK_EDIT_UV_BOOTSTRAP_INDEX` 覆盖。因此在具备对应网络访问的干净 Python 3.11 机器上，
+仍只需运行一次 `bash setup_env.sh`。
 
 按要求不保留 lockfile：`setup_env.sh` 使用 `uv pip install`，不使用会生成
 `uv.lock` 的 `uv sync`，`.gitignore` 也忽略根目录 `uv.lock`。直接依赖版本是精确的；
@@ -380,10 +385,12 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 │   │   └── run_stage2_8gpu_pipeline.sh
 │   ├── inference/infer_samtok_edit.py
 │   ├── inference/validate.py
-│   ├── eval/run_stage1_eval.py
+│   ├── eval/run_eval.py                   # S1–S8 统一评测入口
 │   ├── eval/run_stage1_eval_8gpu.sh
+│   ├── eval/run_stage2_eval_8gpu.sh
 │   ├── eval/analyze_stage1_eval.py
 │   ├── eval/analyze_stage1_cot_masks.py
+│   ├── eval/analyze_eight_setting_eval.py
 │   └── eval/make_stage1_category_comparisons.py
 ├── tests/test_samtok_edit.py
 └── SamtokEdit_训练方案_当前实现.md
@@ -1019,10 +1026,10 @@ python scripts/inference/infer_samtok_edit.py \
 `scripts/inference/validate.py` 在同一 pipeline 上读取 JSONL，支持 `--use_gt_cot` 和
 `--disable_cot` 两个消融开关，并写 `results.json`。
 
-### 4.11 Stage 1 评测：`scripts/eval/run_stage1_eval.py`
+### 4.11 统一评测入口：`scripts/eval/run_eval.py`
 
-当前脚本专用于 Stage 1 的五组图像编辑对照，所有 setting 共用 stock
-Qwen-Image-Edit-2511 DiT/VAE，不加载 DiT LoRA：
+该脚本现在是 S1–S8 的统一评测入口；本节先列出已完成的 Stage 1 五组图像编辑对照。
+S1–S5 共用 stock Qwen-Image-Edit-2511 DiT/VAE，不加载 DiT LoRA：
 
 1. `s1_qwen2511_stock`：2511 原始 TE、processor 和官方 DiffSynth
    `QwenImagePipeline`，直接编辑；
@@ -1047,13 +1054,13 @@ Stage 1 `step-5000.safetensors`。先做不加载模型的完整预检：
 
 ```bash
 cd /opt/tiger/tanyue/samtok_edit
-python scripts/eval/run_stage1_eval.py --dry_run
+python scripts/eval/run_eval.py --dry_run
 ```
 
 真正出图时直接运行：
 
 ```bash
-python scripts/eval/run_stage1_eval.py
+python scripts/eval/run_eval.py
 ```
 
 可用 `--settings 1 3 4`、`--start_index`、`--max_samples` 选子集；中断后使用完全
@@ -1077,8 +1084,8 @@ S1 Stock 2511、S2 Initial direct、S3 Stage-1 direct、S4 Online CoT 和 S5 GT 
 完成后可在不加载模型的情况下重新验收并生成 panel：
 
 ```bash
-python scripts/eval/run_stage1_eval.py \
-  --settings all \
+python scripts/eval/run_eval.py \
+  --settings 1 2 3 4 5 \
   --output_dir /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/stage1_evaluation/five_settings \
   --finalize_only
 ```
@@ -1124,6 +1131,55 @@ python scripts/eval/make_stage1_category_comparisons.py
 样本 index、非空 CoT/raw mask 数量、图片尺寸、绝对路径和 SHA256；默认输出目录是
 `five_settings/analysis/category_comparisons/`。
 
+同一脚本也负责 S1–S8 的分类汇总，不另设 Stage 2 可视化实现。传入
+`--stage2_root <S6-S8结果目录>` 后，最终结果大图扩展为 Original、GT edited image、
+S1–S8 共十列；mask 大图扩展为四个彼此独立的 source-image overlay：raw GT raster、
+GT token decode、Stage 1 online token decode、Stage 2 online token decode。S7 的在线
+CoT 仍由与 S4 相同的 Stage 1 TE 产生；脚本会先对 64 条 S4/S7 的 metadata、输入、GT、
+conditioned CoT、pass-1 原文和 parser 层逐字段硬校验。全部相等时，两列各自展示同一组
+真实 codec decode 的独立副本，并在 manifest 记录复用依据；任一字段不同则拒绝生成，
+避免把未经 decode 的 Stage 2 token 错配进图中。默认输出到同 step 的
+`eight_settings_comparison/analysis/category_comparisons/`。
+
+若需要跨 Stage 2 checkpoint 比较，可在主 `--stage2_root` 之外重复传入
+`--additional_stage2_root`。脚本从每个 root 的 `preflight.json` 读取并校验 checkpoint
+step，按传入顺序为每个 checkpoint 追加 direct、online CoT、GT CoT 三列，并为每个
+checkpoint 的 online mask-token decode 追加一个独立 overlay 列。例如 step-4,000 与
+step-8,000 同时比较时，最终结果图为 Original、GT、S1–S11 共 13 列，mask 图为 raw GT、
+GT token、Stage 1 online、step-4,000 online、step-8,000 online 共 5 列；布局、单元尺寸、
+instruction 和空 mask 标记与单 checkpoint 模式保持一致。
+
+### 4.12 Stage 2 三 setting 评测与八 setting 汇总
+
+`scripts/eval/run_eval.py` 是 S1–S8 共用的统一入口。它在与 Stage 1 完全相同的 64 条验证集
+和生成参数上评测显式传入的 Stage 2
+DiT LoRA checkpoint。三个新 setting 都加载 gres-ft、Stage 1 正式
+`step-5000` TE LoRA、Qwen-Image-Edit-2511 DiT/VAE 和同一个 Stage 2 DiT LoRA：
+
+6. `s6_stage2_direct`：关闭在线 CoT，显式传 `mt_cot=None`，只做原生 direct edit；
+7. `s7_stage2_online_cot`：先由 Stage 1 TE 在线 greedy 生成并 canonicalize CoT，再出图；
+8. `s8_stage2_gt_cot`：关闭在线生成，直接使用验证 metadata 的 canonical GT CoT。
+
+这三组继续使用 `seed=base_seed+metadata_index`、bf16、40 steps、CFG 4.0、
+`edit_image_auto_resize=True` 和 `zero_cond_t=True`。预检除 Stage 1 的数据/模型检查外，还强制
+检查 Stage 2 checkpoint 为 1,440 个 BF16 DiT LoRA tensor、720 对 A/B、235,929,600 个参数，
+并精确覆盖官方 12 类 target module；checkpoint 文件名中的 optimizer step 与训练 world size
+还会用于记录截至该 checkpoint 的含重复样本消费量。
+
+统一入口根据 setting spec 自动决定 stock/SAMTok text encoder、Stage 1 TE LoRA 和 Stage 2
+DiT LoRA 的加载边界；数据预检、分片、逐样本 sidecar、resume、finalize 和 panel 代码只有一份。
+`scripts/eval/run_stage2_eval_8gpu.sh` 只是面向 S6–S8 的调度 wrapper：它在启动瞬间从正式训练输出中按 step 选择最新完整
+checkpoint，并把路径固定给整个 run；随后以三个独立 8-rank `torchrun` 严格串行执行 S6→S7→S8，
+避免训练继续写出更新 checkpoint 时混用权重。每个 setting 内仍按
+`selected_rows[rank::8]` 分片，每卡 8 条，支持逐 sidecar `RESUME=1` 续跑。
+
+全部完成后，`scripts/eval/analyze_eight_setting_eval.py` 只读取既有 S1–S5 与新 S6–S8 的
+sidecar/PNG，不加载模型。它强制核对 8 组的 metadata、seed、steps、CFG、prompt、source、
+target、GT CoT、输出尺寸和 world size；检查 direct/online/GT 路由，比较 S4/S7 的同一 TE
+pass-1 输出，并对 512 张输出做解码、唯一 hash、28 个 setting pair 的 byte identity 和归一化
+RGB MAE 审计。最后生成 64 张包含 Source、Target、S1–S8 和完整 instruction 的十列 panel，
+以及 7 类代表样本总览。RGB MAE 只用于输出敏感性/完整性检查，不作为语义编辑质量指标。
+
 ---
 
 ## 代码回归入口
@@ -1135,5 +1191,6 @@ python -m unittest tests/test_samtok_edit.py
 
 测试覆盖 canonical CoT、分层 parser、DDP schedule、非 canonical 拒绝、codec 空 mask 拒绝、
 英文模板、全局随机抽样与 worker 分区、state-dict converter、KV-cache 转发和新版 DiffSynth
-分片路径兼容，以及分类 mask 大图从审计 panel 中提取 GT/online 独立面板的列顺序。
+分片路径兼容，以及分类 mask 大图从审计 panel 中提取 GT/online 独立面板的列顺序、
+S1–S8 分类汇总对 S4/S7 在线 CoT 完全一致性的强制校验。
 测试运行结果和训练/数据实验结果统一记录在 `SamtokEdit_实验记录.md`。
