@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select and materialize plain ``edit`` rows from original CrispEdit parquets."""
+"""Select fact-prefiltered plain ``edit`` rows and materialize exact images."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from build_edit_mt_metadata import (  # noqa: E402
     DEFAULT_CRISPEDIT,
-    DEFAULT_MASKS,
     _atomic_jsonl,
     _combine_shards,
     _decode_image,
@@ -30,38 +29,49 @@ from build_edit_mt_metadata import (  # noqa: E402
 )
 
 
+DEFAULT_FILTER_MANIFEST = Path(
+    "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/"
+    "CrispEdit-2M-fact-prefilter/manifest"
+)
+
+
 def collect_candidates(
     raw_paths: list[Path],
     *,
     ascii_only: bool,
     excluded_source_ids: set[tuple[str, int]],
     deprioritized_source_ids: set[tuple[str, int]],
-    mask_dir: Path | None = None,
+    filter_manifest_dir: Path,
 ) -> tuple[list[tuple[str, int, str, bool]], Counter]:
     """Collect lightweight candidates without decoding or materializing images."""
 
     candidates = []
     stats = Counter()
     for raw_path in tqdm(raw_paths, desc="Scanning plain-edit candidates"):
-        allowed = None
-        if mask_dir is not None:
-            mask_path = mask_dir / raw_path.name
-            if not mask_path.is_file():
-                raise FileNotFoundError(mask_path)
-            mask_rows = pq.read_table(
-                mask_path, columns=["row_idx", "filter_decision"]
-            ).to_pylist()
-            allowed = {
-                int(row["row_idx"])
-                for row in mask_rows
-                if row["filter_decision"] == "keep"
-            }
+        manifest_path = filter_manifest_dir / raw_path.name
+        if not manifest_path.is_file():
+            raise FileNotFoundError(manifest_path)
+        manifest_rows = pq.read_table(
+            manifest_path, columns=["row_idx", "filter_decision"]
+        ).to_pylist()
+        allowed = {
+            int(row["row_idx"])
+            for row in manifest_rows
+            if row["filter_decision"] == "keep"
+        }
         raw_rows = pq.read_table(raw_path, columns=["instruction", "type"]).to_pylist()
+        if len(manifest_rows) != len(raw_rows):
+            raise ValueError(
+                f"Manifest/raw row-count mismatch for {raw_path.name}: "
+                f"{len(manifest_rows)} != {len(raw_rows)}"
+            )
+        if any(int(row["row_idx"]) != index for index, row in enumerate(manifest_rows)):
+            raise ValueError(f"Manifest row_idx is not aligned for {raw_path.name}")
         source_parquet = canonical_source_parquet(raw_path.name)
         for row_idx, raw in enumerate(raw_rows):
             stats["scanned"] += 1
-            if allowed is not None and row_idx not in allowed:
-                stats["mask_filter_drop"] += 1
+            if row_idx not in allowed:
+                stats["prefilter_drop"] += 1
                 continue
             identity = (source_parquet, row_idx)
             if identity in excluded_source_ids:
@@ -158,17 +168,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--crispedit_dir", type=Path, default=DEFAULT_CRISPEDIT)
     parser.add_argument(
+        "--filter_manifest_dir", type=Path, default=DEFAULT_FILTER_MANIFEST
+    )
+    parser.add_argument(
         "--output_root",
         type=Path,
         default=_REPO_ROOT / "data" / "crispedit_samtok",
     )
     parser.add_argument("--output_jsonl", type=Path, default=None)
-    parser.add_argument(
-        "--filter_with_mask_parquets",
-        action="store_true",
-        help="Only retain rows whose paired mask parquet has filter_decision=keep",
-    )
-    parser.add_argument("--mask_dir", type=Path, default=DEFAULT_MASKS)
     parser.add_argument("--max_files", type=int, default=None)
     parser.add_argument("--max_rows", type=int, default=None)
     parser.add_argument(
@@ -213,11 +220,6 @@ def main():
         raise ValueError("Multi-worker construction requires --skip_combine")
     if args.deprioritize_metadata_jsonl and args.sample_rows is None:
         raise ValueError("--deprioritize_metadata_jsonl requires --sample_rows")
-    if (args.ascii_only or args.exclude_metadata_jsonl) and args.sample_rows is None:
-        raise ValueError(
-            "--ascii_only and --exclude_metadata_jsonl require --sample_rows so the "
-            "selection filters are applied globally"
-        )
 
     output_root = args.output_root.resolve()
     output_jsonl = args.output_jsonl or output_root / "edit_all.jsonl"
@@ -252,56 +254,57 @@ def main():
     deprioritized, deprioritized_stats = load_excluded_source_ids(
         args.deprioritize_metadata_jsonl
     )
-    selected_by_file = None
     selection_stats = Counter()
+    candidates, selection_stats = collect_candidates(
+        raw_paths,
+        ascii_only=args.ascii_only,
+        excluded_source_ids=hard_exclusions,
+        deprioritized_source_ids=deprioritized,
+        filter_manifest_dir=args.filter_manifest_dir,
+    )
     if args.sample_rows is not None:
-        candidates, selection_stats = collect_candidates(
-            raw_paths,
-            ascii_only=args.ascii_only,
-            excluded_source_ids=hard_exclusions,
-            deprioritized_source_ids=deprioritized,
-            mask_dir=args.mask_dir if args.filter_with_mask_parquets else None,
-        )
         selected = select_candidates(candidates, args.sample_rows, args.seed)
-        selected_by_file = defaultdict(set)
-        for filename, row_idx, edit_type, was_deprioritized in selected:
-            selected_by_file[filename].add(row_idx)
-            selection_stats[f"selected_type:{edit_type}"] += 1
-            selection_stats[
-                "selected_deprioritized" if was_deprioritized else "selected_preferred"
-            ] += 1
-        selection_stats["selected"] = len(selected)
-        selection_stats["selected_parquet_files"] = len(selected_by_file)
+        selection_mode = "global_random"
+    elif args.max_rows is not None:
+        selected = candidates[: args.max_rows]
+        selection_mode = "eligible_prefix"
+    else:
+        selected = candidates
+        selection_mode = "all_eligible"
+    selected_by_file = defaultdict(set)
+    for filename, row_idx, edit_type, was_deprioritized in selected:
+        selected_by_file[filename].add(row_idx)
+        selection_stats[f"selected_type:{edit_type}"] += 1
+        selection_stats[
+            "selected_deprioritized" if was_deprioritized else "selected_preferred"
+        ] += 1
+    selection_stats["selected"] = len(selected)
+    selection_stats["selected_parquet_files"] = len(selected_by_file)
 
     assigned_pairs = partition_pairs(
         [(path, path) for path in raw_paths], args.num_workers, args.worker_index
     )
     totals = Counter()
     completed = []
-    remaining = args.max_rows
     for raw_path, _ in tqdm(assigned_pairs, desc="CrispEdit edit shards"):
         shard_path = shard_dir / f"{raw_path.stem}.edit.jsonl"
         if args.resume and shard_path.is_file():
             completed.append(shard_path)
             totals["resumed_shards"] += 1
             continue
-        rows, stats = materialize_parquet(
-            raw_path,
-            output_root,
-            (
-                selected_by_file.get(raw_path.name, set())
-                if selected_by_file is not None
-                else None
-            ),
-            remaining,
-        )
+        selected_indices = selected_by_file.get(raw_path.name, set())
+        if selected_indices:
+            rows, stats = materialize_parquet(
+                raw_path,
+                output_root,
+                selected_indices,
+                None,
+            )
+        else:
+            rows, stats = [], Counter()
         _atomic_jsonl(rows, shard_path)
         completed.append(shard_path)
         totals.update(stats)
-        if remaining is not None:
-            remaining -= len(rows)
-            if remaining <= 0:
-                break
 
     if not args.skip_combine:
         _combine_shards(completed, output_jsonl)
@@ -317,13 +320,12 @@ def main():
                     "assigned_parquet_shards": len(assigned_pairs),
                 },
                 "selection": {
-                    "mode": "global_random_prefer_disjoint"
-                    if args.sample_rows is not None
-                    else "prefix",
+                    "mode": selection_mode,
                     "seed": args.seed if args.sample_rows is not None else None,
                     "ascii_only": args.ascii_only,
                     "stats": dict(selection_stats),
                 },
+                "fact_prefilter_manifest": str(args.filter_manifest_dir),
                 "hard_exclusion": {
                     "metadata": [str(path) for path in args.exclude_metadata_jsonl],
                     "stats": dict(hard_exclusion_stats),

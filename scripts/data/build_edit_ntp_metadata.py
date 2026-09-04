@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert released GRES SAMTok conversations into edit-template NTP rows."""
+"""Convert non-empty released GRES SAMTok targets into edit-template NTP rows."""
 
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ import random
 import re
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+from tqdm import tqdm
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "DiffSynth-Studio"))
@@ -58,12 +61,6 @@ EDIT_VERB_TEMPLATES = [
     "make {expr} glow",
     "recolor {expr} to green",
 ]
-GLOBAL_TEMPLATES = [
-    "apply a vintage film look to the whole image",
-    "turn the entire image into a watercolor painting",
-    "make the whole scene look like it was photographed at dusk",
-]
-
 _QUESTION_PATTERNS = []
 for _template in SEGMENTATION_QUESTIONS:
     pattern = re.escape(_template).replace(
@@ -103,10 +100,10 @@ def expression_from_cot(cot: str) -> str | None:
 def build_rows(
     source_rows,
     rng: random.Random,
-    global_ratio: float,
     image_root: Path | None,
     check_images: bool,
     absolute_image_paths: bool,
+    source_dataset: Path = DEFAULT_GRES_JSON,
 ):
     output = []
     layers = Counter()
@@ -116,43 +113,70 @@ def build_rows(
             raise ValueError(f"Row {row_id} has malformed conversations")
         question = conversations[0].get("value", "")
         raw_cot = conversations[1].get("value", "")
-        mt_cot, layer = parse_and_canonicalize_mt_cot(raw_cot, return_layer=True)
+        mt_cot = source.get("_samtok_canonical_cot")
+        layer = source.get("_samtok_parse_layer")
+        if mt_cot is None:
+            mt_cot, layer = parse_and_canonicalize_mt_cot(
+                raw_cot, return_layer=True
+            )
         if mt_cot is None:
             raise ValueError(f"Row {row_id} has no recoverable SAMTok target")
+        if layer == "empty" or mt_cot == to_cot([]):
+            raise ValueError(
+                f"Row {row_id} has an empty SAMTok target; refined edit_ntp forbids []"
+            )
         layers[layer] += 1
-        expression = expression_from_cot(mt_cot) or expression_from_question(question)
+        expression = source.get("_samtok_expression") or expression_from_cot(
+            mt_cot
+        ) or expression_from_question(question)
         image = source["image"]
         resolved_image = image_root / image if image_root is not None else Path(image)
         if check_images and not resolved_image.is_file():
             raise FileNotFoundError(resolved_image)
-        metadata_image = str(resolved_image.resolve()) if absolute_image_paths else image
+        # Both configured roots are already absolute.  Path.resolve() performs an
+        # additional remote-filesystem lookup for every row and is unnecessary here.
+        metadata_image = str(resolved_image.absolute()) if absolute_image_paths else image
         output.append(
             {
                 "edit_image": metadata_image,
                 "prompt": rng.choice(EDIT_VERB_TEMPLATES).format(expr=expression),
                 "mt_cot": mt_cot,
                 "sample_type": "edit_ntp",
-            }
-        )
-
-    if not 0 <= global_ratio < 1:
-        raise ValueError("global_ratio must be in [0, 1)")
-    global_count = (
-        round(len(output) * global_ratio / (1 - global_ratio)) if output else 0
-    )
-    base_rows = output[:]
-    for _ in range(global_count):
-        source = rng.choice(base_rows)
-        output.append(
-            {
-                "edit_image": source["edit_image"],
-                "prompt": rng.choice(GLOBAL_TEMPLATES),
-                "mt_cot": to_cot([]),
-                "sample_type": "edit_ntp",
+                "provenance": {
+                    "source_dataset": str(source_dataset),
+                    "source_row_idx": int(source.get("_samtok_source_row_idx", row_id)),
+                    "source_image": image,
+                },
             }
         )
     rng.shuffle(output)
-    return output, layers, global_count
+    return output, layers
+
+
+def validate_source_images(
+    source_rows: list[dict], image_root: Path | None, io_workers: int
+) -> None:
+    """Check remote image paths concurrently before metadata materialization."""
+
+    if io_workers < 1:
+        raise ValueError("io_workers must be positive")
+    paths = [
+        image_root / row["image"] if image_root is not None else Path(row["image"])
+        for row in source_rows
+    ]
+
+    def missing(path: Path) -> Path | None:
+        return None if path.is_file() else path
+
+    with ThreadPoolExecutor(max_workers=io_workers) as executor:
+        results = executor.map(missing, paths)
+        for result in tqdm(
+            results,
+            total=len(paths),
+            desc="Checking selected GRES images",
+        ):
+            if result is not None:
+                raise FileNotFoundError(result)
 
 
 def select_source_rows(
@@ -174,6 +198,48 @@ def select_source_rows(
     if max_rows is not None:
         return source_rows[:max_rows]
     return source_rows[:]
+
+
+def filter_source_rows(source_rows: list[dict], ascii_only: bool):
+    """Remove empty/invalid/non-English targets before exact-count sampling."""
+
+    eligible = []
+    stats = Counter()
+    for row_id, source in enumerate(source_rows):
+        conversations = source.get("conversations")
+        if not isinstance(conversations, list) or len(conversations) < 2:
+            stats["malformed_drop"] += 1
+            continue
+        raw_cot = conversations[1].get("value", "")
+        mt_cot, layer = parse_and_canonicalize_mt_cot(raw_cot, return_layer=True)
+        if mt_cot is None:
+            stats["invalid_cot_drop"] += 1
+            continue
+        if layer == "empty" or mt_cot == to_cot([]):
+            stats["empty_cot_drop"] += 1
+            continue
+        try:
+            expression = expression_from_cot(mt_cot) or expression_from_question(
+                conversations[0].get("value", "")
+            )
+        except ValueError:
+            stats["expression_drop"] += 1
+            continue
+        if ascii_only and (not mt_cot.isascii() or not expression.isascii()):
+            stats["non_ascii_drop"] += 1
+            continue
+        eligible.append(
+            {
+                **source,
+                "_samtok_source_row_idx": row_id,
+                "_samtok_canonical_cot": mt_cot,
+                "_samtok_parse_layer": layer,
+                "_samtok_expression": expression,
+            }
+        )
+        stats["eligible"] += 1
+        stats[f"parse_layer:{layer}"] += 1
+    return eligible, stats
 
 
 def write_jsonl_atomic(rows, output_path: Path):
@@ -199,7 +265,6 @@ def main():
             / "edit_ntp_gres.jsonl"
         ),
     )
-    parser.add_argument("--global_ratio", type=float, default=0.10)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max_rows", type=int, default=None)
     parser.add_argument(
@@ -215,6 +280,12 @@ def main():
     )
     parser.add_argument("--check_images", action="store_true")
     parser.add_argument(
+        "--io_workers",
+        type=int,
+        default=32,
+        help="Threads used by --check_images for remote filesystem checks",
+    )
+    parser.add_argument(
         "--relative_image_paths",
         action="store_true",
         help="Keep GRES paths relative to --image_root (absolute paths are the default)",
@@ -223,16 +294,19 @@ def main():
 
     with args.input_json.open(encoding="utf-8") as handle:
         source_rows = json.load(handle)
+    source_rows, filter_stats = filter_source_rows(source_rows, args.ascii_only)
     source_rows = select_source_rows(
         source_rows, args.max_rows, args.sample_rows, args.seed
     )
-    rows, layers, global_count = build_rows(
+    if args.check_images:
+        validate_source_images(source_rows, args.image_root, args.io_workers)
+    rows, layers = build_rows(
         source_rows,
         random.Random(args.seed),
-        args.global_ratio,
         args.image_root,
-        args.check_images,
+        False,
         not args.relative_image_paths,
+        args.input_json,
     )
     if args.ascii_only:
         for row_id, row in enumerate(rows):
@@ -247,8 +321,9 @@ def main():
                 "selection_mode": "global_random" if args.sample_rows is not None else "prefix",
                 "seed": args.seed,
                 "ascii_only": args.ascii_only,
-                "global_rows": global_count,
+                "empty_rows": 0,
                 "total_rows": len(rows),
+                "source_filter_stats": dict(filter_stats),
                 "parse_layers": dict(layers),
                 "dataset_base_path": str(args.image_root),
             },

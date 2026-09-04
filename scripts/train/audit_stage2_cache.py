@@ -173,6 +173,13 @@ def audit_cache_pair(task):
             errors.append(f"worker rank mismatch: {sidecar_path}")
         if record.get("world_size") != _WORLD_SIZE:
             errors.append(f"world size mismatch: {sidecar_path}")
+        if sample_type not in {"edit_mt", "edit", "edit_umt"}:
+            errors.append(f"unexpected Stage-2 sample type: {sidecar_path}")
+        elif sample_type == "edit_mt":
+            if not record.get("has_mt_cot") or record.get("mt_cot_is_empty"):
+                errors.append(f"edit_mt lost its non-empty CoT: {sidecar_path}")
+        elif record.get("has_mt_cot") or record.get("mt_cot_is_empty"):
+            errors.append(f"{sample_type} unexpectedly has a CoT: {sidecar_path}")
         recorded_lora = normalize_path(record.get("preset_te_lora_path", ""))
         if recorded_lora != _EXPECTED_TE_LORA:
             errors.append(f"TE LoRA mismatch: {sidecar_path}")
@@ -278,7 +285,9 @@ def log_progress(phase, completed, total, start_time, error_count, total_bytes):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cache_root", type=Path, required=True)
-    parser.add_argument("--expected_counts", default="edit_mt:16,edit:8")
+    parser.add_argument(
+        "--expected_counts", default="edit_mt:16,edit:8,edit_umt:8"
+    )
     parser.add_argument("--world_size", type=int, default=8)
     parser.add_argument("--expected_te_lora", type=Path, required=True)
     parser.add_argument("--report_json", type=Path, required=True)

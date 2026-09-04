@@ -297,7 +297,8 @@ def launch_data_process_task_samtok(
     ):
         source_row_id = int(data.get("_samtok_source_row_id", -1))
         sample_type = data.get("sample_type", "edit")
-        sample_type_id = {"edit_mt": 0, "edit": 1}.get(sample_type, -1)
+        type_to_id = {"edit_mt": 0, "edit": 1, "edit_umt": 2}
+        sample_type_id = type_to_id.get(sample_type, -1)
         if source_row_id < 0 or sample_type_id < 0:
             raise RuntimeError(
                 f"Invalid Stage 2a provenance: row={source_row_id}, type={sample_type}"
@@ -318,9 +319,8 @@ def launch_data_process_task_samtok(
         rank_type_ids = gather_scalar(
             accelerator, sample_type_id, dtype=torch.int64
         )
-        global_type_counts.update(
-            "edit_mt" if type_id == 0 else "edit" for type_id in rank_type_ids
-        )
+        id_to_type = {value: key for key, value in type_to_id.items()}
+        global_type_counts.update(id_to_type[int(type_id)] for type_id in rank_type_ids)
 
         with torch.no_grad():
             cached_inputs = model(data)
@@ -510,7 +510,8 @@ def launch_training_task_stage2_debug(
             with accelerator.accumulate(model):
                 cache_path = Path(batch["cache_path"])
                 cache_record = cache_manifests[str(cache_path)]
-                sample_type_id = {"edit_mt": 0, "edit": 1}.get(
+                type_to_id = {"edit_mt": 0, "edit": 1, "edit_umt": 2}
+                sample_type_id = type_to_id.get(
                     cache_record["sample_type"], -1
                 )
                 if sample_type_id < 0:
@@ -523,9 +524,9 @@ def launch_training_task_stage2_debug(
                     cache_record["metadata_index"],
                     dtype=torch.int64,
                 )
+                id_to_type = {value: key for key, value in type_to_id.items()}
                 epoch_type_counts.update(
-                    "edit_mt" if type_id == 0 else "edit"
-                    for type_id in rank_type_ids
+                    id_to_type[int(type_id)] for type_id in rank_type_ids
                 )
                 epoch_source_counts.update(int(row_id) for row_id in rank_source_rows)
 
@@ -775,6 +776,7 @@ def launch_training_task_ordered(
                         "edit_mt": 0,
                         "edit_ntp": 1,
                         "edit": 2,
+                        "edit_umt": 3,
                     }.get(sample_type, -1)
                     rank_type_ids = gather_scalar(
                         accelerator, sample_type_id, dtype=torch.int64
@@ -833,6 +835,7 @@ def launch_training_task_ordered(
                         "edit_mt": {"loss_ntp", "loss_fm"},
                         "edit_ntp": {"loss_ntp"},
                         "edit": {"loss_fm"},
+                        "edit_umt": {"loss_fm"},
                     }[sample_type]
                     if set(components) != expected_components:
                         raise RuntimeError(
@@ -867,13 +870,44 @@ def launch_training_task_ordered(
                         accelerator, identity_error
                     )
                     training_debug = getattr(pipe, "last_training_debug", None) or {}
+                    flow_debug = getattr(pipe, "last_flow_match_debug", None) or {}
+                    if "loss_fm" in expected_components:
+                        if (
+                            flow_debug.get("input_latents_shape")
+                            != flow_debug.get("noise_pred_shape")
+                            or flow_debug.get("input_latents_shape")
+                            != flow_debug.get("training_target_shape")
+                        ):
+                            raise RuntimeError(
+                                f"Stage-1 FM tensor alignment failed: {flow_debug}"
+                            )
+                        if flow_debug.get("loss_fm_dtype") != "float32":
+                            raise RuntimeError(
+                                f"Stage-1 FM loss dtype audit failed: {flow_debug}"
+                            )
                     if sample_type in {"edit_mt", "edit_ntp"}:
                         if not training_debug.get("ntp_shift_alignment_ok"):
                             raise RuntimeError(
                                 f"Missing valid shifted NTP alignment for {sample_type}"
                             )
                     elif training_debug.get("cot_tokens") != 0:
-                        raise RuntimeError("Pure edit sample unexpectedly has NTP labels")
+                        raise RuntimeError(
+                            f"{sample_type} sample unexpectedly has NTP labels"
+                        )
+                    if sample_type == "edit_umt":
+                        if (
+                            training_debug.get("user_mask_span_count") != 1
+                            or not training_debug.get("user_mask_spans_atomic")
+                            or not training_debug.get("user_mask_spans_in_template")
+                        ):
+                            raise RuntimeError(
+                                "edit_umt mask span was not preserved as four atomic "
+                                f"user-prompt tokens: {training_debug}"
+                            )
+                    elif training_debug.get("user_mask_span_count") != 0:
+                        raise RuntimeError(
+                            f"{sample_type} unexpectedly contains a user-prompt mask span"
+                        )
                     debug_metrics.update(
                         {
                             "loss_identity_error": identity_error,
@@ -995,6 +1029,11 @@ def launch_training_task_ordered(
                             "loss_total": float(loss.detach().float().item()),
                             **components,
                             **(getattr(pipe, "last_training_debug", None) or {}),
+                            **(
+                                flow_debug
+                                if "loss_fm" in expected_components
+                                else {}
+                            ),
                             **(getattr(pipe, "last_loss_debug", None) or {}),
                             **debug_metrics,
                             **debug_record_fields,
@@ -1327,11 +1366,15 @@ class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
                     raise RuntimeError("NTP supervision does not end on <|im_end|>")
             elif cot_hidden is not None:
                 raise RuntimeError("NTP hidden exists without NTP labels")
-            expected_fm = data.get("sample_type", "edit") in {"edit_mt", "edit"}
+            expected_fm = data.get("sample_type", "edit") in {
+                "edit_mt",
+                "edit",
+                "edit_umt",
+            }
             if (input_latents is not None) != expected_fm:
                 raise RuntimeError(
                     "FM target dispatch mismatch: target latents must come from the "
-                    "metadata image field only for edit_mt/edit"
+                    "metadata image field only for edit_mt/edit/edit_umt"
                 )
             self.pipe.last_training_debug = {
                 "cot_tokens": int(cot_labels.numel()) if cot_labels is not None else 0,
@@ -1376,6 +1419,7 @@ class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
                     if edit_latents is not None
                     else []
                 ),
+                **(getattr(self.pipe, "last_user_mask_audit", None) or {}),
                 **alignment,
             }
         return self.task_to_loss[self.task](self.pipe, *inputs)
@@ -1407,7 +1451,9 @@ def samtok_parser():
     parser.add_argument("--ntp_loss_weight", type=float, default=0.05)
     parser.add_argument("--fm_loss_weight", type=float, default=1.0)
     parser.add_argument(
-        "--sample_type_ratio", type=str, default="edit_mt:2,edit_ntp:1,edit:1"
+        "--sample_type_ratio",
+        type=str,
+        default="edit_mt:4,edit_ntp:2,edit:1,edit_umt:1",
     )
     parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--warmup_ratio", type=float, default=0.05)

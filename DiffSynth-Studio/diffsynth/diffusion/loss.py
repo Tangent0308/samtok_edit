@@ -86,7 +86,7 @@ def SamtokEditingLoss(
         ntp = SamtokNTPLoss(pipe, **inputs)
         loss = ntp_weight * ntp
         components["loss_ntp"] = ntp
-    elif sample_type == "edit":
+    elif sample_type in {"edit", "edit_umt"}:
         fm = FlowMatchSFTLoss(pipe, **inputs)
         loss = fm_weight * fm
         components["loss_fm"] = fm

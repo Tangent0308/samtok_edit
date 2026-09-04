@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Join CrispEdit image/mask parquets, encode masks, and materialize metadata."""
+"""Build refined CrispEdit ``edit_mt`` and ``edit_umt`` metadata.
+
+The refined mask release stores one row for every original CrispEdit row.  Only
+``filter_decision=keep`` rows with a non-empty raster mask are valid training
+targets.  Empty/global/no-op CoT fallbacks are intentionally forbidden.
+"""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import json
 import os
 import random
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -31,7 +38,7 @@ DEFAULT_CRISPEDIT = Path(
 )
 DEFAULT_MASKS = Path(
     "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/"
-    "CrispEdit-2M-mask-parquet-101697"
+    "CrispEdit-2M-mask"
 )
 DEFAULT_SAMTOK_DIR = Path(
     "/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/"
@@ -72,20 +79,151 @@ def _decode_mask(data: bytes, image_size: tuple[int, int]) -> np.ndarray:
 def _write_bytes_once(path: Path, data: bytes):
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
-        if path.stat().st_size != len(data):
-            raise ValueError(f"Existing materialized image has a different size: {path}")
+        existing = path.read_bytes()
+        if existing != data:
+            raise ValueError(
+                "Existing materialized image differs from the source parquet: "
+                f"{path} (existing_sha256={hashlib.sha256(existing).hexdigest()}, "
+                f"source_sha256={hashlib.sha256(data).hexdigest()})"
+            )
         return
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_bytes(data)
     os.replace(temporary, path)
 
 
-def _label_for_row(phrases: dict, canonical_type: str, instruction: str) -> str:
+def _unique_text(values):
+    output = []
+    seen = set()
+    for value in values:
+        value = sanitize_label(value or "")
+        key = value.casefold()
+        if value and key not in seen:
+            seen.add(key)
+            output.append(value)
+    return output
+
+
+def _label_for_row(mask_row: dict, canonical_type: str, instruction: str) -> str:
+    """Derive one short English label for the union edit-region mask."""
+
+    if canonical_type in {"style", "background"}:
+        return canonical_type
+
+    instances = mask_row.get("instance_masks") or []
+    edit_instances = [
+        item for item in instances if (item or {}).get("role") == "edit_region"
+    ]
+    preferred_side = "target" if canonical_type == "add" else "source"
+    preferred = [
+        item.get("ref")
+        for item in edit_instances
+        if item.get("grounding_image") == preferred_side
+    ]
+    fallback = [item.get("ref") for item in edit_instances]
+    labels = _unique_text(preferred or fallback)
+
+    if not labels:
+        try:
+            ground = json.loads(mask_row.get("ground_json") or "{}")
+        except json.JSONDecodeError:
+            ground = {}
+        changes = ((ground.get("observation") or {}).get("parsed") or {}).get(
+            "changes"
+        ) or []
+        key_order = (
+            ("target_ref", "sam_ref", "source_ref")
+            if canonical_type == "add"
+            else ("source_ref", "sam_ref", "target_ref")
+        )
+        labels = _unique_text(
+            change.get(key)
+            for change in changes
+            for key in key_order
+            if isinstance(change, dict)
+        )
+
+    return sanitize_label(" and ".join(labels) if labels else instruction)
+
+
+_UMT_STYLE_REF_RE = re.compile(
+    r"\b(?:(?:(?:this|the|entire|whole)\s+)?"
+    r"(?:image|photo(?:graph)?|picture)|this)\b",
+    re.I,
+)
+_UMT_BACKGROUND_REF_RE = re.compile(r"\b(?:the\s+)?background\b", re.I)
+_UMT_REPLACE_RE = re.compile(r"\breplace\s+(?P<ref>.+?)\s+with\b", re.I)
+_UMT_COLOR_PATTERNS = [
+    re.compile(r"\bchange\s+the\s+colou?r\s+of\s+(?P<ref>.+?)\s+to\b", re.I),
+    re.compile(r"\b(?:turn|change|convert)\s+(?P<ref>.+?)\s+(?:into|to)\b", re.I),
+]
+_UMT_REMOVE_RE = re.compile(
+    r"\b(?:remove|delete|erase)\s+(?P<ref>.+?)(?=\s*[.!?]?\s*$)", re.I
+)
+_UMT_ADD_LOCATION_RE = re.compile(
+    r"\b(?P<prep>next\s+to|in\s+front\s+of|onto|near|beside|behind|within|inside|"
+    r"across|along|around|at|on|to|in|by)\s+(?P<ref>.+?)(?=\s*[.!?]?\s*$)",
+    re.I,
+)
+_MOTION_VERBS = (
+    "adjusts|bends|changes|clasps|closes|crosses|extends|faces|gestures|holds|"
+    "is|joins|leans|lifts|looks|lowers|moves|opens|picks|points|raises|reaches|"
+    "rests|rotates|runs|shifts|sits|smiles|spreads|stands|stretches|swings|"
+    "transitions|turns|walks|widens"
+)
+_UMT_MOTION_RE = re.compile(
+    rf"^(?P<ref>(?:the|a|an)\s+.+?)\s+(?P<verb>{_MOTION_VERBS})\b", re.I
+)
+
+
+def _replace_group(prompt: str, match: re.Match, span: str, method: str):
+    start, stop = match.span("ref") if "ref" in match.groupdict() else match.span()
+    original = prompt[start:stop]
+    rewritten = prompt[:start] + span + prompt[stop:]
+    if rewritten.count("<|mt_start|>") != 1 or rewritten.count("<|mt_end|>") != 1:
+        return None
+    return rewritten, original, method
+
+
+def build_umt_prompt(prompt: str, canonical_type: str, span: str):
+    """Replace one syntactic edit-region reference with the mask span.
+
+    Conservative templates are used instead of inventing a phrase.  Rows that
+    cannot be transformed unambiguously remain valid ``edit_mt`` examples but
+    are not emitted as ``edit_umt``.
+    """
+
+    if "<|mt_" in prompt:
+        return None
+    if canonical_type == "style":
+        match = _UMT_STYLE_REF_RE.search(prompt)
+        return _replace_group(prompt, match, span, "style_image_ref") if match else None
+    if canonical_type == "background":
+        match = _UMT_BACKGROUND_REF_RE.search(prompt)
+        return _replace_group(prompt, match, span, "background_ref") if match else None
+    if canonical_type == "replace":
+        match = _UMT_REPLACE_RE.search(prompt)
+        return _replace_group(prompt, match, span, "replace_object") if match else None
+    if canonical_type == "color":
+        for index, pattern in enumerate(_UMT_COLOR_PATTERNS):
+            match = pattern.search(prompt)
+            if match:
+                return _replace_group(prompt, match, span, f"color_object_{index}")
+        return None
+    if canonical_type == "remove":
+        match = _UMT_REMOVE_RE.search(prompt)
+        return _replace_group(prompt, match, span, "remove_object") if match else None
+    if canonical_type == "motion":
+        match = _UMT_MOTION_RE.search(prompt)
+        return _replace_group(prompt, match, span, "motion_subject") if match else None
     if canonical_type == "add":
-        label = phrases.get("target") or phrases.get("source")
-    else:
-        label = phrases.get("source") or phrases.get("target")
-    return sanitize_label(label or instruction)
+        matches = list(_UMT_ADD_LOCATION_RE.finditer(prompt))
+        if not matches:
+            return None
+        # The final locative complement is normally the placement/reference
+        # region; earlier prepositions often belong to the added object itself.
+        return _replace_group(prompt, matches[-1], span, "add_placement")
+    return None
 
 
 def canonical_source_parquet(name: str) -> str:
@@ -157,13 +295,21 @@ def collect_candidates(
                 "row_idx",
                 "instruction",
                 "filter_decision",
-                "phrases_json",
                 "canonical_type",
+                "mask_png",
+                "mask_sum",
+                "qc_flag",
+                "instance_masks",
+                "ground_json",
             ],
         ).to_pylist()
         for mask_row in mask_rows:
             if mask_row.get("filter_decision") != "keep":
                 stats["filter_drop"] += 1
+                continue
+            if not mask_row.get("mask_png") or int(mask_row.get("mask_sum") or 0) <= 0:
+                stats["empty_mask_drop"] += 1
+                stats[f"empty_mask_qc:{mask_row.get('qc_flag')}"] += 1
                 continue
             row_idx = int(mask_row["row_idx"])
             source_identity = (canonical_source_parquet(mask_path.name), row_idx)
@@ -180,18 +326,9 @@ def collect_candidates(
                 raise ValueError(
                     f"Instruction mismatch in {mask_path.name} row {row_idx}"
                 )
-            try:
-                phrases = json.loads(mask_row.get("phrases_json") or "{}")
-            except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"Bad phrases_json in {mask_path.name} row {row_idx}"
-                ) from exc
             canonical_type = mask_row.get("canonical_type") or raw.get("type") or ""
-            is_empty_cot = bool(phrases.get("is_global") or phrases.get("is_noop"))
-            label = _label_for_row(phrases, canonical_type, instruction)
-            if ascii_only and (
-                not instruction.isascii() or (not is_empty_cot and not label.isascii())
-            ):
+            label = _label_for_row(mask_row, canonical_type, instruction)
+            if ascii_only and (not instruction.isascii() or not label.isascii()):
                 stats["non_ascii_drop"] += 1
                 continue
             candidates.append((mask_path.name, row_idx, canonical_type))
@@ -267,6 +404,9 @@ def process_parquet_pair(
         if mask_row.get("filter_decision") != "keep":
             stats["filter_drop"] += 1
             continue
+        if not mask_row.get("mask_png") or int(mask_row.get("mask_sum") or 0) <= 0:
+            stats["empty_mask_drop"] += 1
+            continue
         if remaining_rows is not None and len(selected) >= remaining_rows:
             break
         if not 0 <= row_idx < len(raw_rows):
@@ -285,25 +425,18 @@ def process_parquet_pair(
         _write_bytes_once(output_root / source_rel, source_bytes)
         _write_bytes_once(output_root / target_rel, target_bytes)
 
-        try:
-            phrases = json.loads(mask_row.get("phrases_json") or "{}")
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Bad phrases_json in {mask_path.name} row {row_idx}") from exc
         canonical_type = mask_row.get("canonical_type") or raw.get("type") or ""
-        is_empty_cot = bool(phrases.get("is_global") or phrases.get("is_noop"))
         mask = _decode_mask(mask_row.get("mask_png") or b"", source.size)
         if mask.sum() == 0:
-            is_empty_cot = True
-            stats["empty_mask"] += 1
+            raise ValueError(
+                f"Refined keep row has an empty decoded mask: {mask_path.name}:{row_idx}"
+            )
 
         selected.append(
             {
                 "source": source,
                 "mask": mask,
-                "label": _label_for_row(
-                    phrases, canonical_type, raw["instruction"]
-                ),
-                "empty_cot": is_empty_cot,
+                "label": _label_for_row(mask_row, canonical_type, raw["instruction"]),
                 "edit_row": {
                     "image": target_rel.as_posix(),
                     "edit_image": source_rel.as_posix(),
@@ -315,37 +448,60 @@ def process_parquet_pair(
                     "row_idx": row_idx,
                     "edit_type": canonical_type,
                     "qc_flag": mask_row.get("qc_flag"),
+                    "mask_sum": int(mask_row.get("mask_sum") or 0),
                 },
             }
         )
 
-    local = [row for row in selected if not row["empty_cot"]]
-    for start in range(0, len(local), codec_batch_size):
-        batch = local[start : start + codec_batch_size]
+    for start in range(0, len(selected), codec_batch_size):
+        batch = selected[start : start + codec_batch_size]
         spans = codec.encode_single_batch(
             (row["source"], row["mask"]) for row in batch
         )
         for row, span in zip(batch, spans):
+            row["mask_span"] = span
             row["mt_cot"] = to_cot([(span, make_labels(row["label"], 1)[0])])
             stats["encoded_mask"] += 1
 
-    edit_mt_rows, edit_rows = [], []
+    edit_mt_rows, edit_umt_rows = [], []
     for row in selected:
-        mt_cot = to_cot([]) if row["empty_cot"] else row["mt_cot"]
         edit_row = row["edit_row"]
-        edit_rows.append(edit_row)
         edit_mt_rows.append(
             {
                 **edit_row,
-                "mt_cot": mt_cot,
+                "mt_cot": row["mt_cot"],
                 "sample_type": "edit_mt",
                 "provenance": row["provenance"],
             }
         )
-        if row["empty_cot"]:
-            stats["empty_cot"] += 1
+        transformed = build_umt_prompt(
+            edit_row["prompt"], row["provenance"]["edit_type"], row["mask_span"]
+        )
+        if transformed is None:
+            stats["umt_rewrite_drop"] += 1
+            stats[f"umt_rewrite_drop_type:{row['provenance']['edit_type']}"] += 1
+            continue
+        umt_prompt, replaced_text, method = transformed
+        provenance = {
+            **row["provenance"],
+            "original_prompt": edit_row["prompt"],
+            "umt_replaced_text": replaced_text,
+            "umt_rewrite_method": method,
+        }
+        edit_umt_rows.append(
+            {
+                "image": edit_row["image"],
+                "edit_image": edit_row["edit_image"],
+                "prompt": umt_prompt,
+                "sample_type": "edit_umt",
+                "provenance": provenance,
+            }
+        )
+        stats["umt_emitted"] += 1
+        stats[f"umt_emitted_type:{row['provenance']['edit_type']}"] += 1
+        stats[f"umt_rewrite_method:{method}"] += 1
     stats["kept"] = len(selected)
-    return edit_mt_rows, edit_rows, stats
+    return edit_mt_rows, edit_umt_rows, stats
 
 
 def main():
@@ -361,7 +517,7 @@ def main():
         "--edit_mt_jsonl", type=Path, default=None, help="Defaults under output_root"
     )
     parser.add_argument(
-        "--edit_jsonl", type=Path, default=None, help="Defaults under output_root"
+        "--edit_umt_jsonl", type=Path, default=None, help="Defaults under output_root"
     )
     parser.add_argument(
         "--sam2_ckpt", type=Path, default=DEFAULT_SAMTOK_DIR / "sam2.1_hiera_large.pt"
@@ -451,7 +607,7 @@ def main():
         raise ValueError("Multi-worker construction requires --skip_combine")
     output_root = args.output_root.resolve()
     edit_mt_path = args.edit_mt_jsonl or output_root / "edit_mt.jsonl"
-    edit_path = args.edit_jsonl or output_root / "edit.jsonl"
+    edit_umt_path = args.edit_umt_jsonl or output_root / "edit_umt.jsonl"
     shard_dir = output_root / "metadata_shards"
 
     mask_paths = sorted(args.mask_dir.glob("*.parquet"))
@@ -469,23 +625,23 @@ def main():
             shard_dir / f"{mask_path.stem}.edit_mt.jsonl"
             for _, mask_path in all_pairs
         ]
-        edit_shards = [
-            shard_dir / f"{mask_path.stem}.edit.jsonl"
+        edit_umt_shards = [
+            shard_dir / f"{mask_path.stem}.edit_umt.jsonl"
             for _, mask_path in all_pairs
         ]
-        missing = [path for path in mt_shards + edit_shards if not path.is_file()]
+        missing = [path for path in mt_shards + edit_umt_shards if not path.is_file()]
         if missing:
             raise FileNotFoundError(
                 f"Cannot combine: {len(missing)} metadata shards are missing; first={missing[0]}"
             )
         _combine_shards(mt_shards, edit_mt_path)
-        _combine_shards(edit_shards, edit_path)
+        _combine_shards(edit_umt_shards, edit_umt_path)
         print(
             json.dumps(
                 {
                     "output_root": str(output_root),
                     "edit_mt_metadata": str(edit_mt_path),
-                    "edit_metadata": str(edit_path),
+                    "edit_umt_metadata": str(edit_umt_path),
                     "combined_parquet_shards": len(all_pairs),
                 },
                 indent=2,
@@ -498,9 +654,20 @@ def main():
         args.exclude_metadata_jsonl
     )
     selected_by_file = None
+    prepartitioned_pairs = None
     if args.sample_rows is not None or args.all_eligible:
+        # Global random sampling must inspect the complete pool.  In all-eligible
+        # mode, however, workers can scan only their own deterministic parquet
+        # partition.  This avoids reading the lightweight columns eight times
+        # before an eight-GPU build while producing the identical union.
+        candidate_pairs = all_pairs
+        if args.all_eligible and args.num_workers > 1:
+            prepartitioned_pairs = partition_pairs(
+                all_pairs, args.num_workers, args.worker_index
+            )
+            candidate_pairs = prepartitioned_pairs
         candidates, selection_stats = collect_candidates(
-            all_pairs,
+            candidate_pairs,
             args.ascii_only,
             excluded_source_ids=excluded_source_ids,
         )
@@ -515,7 +682,16 @@ def main():
             selection_stats[f"selected_type:{canonical_type}"] += 1
         selection_stats["selected"] = len(selected_candidates)
         selection_stats["selected_parquet_files"] = len(selected_by_file)
-    pairs = partition_pairs(all_pairs, args.num_workers, args.worker_index)
+    work_pairs = (
+        [pair for pair in all_pairs if pair[1].name in selected_by_file]
+        if selected_by_file is not None
+        else all_pairs
+    )
+    pairs = (
+        prepartitioned_pairs
+        if prepartitioned_pairs is not None
+        else partition_pairs(work_pairs, args.num_workers, args.worker_index)
+    )
 
     codec = SamtokCodec(
         args.sam2_ckpt,
@@ -524,17 +700,17 @@ def main():
         dtype=getattr(torch, args.dtype),
     )
     totals = Counter()
-    completed_mt, completed_edit = [], []
+    completed_mt, completed_umt = [], []
     remaining = args.max_rows
     for raw_path, mask_path in tqdm(pairs, desc="CrispEdit parquet shards"):
         mt_shard = shard_dir / f"{mask_path.stem}.edit_mt.jsonl"
-        edit_shard = shard_dir / f"{mask_path.stem}.edit.jsonl"
-        if args.resume and mt_shard.is_file() and edit_shard.is_file():
+        umt_shard = shard_dir / f"{mask_path.stem}.edit_umt.jsonl"
+        if args.resume and mt_shard.is_file() and umt_shard.is_file():
             completed_mt.append(mt_shard)
-            completed_edit.append(edit_shard)
+            completed_umt.append(umt_shard)
             totals["resumed_shards"] += 1
             continue
-        edit_mt_rows, edit_rows, stats = process_parquet_pair(
+        edit_mt_rows, edit_umt_rows, stats = process_parquet_pair(
             raw_path,
             mask_path,
             output_root,
@@ -548,9 +724,9 @@ def main():
             ),
         )
         _atomic_jsonl(edit_mt_rows, mt_shard)
-        _atomic_jsonl(edit_rows, edit_shard)
+        _atomic_jsonl(edit_umt_rows, umt_shard)
         completed_mt.append(mt_shard)
-        completed_edit.append(edit_shard)
+        completed_umt.append(umt_shard)
         totals.update(stats)
         if remaining is not None:
             remaining -= len(edit_mt_rows)
@@ -559,13 +735,13 @@ def main():
 
     if not args.skip_combine:
         _combine_shards(completed_mt, edit_mt_path)
-        _combine_shards(completed_edit, edit_path)
+        _combine_shards(completed_umt, edit_umt_path)
     print(
         json.dumps(
             {
                 "output_root": str(output_root),
                 "edit_mt_metadata": str(edit_mt_path),
-                "edit_metadata": str(edit_path),
+                "edit_umt_metadata": str(edit_umt_path),
                 "combined": not args.skip_combine,
                 "worker": {
                     "index": args.worker_index,

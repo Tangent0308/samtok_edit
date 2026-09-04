@@ -41,17 +41,17 @@ from diffsynth.utils.state_dict_converters.qwen_image_text_encoder_samtok import
 from samtok_codec import SamtokCodec  # noqa: E402
 from build_edit_ntp_metadata import (  # noqa: E402
     EDIT_VERB_TEMPLATES,
-    GLOBAL_TEMPLATES,
     select_source_rows,
 )
 from build_edit_mt_metadata import (  # noqa: E402
+    build_umt_prompt,
     load_excluded_source_ids,
     partition_pairs,
     sample_candidates,
     source_identity_from_row,
 )
 from build_edit_metadata import select_candidates as select_edit_candidates  # noqa: E402
-from compose_training_metadata import arrange_stage2_rows  # noqa: E402
+from compose_training_metadata import arrange_stage1_rows, arrange_stage2_rows  # noqa: E402
 from train_samtok_edit import (  # noqa: E402
     QwenImageSamtokTrainingModule,
     samtok_parser,
@@ -146,6 +146,89 @@ class SamtokEditTests(unittest.TestCase):
             select_edit_candidates(preferred + overlap, 5, seed=7), selected
         )
 
+    def test_stage1_composer_preserves_all_rows_with_minimal_ratio_padding(self):
+        edit_mt = [
+            {"id": f"mt-{index}", "sample_type": "edit_mt"}
+            for index in range(42313)
+        ]
+        edit_ntp = [
+            {"id": f"ntp-{index}", "sample_type": "edit_ntp"}
+            for index in range(21158)
+        ]
+        edit = [
+            {"id": f"edit-{index}", "sample_type": "edit"}
+            for index in range(10579)
+        ]
+        edit_umt = [
+            {"id": f"umt-{index}", "sample_type": "edit_umt"}
+            for index in range(10579)
+        ]
+        rows, padding = arrange_stage1_rows(
+            edit_mt,
+            edit_ntp,
+            edit,
+            edit_umt,
+            random.Random(42),
+            pad_to_ratio=True,
+        )
+        self.assertEqual(padding, {"edit_mt": 3})
+        self.assertEqual(
+            Counter(row["sample_type"] for row in rows),
+            {"edit_mt": 42316, "edit_ntp": 21158, "edit": 10579, "edit_umt": 10579},
+        )
+        self.assertEqual(
+            Counter(row["sample_type"] for row in rows if "schedule_padding" in row),
+            {"edit_mt": 3},
+        )
+        self.assertEqual(
+            len({row["id"] for row in rows if row["sample_type"] == "edit_mt"}),
+            42313,
+        )
+
+    def test_stage1_composer_explicitly_pads_to_eight_gpu_steps(self):
+        sources = {
+            "edit_mt": [
+                {"id": f"mt-{index}", "sample_type": "edit_mt"}
+                for index in range(42313)
+            ],
+            "edit_ntp": [
+                {"id": f"ntp-{index}", "sample_type": "edit_ntp"}
+                for index in range(21158)
+            ],
+            "edit": [
+                {"id": f"edit-{index}", "sample_type": "edit"}
+                for index in range(10579)
+            ],
+            "edit_umt": [
+                {"id": f"umt-{index}", "sample_type": "edit_umt"}
+                for index in range(10579)
+            ],
+        }
+        rows, padding = arrange_stage1_rows(
+            sources["edit_mt"],
+            sources["edit_ntp"],
+            sources["edit"],
+            sources["edit_umt"],
+            random.Random(42),
+            pad_to_ratio=True,
+            num_processes=8,
+        )
+        counts = Counter(row["sample_type"] for row in rows)
+        self.assertEqual(
+            counts,
+            {"edit_mt": 42336, "edit_ntp": 21168, "edit": 10584, "edit_umt": 10584},
+        )
+        self.assertEqual(
+            padding,
+            {"edit_mt": 23, "edit_ntp": 10, "edit": 5, "edit_umt": 5},
+        )
+        self.assertTrue(all(count % 8 == 0 for count in counts.values()))
+        for sample_type, source_rows in sources.items():
+            self.assertEqual(
+                {row["id"] for row in rows if row["sample_type"] == sample_type},
+                {row["id"] for row in source_rows},
+            )
+
     def test_stage2_composer_balances_every_strided_gpu_shard(self):
         edit_mt = [
             {"id": f"mt-{index}", "sample_type": "edit_mt"}
@@ -155,16 +238,21 @@ class SamtokEditTests(unittest.TestCase):
             {"id": f"edit-{index}", "sample_type": "edit"}
             for index in range(8)
         ]
+        edit_umt = [
+            {"id": f"umt-{index}", "sample_type": "edit_umt"}
+            for index in range(8)
+        ]
         rows, shard_counts, padding = arrange_stage2_rows(
-            edit_mt, edit, random.Random(8), num_shards=8
+            edit_mt, edit, edit_umt, random.Random(8), num_shards=8
         )
-        self.assertEqual(len(rows), 24)
+        self.assertEqual(len(rows), 32)
         self.assertEqual(
-            shard_counts, [{"edit_mt": 2, "edit": 1} for _ in range(8)]
+            shard_counts,
+            [{"edit_mt": 2, "edit": 1, "edit_umt": 1} for _ in range(8)],
         )
         self.assertEqual(
             {row["id"] for row in rows},
-            {row["id"] for row in edit_mt + edit},
+            {row["id"] for row in edit_mt + edit + edit_umt},
         )
         self.assertEqual(padding, {})
 
@@ -177,21 +265,27 @@ class SamtokEditTests(unittest.TestCase):
             {"id": f"edit-{index}", "sample_type": "edit"}
             for index in range(55326)
         ]
+        edit_umt = [
+            {"id": f"umt-{index}", "sample_type": "edit_umt"}
+            for index in range(55326)
+        ]
         rows, shard_counts, padding = arrange_stage2_rows(
             edit_mt,
             edit,
+            edit_umt,
             random.Random(42),
             num_shards=8,
             pad_to_shards=True,
         )
-        self.assertEqual(padding, {"edit_mt": 4, "edit": 2})
-        self.assertEqual(len(rows), 165984)
+        self.assertEqual(padding, {"edit_mt": 4, "edit": 2, "edit_umt": 2})
+        self.assertEqual(len(rows), 221312)
         self.assertEqual(
-            shard_counts, [{"edit_mt": 13832, "edit": 6916} for _ in range(8)]
+            shard_counts,
+            [{"edit_mt": 13832, "edit": 6916, "edit_umt": 6916} for _ in range(8)],
         )
         self.assertEqual(
             Counter(row["sample_type"] for row in rows if "schedule_padding" in row),
-            {"edit_mt": 4, "edit": 2},
+            {"edit_mt": 4, "edit": 2, "edit_umt": 2},
         )
 
     def test_stage2_composer_preserves_odd_full_mt_pool_with_minimal_padding(self):
@@ -203,21 +297,27 @@ class SamtokEditTests(unittest.TestCase):
             {"id": f"edit-{index}", "sample_type": "edit"}
             for index in range(55316)
         ]
+        edit_umt = [
+            {"id": f"umt-{index}", "sample_type": "edit_umt"}
+            for index in range(55316)
+        ]
         rows, shard_counts, padding = arrange_stage2_rows(
             edit_mt,
             edit,
+            edit_umt,
             random.Random(0),
             num_shards=8,
             pad_to_shards=True,
         )
-        self.assertEqual(padding, {"edit_mt": 9, "edit": 4})
-        self.assertEqual(len(rows), 165960)
+        self.assertEqual(padding, {"edit_mt": 9, "edit": 4, "edit_umt": 4})
+        self.assertEqual(len(rows), 221280)
         self.assertEqual(
-            shard_counts, [{"edit_mt": 13830, "edit": 6915} for _ in range(8)]
+            shard_counts,
+            [{"edit_mt": 13830, "edit": 6915, "edit_umt": 6915} for _ in range(8)],
         )
         self.assertEqual(
             Counter(row["sample_type"] for row in rows if "schedule_padding" in row),
-            {"edit_mt": 9, "edit": 4},
+            {"edit_mt": 9, "edit": 4, "edit_umt": 4},
         )
 
     def test_stage2_ratio_bypass_retains_runtime_row_provenance(self):
@@ -225,7 +325,11 @@ class SamtokEditTests(unittest.TestCase):
             folder = Path(folder)
             metadata = folder / "stage2.jsonl"
             rows = [
-                {"prompt": "masked", "sample_type": "edit_mt", "mt_cot": to_cot([])},
+                {
+                    "prompt": "masked",
+                    "sample_type": "edit_mt",
+                    "mt_cot": to_cot([(SPAN_A, "target")]),
+                },
                 {"prompt": "plain", "sample_type": "edit"},
             ]
             metadata.write_text(
@@ -243,6 +347,31 @@ class SamtokEditTests(unittest.TestCase):
             self.assertIsNone(dataset.schedule)
             self.assertEqual(dataset[0]["_samtok_source_row_id"], 0)
             self.assertEqual(dataset[1]["_samtok_schedule_position"], 1)
+
+    def test_stage2_ratio_bypass_still_rejects_empty_training_cot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            folder = Path(folder)
+            metadata = folder / "stage2.jsonl"
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "prompt": "global edit",
+                        "sample_type": "edit_mt",
+                        "mt_cot": to_cot([]),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "non-empty canonical"):
+                SamtokEditingDataset(
+                    base_path=str(folder),
+                    metadata_path=str(metadata),
+                    repeat=1,
+                    data_file_keys=[],
+                    type_ratio="none",
+                    num_processes=8,
+                )
 
     def test_stage1_eval_five_setting_contract(self):
         settings = parse_settings(["1", "s2", "3,4", "s5"])
@@ -415,13 +544,15 @@ class SamtokEditTests(unittest.TestCase):
             folder = Path(folder)
             rows = []
             for sample_type, count in [
-                ("edit_mt", 5),
-                ("edit_ntp", 3),
+                ("edit_mt", 9),
+                ("edit_ntp", 5),
                 ("edit", 4),
+                ("edit_umt", 4),
             ]:
                 for index in range(count):
-                    row = {"prompt": str(index), "sample_type": sample_type}
-                    if sample_type != "edit":
+                    prompt = SPAN_A if sample_type == "edit_umt" else str(index)
+                    row = {"prompt": prompt, "sample_type": sample_type}
+                    if sample_type in {"edit_mt", "edit_ntp"}:
                         row["mt_cot"] = to_cot([(SPAN_A, "target")])
                     rows.append(row)
             metadata = folder / "metadata.jsonl"
@@ -434,37 +565,48 @@ class SamtokEditTests(unittest.TestCase):
                 metadata_path=str(metadata),
                 repeat=2,
                 data_file_keys=[],
-                type_ratio="edit_mt:2,edit_ntp:1,edit:1",
+                type_ratio="edit_mt:4,edit_ntp:2,edit:1,edit_umt:1",
                 num_processes=2,
-                gradient_accumulation_steps=4,
+                gradient_accumulation_steps=8,
                 seed=3,
             )
             scheduled = [
                 dataset.data[index]["sample_type"] for index in dataset.schedule
             ]
-            for offset in range(0, len(scheduled), 8):
-                step = scheduled[offset : offset + 8]
-                self.assertEqual(Counter(step), Counter(edit_mt=4, edit_ntp=2, edit=2))
-                self.assertTrue(
-                    all(step[substep] == step[substep + 1] for substep in range(0, 8, 2))
+            for offset in range(0, len(scheduled), 16):
+                step = scheduled[offset : offset + 16]
+                self.assertEqual(
+                    Counter(step),
+                    Counter(edit_mt=8, edit_ntp=4, edit=2, edit_umt=2),
                 )
-            self.assertEqual(len(dataset) % 8, 0)
+                self.assertTrue(
+                    all(
+                        step[substep] == step[substep + 1]
+                        for substep in range(0, 16, 2)
+                    )
+                )
+            self.assertEqual(len(dataset) % 16, 0)
 
     def test_eight_rank_schedule_matches_accelerate_stride(self):
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             rows = []
             for sample_type, count in [
-                ("edit_mt", 17),
-                ("edit_ntp", 9),
+                ("edit_mt", 33),
+                ("edit_ntp", 17),
                 ("edit", 9),
+                ("edit_umt", 9),
             ]:
                 for index in range(count):
                     row = {
-                        "prompt": f"{sample_type}-{index}",
+                        "prompt": (
+                            SPAN_A
+                            if sample_type == "edit_umt"
+                            else f"{sample_type}-{index}"
+                        ),
                         "sample_type": sample_type,
                     }
-                    if sample_type != "edit":
+                    if sample_type in {"edit_mt", "edit_ntp"}:
                         row["mt_cot"] = to_cot([(SPAN_A, "target")])
                     rows.append(row)
             metadata = folder / "metadata.jsonl"
@@ -476,19 +618,19 @@ class SamtokEditTests(unittest.TestCase):
                 base_path=str(folder),
                 metadata_path=str(metadata),
                 data_file_keys=[],
-                type_ratio="edit_mt:2,edit_ntp:1,edit:1",
+                type_ratio="edit_mt:4,edit_ntp:2,edit:1,edit_umt:1",
                 num_processes=8,
-                gradient_accumulation_steps=4,
+                gradient_accumulation_steps=8,
                 seed=11,
             )
             scheduled = [
                 dataset.data[index]["sample_type"] for index in dataset.schedule
             ]
-            for step_start in range(0, len(scheduled), 32):
-                optimizer_step = scheduled[step_start : step_start + 32]
+            for step_start in range(0, len(scheduled), 64):
+                optimizer_step = scheduled[step_start : step_start + 64]
                 self.assertEqual(
                     Counter(optimizer_step),
-                    Counter(edit_mt=16, edit_ntp=8, edit=8),
+                    Counter(edit_mt=32, edit_ntp=16, edit=8, edit_umt=8),
                 )
                 rank_sequences = [optimizer_step[rank::8] for rank in range(8)]
                 self.assertTrue(
@@ -534,6 +676,12 @@ class SamtokEditTests(unittest.TestCase):
                 pipe, sample_type="edit", ntp_weight=0.5, fm_weight=2.0
             )
             self.assertEqual(fm_loss.item(), 6.0)
+            self.assertEqual(set(pipe.last_loss_log), {"loss_fm"})
+
+            umt_loss = loss_module.SamtokEditingLoss(
+                pipe, sample_type="edit_umt", ntp_weight=0.5, fm_weight=2.0
+            )
+            self.assertEqual(umt_loss.item(), 6.0)
             self.assertEqual(set(pipe.last_loss_log), {"loss_fm"})
 
     def test_schedule_rejects_noncanonical_cot(self):
@@ -591,8 +739,46 @@ class SamtokEditTests(unittest.TestCase):
             SamtokCodec._ordered_masks([])
 
     def test_gres_edit_templates_are_english_only(self):
-        for template in EDIT_VERB_TEMPLATES + GLOBAL_TEMPLATES:
+        for template in EDIT_VERB_TEMPLATES:
             self.assertTrue(template.isascii(), template)
+
+    def test_umt_rewrites_cover_refined_edit_families(self):
+        examples = {
+            "add": ("add a hat on the dog", "add a hat on " + SPAN_A),
+            "remove": ("remove the person on the right", "remove " + SPAN_A),
+            "replace": (
+                "replace the red car with a truck",
+                "replace " + SPAN_A + " with a truck",
+            ),
+            "color": ("change the left cat to blue", "change " + SPAN_A + " to blue"),
+            "motion": (
+                "The bird spreads its wings.",
+                SPAN_A + " spreads its wings.",
+            ),
+            "background": (
+                "change the background to a beach",
+                "change " + SPAN_A + " to a beach",
+            ),
+            "style": (
+                "Generate a vector art version of this image",
+                "Generate a vector art version of " + SPAN_A,
+            ),
+        }
+        for edit_type, (prompt, expected) in examples.items():
+            with self.subTest(edit_type=edit_type):
+                result = build_umt_prompt(prompt, edit_type, SPAN_A)
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], expected)
+                self.assertEqual(result[0].count("<|mt_start|>"), 1)
+        bare_style = build_umt_prompt(
+            "Please recreate this in graphite drawing artistic style",
+            "style",
+            SPAN_A,
+        )
+        self.assertEqual(
+            bare_style[0],
+            "Please recreate " + SPAN_A + " in graphite drawing artistic style",
+        )
 
     def test_global_sampling_is_reproducible_and_not_prefix_based(self):
         candidates = [("shard.parquet", index, "add") for index in range(20)]

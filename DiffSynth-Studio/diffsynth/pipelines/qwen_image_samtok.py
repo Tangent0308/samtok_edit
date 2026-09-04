@@ -9,7 +9,7 @@ import torch
 from PIL import Image
 
 from ..core import ModelConfig
-from ..core.data.samtok_dataset import parse_and_canonicalize_mt_cot
+from ..core.data.samtok_dataset import SPAN_RE, parse_and_canonicalize_mt_cot
 from ..core.device.npu_compatible_device import get_device_type
 from ..diffusion.base_pipeline import PipelineUnit
 from .qwen_image import (
@@ -224,6 +224,26 @@ class QwenImageUnit_SamtokPromptEmbedder(QwenImageUnit_PromptEmbedder):
         attention_mask = model_inputs.attention_mask
         template_length = input_ids.shape[1]
         cot_ids = None
+
+        prompt_spans = [match.group(0) for match in SPAN_RE.finditer(prompt)]
+        prompt_span_ids = []
+        for span in prompt_spans:
+            ids = pipe.processor.tokenizer(
+                span, add_special_tokens=False, return_tensors="pt"
+            ).input_ids[0].tolist()
+            prompt_span_ids.append(ids)
+        pipe.last_user_mask_audit = {
+            "user_mask_span_count": len(prompt_spans),
+            "user_mask_span_token_ids": prompt_span_ids,
+            "user_mask_spans_atomic": all(len(ids) == 4 for ids in prompt_span_ids),
+            "user_mask_spans_in_template": all(
+                any(
+                    input_ids[0, start : start + len(ids)].tolist() == ids
+                    for start in range(template_length - len(ids) + 1)
+                )
+                for ids in prompt_span_ids
+            ),
+        }
 
         if mt_cot is not None:
             cot_ids = pipe.processor.tokenizer(
