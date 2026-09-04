@@ -1,7 +1,8 @@
 # SamtokEdit 实验记录
 
 本文只记录已经实际运行的实验、数据构建验收和回归检查，不描述代码设计。代码实现、
-数据 schema、训练入口和 CLI 参数见 [`SamtokEdit_训练方案_当前实现.md`](</opt/tiger/tanyue/samtok_edit/SamtokEdit_训练方案_当前实现.md>)。
+数据 schema、训练入口和 CLI 参数见仓库内的
+[`SamtokEdit_训练方案_当前实现.md`](SamtokEdit_训练方案_当前实现.md)。
 
 所有实验产物统一放在：
 
@@ -1245,9 +1246,11 @@ W&B run name 为 `stage2-full-8gpu-1ep-20260824-020317`，entity/project 为
 
 ### 目标和输入
 
-本轮在新分支 `dev_crispedit_refined` 上验证 `/opt/tiger/tanyue/data改进.md` 的新定义：新增
-`edit_umt`，Stage 1 改为 `edit_mt:edit_ntp:edit:edit_umt=4:2:1:1`，并从所有新训练数据中
-删除空 mask、global/noop 和 `to_cot([])`。输入为：
+本轮在新分支 `dev_crispedit_refined` 上实现四类 refined 数据：新增 `edit_umt`，其 user
+prompt 用源图 mask span 替换编辑区域指代、保留目标图、不含 assistant CoT，只计算 FM；
+`edit_mt` 使用 NTP+FM，`edit_ntp` 使用 NTP，普通 `edit` 使用 FM。Stage 1 比例改为
+`edit_mt:edit_ntp:edit:edit_umt=4:2:1:1`，并从所有新训练数据中删除空 mask、global/noop
+和 `to_cot([])`。style/background 也必须使用非空 mask span，不设置特殊全局 token。输入为：
 
 ```text
 原始图片编辑：/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M

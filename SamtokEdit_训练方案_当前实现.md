@@ -2,9 +2,9 @@
 
 > SAMTok mask-token CoT 引导的 Qwen-Image-Edit-2511 细粒度编辑实现说明。
 >
-> 本文基于 `/opt/tiger/tanyue/SamtokEdit 训练方案.md` 更新，描述当前仓库
-> `/opt/tiger/tanyue/samtok_edit` 的实际代码、数据规范、训练入口和实现约束。
-> 原始方案中的目标与章节组织保留；代码片段和命令以当前实现为准。
+> 本文是当前仓库的自包含实现规范，完整描述方法目标、四类数据 schema、数据构建、
+> 两阶段训练、推理评测、实现路径和运行约束；代码片段和命令均以当前实现为准，
+> 不依赖仓库外的设计说明文档。
 
 当前代码实现包含 Stage 1/Stage 2 训练入口、canonical CoT 数据管线、SAMTok codec 构建器、
 Qwen-Image-Edit-2511 / SAMTok gres-ft 模型适配和 Stage 1 评测入口。实验运行过程与结果单独记录在
