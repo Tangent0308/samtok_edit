@@ -35,6 +35,7 @@ Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 
 | E12 | Stage 2 正式 8 卡训练 | 旧 2:1 数据上的单 epoch DiT LoRA 训练 | 见 E12 最新记录 |
 | E13 | Refined Stage 1 四类数据与 8 卡 smoke | 验证新 mask/fact 数据、UMT、无空 CoT、4:2:1:1、loss/梯度/DDP | 通过 |
 | E14 | Refined Stage 1 全量数据构建 | 最大类使用全部合格样本，完成 8 卡步对齐和完整回源审计 | 通过 |
+| E15 | Refined Stage 1 全量 8 卡训练 | 在 84,672 行四类新数据上训练 1 epoch，并在线记录 W&B | 运行中 |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -1445,6 +1446,93 @@ stage1.jsonl        1b793255f992667a832eacd607cd3c155cd6af595de7c886fb13c8d03c53
 - [schedule_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/schedule_audit.json>)；
 - [metadata_sha256.txt](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/metadata_sha256.txt>)；
 - [构建和审计日志目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/logs>)。
+
+## E15：Refined Stage 1 全量 8 卡训练（运行中）
+
+### 目标与启动前检查
+
+使用 E14 已通过完整验收的 84,672 行 `stage1.jsonl` 训练 text encoder LoRA 1 epoch，
+不训练 DiT/VAE，不进行评测。启动前重新确认 metadata SHA256 为
+`1b793255f992667a832eacd607cd3c155cd6af595de7c886fb13c8d03c53f32b`；格式、完整回源、
+MT label 重新派生、128 条 codec 复编码和 8 卡 schedule 四份报告均通过。模型路径严格使用
+Qwen-Image-Edit-2511 和 SAMTok `Qwen2.5-VL-7B-SAMTok-gres-ft`，合并 processor/TE 目录存在。
+W&B 凭据目录/文件权限为 `700/600`，三个必需账户变量均存在，API key 没有写入启动脚本或日志。
+
+GPU 上存在用户自己的长期保活进程 `run.py --size 8000 --gpus 8 --interval 0.0005`，每卡约
+1.6 GiB；它从 2026-07-11 起一直运行，也是此前正式实验的相同基线，本次未停止。除此以外
+启动前没有训练进程，8 卡剩余显存足够；rendezvous 端口 20061 已同时通过 IPv4/IPv6 bind
+检查。
+
+### 配置与后台启动
+
+```text
+8 x H100 80GB
+world_size=8, gradient_accumulation_steps=8, effective global batch=64
+metadata=84,672, local microsteps=10,584, optimizer steps=1,323
+dataset_repeat=1, num_epochs=1, dataset_workers=8/rank
+max_pixels=1,048,576
+TE LoRA rank=64, dropout=0.05, fp32
+frozen base/activation=bf16, NTP/FM loss=fp32
+AdamW lr=4e-5, weight_decay=0.05, max_grad_norm=1.0
+warmup_ratio=0.05, cosine decay, zero_cond_t=True
+lambda_ntp=0.05, lambda_fm=1.0, seed=0
+save_steps=2,000 local microsteps
+sample ratio=edit_mt:edit_ntp:edit:edit_umt=4:2:1:1
+```
+
+训练于 `2026-09-04T14:38:42Z` 在独立 detached tmux session
+`samtok_stage1_refined_full_1ep` 启动。controller PID/SID/PGID 均为 `1290982`，session
+`attached=0`；退出发起训练的终端或当前 tmux 不会向训练进程传递挂断信号。实际启动器为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage1_full/train_8gpu_1ep/launch_stage1_full.sh
+```
+
+该启动器只 source 权限为 600 的外置 W&B env，设置明确的训练参数，然后调用
+`scripts/train/stage1_te_lora.sh`；训练退出码最终会写入 `exit_code`。
+
+### 启动状态与查看方式
+
+8 个 Accelerate rank 已全部启动，8 次 dataset 初始化都报告：
+
+```text
+sizes=42336/21168/10584/10584
+per_step=32/16/8/8
+steps=1323
+schedule_len=84672
+```
+
+NCCL 使用 IB 初始化，模型加载后每卡约占 58.3 GiB；训练已经进入 10,584-step 本地进度条，
+启动抽查未发现端口冲突、OOM、Traceback、NCCL、数据或 W&B error。W&B online run name 为
+`stage1-refined-full-8gpu-1ep-20260904`，run id 为 `run_20260904_b96a9122`：
+
+```text
+https://ml.tiktok-row.net/experiment/tracking/detail?Id=project_20260823_dd21e517&selectedTrial=run_20260904_b96a9122
+```
+
+查看实时日志：
+
+```bash
+tail -f /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/train.log
+```
+
+查看后台 session（查看后按 `Ctrl-b d` 脱离，不要在其中按 `Ctrl-c`）：
+
+```bash
+tmux attach -t samtok_stage1_refined_full_1ep
+```
+
+查看 loss CSV、GPU 和最终退出码：
+
+```bash
+tail -f /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/loss.csv
+watch -n 5 nvidia-smi
+cat /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/exit_code
+```
+
+最后一条命令只会在训练结束后成功；运行期间该文件不存在。W&B 本地数据写入
+`train_8gpu_1ep/wandb_log/wandb/run-20260904_143945-run_20260904_b96a9122/`。
 
 ## 当前结论和下一步
 
