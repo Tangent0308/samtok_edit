@@ -15,7 +15,9 @@
 Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 2
 8 卡 smoke metadata、Stage 2a 离线 cache 和 Stage 2b 30-step 训练均已完整结束并通过
 强审计；Stage 2 DiT LoRA checkpoint、CSV 和 W&B 曲线均已保存；Stage 2 放大规模
-训练数据已完成真实 codec 构建、内容净化与 8 卡分片验收。
+训练数据已完成真实 codec 构建、内容净化与 8 卡分片验收。Refined Stage 1
+四类全量数据的 8 卡单 epoch 训练也已正常结束并通过训练后数值和 checkpoint
+审计，尚未进行 inference 或评测。
 
 ## 实验索引
 
@@ -35,7 +37,7 @@ Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 
 | E12 | Stage 2 正式 8 卡训练 | 旧 2:1 数据上的单 epoch DiT LoRA 训练 | 见 E12 最新记录 |
 | E13 | Refined Stage 1 四类数据与 8 卡 smoke | 验证新 mask/fact 数据、UMT、无空 CoT、4:2:1:1、loss/梯度/DDP | 通过 |
 | E14 | Refined Stage 1 全量数据构建 | 最大类使用全部合格样本，完成 8 卡步对齐和完整回源审计 | 通过 |
-| E15 | Refined Stage 1 全量 8 卡训练 | 在 84,672 行四类新数据上训练 1 epoch，并在线记录 W&B | 运行中 |
+| E15 | Refined Stage 1 全量 8 卡训练 | 在 84,672 行四类新数据上训练 1 epoch，并在线记录 W&B | 完成（训练审计通过，未评测） |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -1447,7 +1449,7 @@ stage1.jsonl        1b793255f992667a832eacd607cd3c155cd6af595de7c886fb13c8d03c53
 - [metadata_sha256.txt](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/metadata_sha256.txt>)；
 - [构建和审计日志目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/logs>)。
 
-## E15：Refined Stage 1 全量 8 卡训练（运行中）
+## E15：Refined Stage 1 全量 8 卡训练（完成，未评测）
 
 ### 目标与启动前检查
 
@@ -1492,9 +1494,9 @@ stage1_full/train_8gpu_1ep/launch_stage1_full.sh
 该启动器只 source 权限为 600 的外置 W&B env，设置明确的训练参数，然后调用
 `scripts/train/stage1_te_lora.sh`；训练退出码最终会写入 `exit_code`。
 
-### 启动状态与查看方式
+### 完成状态
 
-8 个 Accelerate rank 已全部启动，8 次 dataset 初始化都报告：
+8 个 Accelerate rank 全部启动成功，8 次 dataset 初始化都报告：
 
 ```text
 sizes=42336/21168/10584/10584
@@ -1503,36 +1505,84 @@ steps=1323
 schedule_len=84672
 ```
 
-NCCL 使用 IB 初始化，模型加载后每卡约占 58.3 GiB；训练已经进入 10,584-step 本地进度条，
-启动抽查未发现端口冲突、OOM、Traceback、NCCL、数据或 W&B error。W&B online run name 为
+NCCL 使用 IB 初始化，模型加载后每卡约占 58.3 GiB。训练于
+`2026-09-05T01:46:16Z` 结束，controller 记录 `exit_code=0`；本地进度条完成
+`10,584/10,584` micro-step，进度条耗时 `11:06:14`、平均 `3.78 s/step`，包含加载、
+保存和 W&B finish 的总 wall time 为 `11:07:34`。8 个 rank 均打印
+`NCCL ... Destroy COMPLETE`，训练进程和专用 detached tmux session 均已退出，不是意外残留或
+失联。对完整日志扫描未发现 OOM、Traceback、CUDA/NCCL error、NaN/Inf、exception、
+killed 或 segmentation fault。
+
+### 数据消费与 loss 审计
+
+`loss.csv` 共有 26,460 条数据记录，`loss` 覆盖连续的 step 1–10,584，没有缺失、
+重复或非有限值。按实际出现的 loss key 逐 step 反推 rank-0 数据分支：
+
+```text
+edit_mt  (NTP + FM)  5,292
+edit_ntp (NTP only)  2,646
+FM only               2,646  # edit + edit_umt
+```
+
+这与 4:2:1:1 的完整 epoch 期望精确一致。`edit` 和 `edit_umt` 都只产生 FM key，因此
+单看 rank-0 CSV 不能再区分这两类；启动前 schedule 强审计已确认它们分别为 1,323
+条/rank，所有 rank 类型序列相同、每个 micro-step 同类，且训练完成了整个 schedule。
+
+使用实际配置 `lambda_ntp=0.05`、`lambda_fm=1.0` 逐条重算总 loss：
+
+- `edit_mt`: `loss = 0.05 * loss_ntp + loss_fm`；
+- `edit_ntp`: `loss = 0.05 * loss_ntp`；
+- `edit/edit_umt`: `loss = loss_fm`。
+
+全部 10,584 条均通过，最大绝对误差仅 `1.49e-8`。前 1,000 与后 1,000 step 的
+均值对比为：
+
+```text
+total loss  0.06230 -> 0.04666  (-25.1%)
+raw NTP     0.52288 -> 0.21633  (-58.6%)
+raw FM      0.05692 -> 0.05140  (-9.7%)
+```
+
+`edit_mt` 的 raw NTP 从 `0.63076` 降到 `0.27385`，`edit_ntp` 的 raw NTP 从
+`0.30714` 降到 `0.10128`；FM 在随机 timestep/noise 和多样本混合下波动更大。日志中
+38 条 FM 分量为精确 0，与 flow-matching 端点权重为 0 的设计一致；它们均不是
+NaN/Inf，且 loss 组合公式仍通过。
+
+### Checkpoint 与 W&B 审计
+
+训练在 step 2,000/4,000/6,000/8,000/10,000 和最终 step 10,584 共保存 6 份 checkpoint。
+六者 schema 完全一致，每份都是 392 个 fp32 LoRA tensor，包含 196 个 A 和 196 个 B，
+共 161,480,704 个参数，没有意外的非 LoRA key。最终 checkpoint 所有 tensor 均 finite，
+也没有整张量全零。将 step 10,584 与 step 10,000 比较，392/392 个 tensor 全部继续变化，
+99.9386% 的元素有变化，证明最后 584 micro-step 并非只记录 loss 而没有更新权重。
+
+最终权重：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/
+train_8gpu_1ep/step-10584.safetensors
+SHA256: 67b9d759b99259388e832b35204e4779b088d0783921b960afdb1fdf98b0fad2
+```
+
+W&B 以 success 状态 finish 并同步 5 个文件。Online run name 为
 `stage1-refined-full-8gpu-1ep-20260904`，run id 为 `run_20260904_b96a9122`：
 
 ```text
 https://ml.tiktok-row.net/experiment/tracking/detail?Id=project_20260823_dd21e517&selectedTrial=run_20260904_b96a9122
 ```
 
-查看实时日志：
+完整日志、loss 和退出码：
 
 ```bash
-tail -f /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/train.log
-```
-
-查看后台 session（查看后按 `Ctrl-b d` 脱离，不要在其中按 `Ctrl-c`）：
-
-```bash
-tmux attach -t samtok_stage1_refined_full_1ep
-```
-
-查看 loss CSV、GPU 和最终退出码：
-
-```bash
-tail -f /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/loss.csv
-watch -n 5 nvidia-smi
+less /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/train.log
+less /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/loss.csv
 cat /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/exit_code
 ```
 
-最后一条命令只会在训练结束后成功；运行期间该文件不存在。W&B 本地数据写入
-`train_8gpu_1ep/wandb_log/wandb/run-20260904_143945-run_20260904_b96a9122/`。
+W&B 本地数据位于
+`train_8gpu_1ep/wandb_log/wandb/run-20260904_143945-run_20260904_b96a9122/`。本节只完成
+训练状态、loss 和 checkpoint 审计，没有运行 inference；因此可以判定训练执行正常且
+有明确的 NTP 学习趋势，但不在本次结论中声称编辑质量或泛化效果。
 
 ## 当前结论和下一步
 
@@ -1553,6 +1603,7 @@ cat /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_ref
   checkpoint、CSV 和 W&B 均符合当前方案与官方 runner 的实际语义。
 - Stage 2 放大规模训练数据已构建完成；最终 165,960 行保持 2:1 和逐卡同比例，并与 E7
   验证集在 identity、路径与图像 SHA256 层面严格互斥，可作为后续正式 Stage 2a 输入。
-- refined Stage 1 的四类 smoke 构建、8 卡训练与全量数据构建均已通过；全量 84,672 行保持
-  4:2:1:1、无空 CoT，并完成全部 42,360 个 CrispEdit identity 的原图字节回查和 128 条
-  codec 复编码，可作为新方案后续正式 Stage 1 训练输入。
+- refined Stage 1 的四类 smoke 构建、8 卡 smoke 训练、全量数据构建和全量 8 卡
+  单 epoch 训练均已通过；84,672 行数据按 4:2:1:1 完整消费，最终 step-10,584
+  checkpoint 已保存并通过 finite/权重更新审计。本轮未运行 inference，后续仍需使用
+  训练外数据判断实际编辑质量与泛化效果。
