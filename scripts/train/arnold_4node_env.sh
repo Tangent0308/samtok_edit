@@ -45,7 +45,11 @@ samtok_init_arnold_topology() {
   export NODE_RANK="${NODE_RANK:-${ARNOLD_ID:-}}"
   export GPUS_PER_NODE="${GPUS_PER_NODE:-${ARNOLD_WORKER_GPU:-}}"
   export MASTER_ADDR="${MASTER_ADDR:-${worker_zero:-$inferred_addr}}"
-  export MASTER_PORT="${MASTER_PORT:-${PORT:-$inferred_port}}"
+  # Arnold may expose a different generic PORT on every worker. It is a local
+  # service port, not a distributed rendezvous port. Only an explicit
+  # MASTER_PORT may override the port attached to worker 0 in the shared host
+  # list.
+  export MASTER_PORT="${MASTER_PORT:-$inferred_port}"
   if [[ "$MASTER_ADDR" =~ ^\[([^]]+)\]$ ]]; then
     export MASTER_ADDR="${BASH_REMATCH[1]}"
   fi
@@ -54,7 +58,7 @@ samtok_init_arnold_topology() {
   : "${NODE_RANK:?Set NODE_RANK or ARNOLD_ID}"
   : "${GPUS_PER_NODE:?Set GPUS_PER_NODE or ARNOLD_WORKER_GPU}"
   : "${MASTER_ADDR:?Set MASTER_ADDR, ARNOLD_WORKER_0_HOST, or ARNOLD_WORKER_HOSTS}"
-  : "${MASTER_PORT:?Set MASTER_PORT/PORT or provide ports in ARNOLD_WORKER_HOSTS}"
+  : "${MASTER_PORT:?Set MASTER_PORT or provide ports in ARNOLD_WORKER_HOSTS}"
 
   samtok_require_uint NNODES "$NNODES"
   samtok_require_uint NODE_RANK "$NODE_RANK"
@@ -106,6 +110,8 @@ samtok_accelerate_launch() {
 
   "$accelerate_bin" launch \
     --multi_gpu \
+    --mixed_precision "${ACCELERATE_MIXED_PRECISION:-no}" \
+    --dynamo_backend "${ACCELERATE_DYNAMO_BACKEND:-no}" \
     --num_processes "$NUM_PROCESSES" \
     --num_machines "$NUM_MACHINES" \
     --machine_rank "$MACHINE_RANK" \

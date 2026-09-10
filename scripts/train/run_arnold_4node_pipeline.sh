@@ -26,6 +26,7 @@ REPORT_DIR="$RUN_ROOT/reports"
 CONTROL_DIR="$RUN_ROOT/control"
 RUN_ID="${SAMTOK_RUN_ID:-$(basename "$RUN_ROOT")}"
 WAIT_TIMEOUT_SECONDS="${WAIT_TIMEOUT_SECONDS:-21600}"
+TOPOLOGY_TIMEOUT_SECONDS="${TOPOLOGY_TIMEOUT_SECONDS:-300}"
 CACHE_AUDIT_WORKERS="${CACHE_AUDIT_WORKERS:-32}"
 
 [[ -x "$SAMTOK_EDIT_VENV/bin/python" ]] || { echo "uv environment is missing: $SAMTOK_EDIT_VENV" >&2; exit 1; }
@@ -164,7 +165,7 @@ initialize_run() {
     )"
     unexpected_control="$(
       find "$BOOTSTRAP_CONTROL" -mindepth 1 -maxdepth 1 \
-        ! -name environment.ok ! -name git_commit.txt -print -quit 2>/dev/null || true
+        ! -name environment.ok ! -name git_commit.txt ! -name session.id -print -quit 2>/dev/null || true
     )"
     if [[ -n "$unexpected_root" || -n "$unexpected_log" || -n "$unexpected_control" ]]; then
       echo "Refusing to reuse a non-empty RUN_ROOT: $RUN_ROOT" >&2
@@ -175,13 +176,19 @@ initialize_run() {
     fi
   fi
   mkdir -p "$LOG_DIR" "$REPORT_DIR" "$CONTROL_DIR"
-  python - "$REPORT_DIR/topology.json" "$RUN_ID" <<'PY'
+}
+
+write_topology_report() {
+  local report="$REPORT_DIR/topology.node${NODE_RANK}.json"
+  local temporary="${report}.tmp.$$"
+  python - "$temporary" "$RUN_ID" <<'PY'
 import json
 import os
 import sys
 
 payload = {
     "protocol": "samtok_edit_crispedit_refined_4node",
+    "node_rank": int(os.environ["NODE_RANK"]),
     "nnodes": int(os.environ["NNODES"]),
     "gpus_per_node": int(os.environ["GPUS_PER_NODE"]),
     "world_size": int(os.environ["WORLD_SIZE"]),
@@ -194,6 +201,104 @@ with open(sys.argv[1], "w", encoding="utf-8") as handle:
     handle.write("\n")
 print(json.dumps(payload, indent=2))
 PY
+  mv "$temporary" "$report"
+}
+
+validate_topology_consensus() {
+  python - "$REPORT_DIR" "$NNODES" "$REPORT_DIR/topology.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+report_dir = Path(sys.argv[1])
+nnodes = int(sys.argv[2])
+output_path = Path(sys.argv[3])
+reports = [
+    json.loads((report_dir / f"topology.node{rank}.json").read_text(encoding="utf-8"))
+    for rank in range(nnodes)
+]
+
+expected_ranks = list(range(nnodes))
+actual_ranks = sorted(report["node_rank"] for report in reports)
+if actual_ranks != expected_ranks:
+    raise SystemExit(f"node ranks differ: expected={expected_ranks}, actual={actual_ranks}")
+
+shared_fields = ("protocol", "nnodes", "gpus_per_node", "world_size", "master_addr", "master_port", "run_id")
+reference = {field: reports[0][field] for field in shared_fields}
+mismatches = []
+for report in reports[1:]:
+    current = {field: report[field] for field in shared_fields}
+    if current != reference:
+        mismatches.append({"node_rank": report["node_rank"], "values": current})
+if mismatches:
+    raise SystemExit(
+        "four-node topology mismatch; "
+        + json.dumps({"node0": reference, "mismatches": mismatches}, sort_keys=True)
+    )
+if reference["nnodes"] != nnodes or reference["world_size"] != nnodes * reference["gpus_per_node"]:
+    raise SystemExit(f"invalid world-size topology: {reference}")
+
+payload = dict(reference)
+payload["nodes"] = reports
+temporary = output_path.with_name(output_path.name + ".tmp")
+temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+temporary.replace(output_path)
+print(json.dumps(payload, indent=2))
+PY
+}
+
+run_topology_consensus() {
+  local stage="topology_consensus"
+  local status
+  local started
+  local completed
+  local failed
+
+  set +e
+  write_topology_report
+  status=$?
+  set -e
+  if (( status != 0 )); then
+    atomic_marker "$CONTROL_DIR/$stage.node${NODE_RANK}.failed" "$status"
+    return "$status"
+  fi
+  atomic_marker "$CONTROL_DIR/$stage.node${NODE_RANK}.done"
+
+  if (( NODE_RANK != 0 )); then
+    log "waiting for four-node topology consensus"
+    wait_for_stage "$stage"
+    return
+  fi
+
+  started=$SECONDS
+  while true; do
+    completed="$(find "$CONTROL_DIR" -maxdepth 1 -name "$stage.node*.done" -print 2>/dev/null | wc -l)"
+    failed="$(find "$CONTROL_DIR" -maxdepth 1 -name "$stage.node*.failed" -print -quit 2>/dev/null || true)"
+    if [[ -n "$failed" ]]; then
+      echo "Topology report failed; marker=$failed; status=$(<"$failed")" >&2
+      return 1
+    fi
+    if (( completed == NNODES )); then
+      break
+    fi
+    if (( SECONDS - started >= TOPOLOGY_TIMEOUT_SECONDS )); then
+      atomic_marker "$CONTROL_DIR/$stage.node0.failed" "timed out: $completed/$NNODES reports"
+      echo "Timed out waiting for topology reports after ${TOPOLOGY_TIMEOUT_SECONDS}s; completed=$completed/$NNODES" >&2
+      return 1
+    fi
+    sleep 2
+  done
+
+  set +e
+  validate_topology_consensus
+  status=$?
+  set -e
+  if (( status != 0 )); then
+    atomic_marker "$CONTROL_DIR/$stage.node0.failed" "$status"
+    return "$status"
+  fi
+  atomic_marker "$CONTROL_DIR/$stage.ok"
+  log "four-node topology consensus passed"
 }
 
 select_stage1_checkpoint() {
@@ -293,6 +398,7 @@ else
   wait_for_stage initialize
 fi
 
+run_topology_consensus
 log "topology nnodes=$NNODES gpus_per_node=$GPUS_PER_NODE world_size=$WORLD_SIZE master=$MASTER_ADDR:$MASTER_PORT"
 
 run_rank0_stage prepare_metadata \

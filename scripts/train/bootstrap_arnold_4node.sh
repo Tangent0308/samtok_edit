@@ -78,7 +78,10 @@ MASTER_ADDR="${MASTER_ADDR:-${ARNOLD_WORKER_0_HOST:-$INFERRED_MASTER_ADDR}}"
 if [[ "$MASTER_ADDR" =~ ^\[([^]]+)\]$ ]]; then
   MASTER_ADDR="${BASH_REMATCH[1]}"
 fi
-MASTER_PORT="${MASTER_PORT:-${PORT:-$INFERRED_MASTER_PORT}}"
+# Do not read Arnold's generic PORT: it is worker-local and differs across
+# nodes. All workers must use the port of the first ARNOLD_WORKER_HOSTS entry,
+# unless the job explicitly supplies one shared MASTER_PORT.
+MASTER_PORT="${MASTER_PORT:-$INFERRED_MASTER_PORT}"
 NNODES="$ARNOLD_WORKER_NUM"
 NODE_RANK="$ARNOLD_ID"
 GPUS_PER_NODE="$ARNOLD_WORKER_GPU"
@@ -97,13 +100,14 @@ SAMTOK_EDIT_VENV="${SAMTOK_EDIT_VENV:-$SAMTOK_EDIT_REPO_DIR/.venv}"
 RUN_ROOT="${RUN_ROOT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/$SAMTOK_RUN_ID}"
 BOOTSTRAP_CONTROL="${BOOTSTRAP_CONTROL:-$RUN_ROOT/bootstrap_control}"
 BOOTSTRAP_TIMEOUT_SECONDS="${BOOTSTRAP_TIMEOUT_SECONDS:-7200}"
+BOOTSTRAP_SESSION_ID="${SAMTOK_BOOTSTRAP_SESSION_ID:-${ARNOLD_JOB_ID:-${ARNOLD_TRIAL_ID:-$SAMTOK_RUN_ID}}}"
 SAMTOK_GIT_HTTP_PROXY="${SAMTOK_GIT_HTTP_PROXY:-}"
 SAMTOK_EDIT_INDEX="${SAMTOK_EDIT_INDEX:-https://bytedpypi.byted.org/simple/}"
 SAMTOK_EDIT_UV_VERSION="${SAMTOK_EDIT_UV_VERSION:-0.11.32}"
 
 export WANDB_API_KEY WANDB_ENTITY WANDB_PROJECT
 export MASTER_ADDR MASTER_PORT NNODES NODE_RANK GPUS_PER_NODE
-export SAMTOK_RUN_ID SAMTOK_EDIT_VENV RUN_ROOT BOOTSTRAP_CONTROL
+export SAMTOK_RUN_ID SAMTOK_EDIT_VENV RUN_ROOT BOOTSTRAP_CONTROL BOOTSTRAP_SESSION_ID
 # The pipeline may initialize a RUN_ROOT that contains only bootstrap logs and
 # bootstrap coordination files created by this entry script.
 export SAMTOK_ALLOW_BOOTSTRAP_RUN_ROOT=1
@@ -132,23 +136,37 @@ write_marker() {
   mv "$temporary" "$path"
 }
 
+write_environment_failure() {
+  write_marker "$BOOTSTRAP_CONTROL/environment.failed" "${BOOTSTRAP_SESSION_ID}"$'\t'"$*"
+}
+
 wait_for_bootstrap() {
   local started=$SECONDS
+  local active_session
+  local failed_status
   while true; do
-    if [[ -f "$BOOTSTRAP_CONTROL/environment.failed" ]]; then
-      echo "Controller environment setup failed: $(<"$BOOTSTRAP_CONTROL/environment.failed")" >&2
-      return 1
-    fi
-    if [[ -f "$BOOTSTRAP_CONTROL/environment.ok" ]]; then
-      return 0
+    active_session="$(cat "$BOOTSTRAP_CONTROL/session.id" 2>/dev/null || true)"
+    if [[ "$active_session" == "$BOOTSTRAP_SESSION_ID" ]]; then
+      failed_status="$(cat "$BOOTSTRAP_CONTROL/environment.failed" 2>/dev/null || true)"
+      if [[ "$failed_status" == "${BOOTSTRAP_SESSION_ID}"$'\t'* ]]; then
+        echo "Controller environment setup failed: ${failed_status#*$'\t'}" >&2
+        return 1
+      fi
+      if [[ "$(cat "$BOOTSTRAP_CONTROL/environment.ok" 2>/dev/null || true)" == "$BOOTSTRAP_SESSION_ID" ]]; then
+        return 0
+      fi
     fi
     if (( SECONDS - started >= BOOTSTRAP_TIMEOUT_SECONDS )); then
-      echo "Timed out waiting for shared clone/environment after ${BOOTSTRAP_TIMEOUT_SECONDS}s" >&2
+      echo "Timed out waiting for bootstrap session $BOOTSTRAP_SESSION_ID after ${BOOTSTRAP_TIMEOUT_SECONDS}s" >&2
       return 1
     fi
     sleep 2
   done
 }
+
+if (( NODE_RANK == 0 )); then
+  write_marker "$BOOTSTRAP_CONTROL/session.id" "$BOOTSTRAP_SESSION_ID"
+fi
 
 if [[ "${SAMTOK_SKIP_APT:-0}" != "1" ]]; then
   log "installing per-node system libraries"
@@ -173,7 +191,7 @@ fi
 if (( NODE_RANK == 0 )); then
   mkdir -p "$(dirname "$SAMTOK_EDIT_REPO_DIR")"
   if [[ -e "$SAMTOK_EDIT_REPO_DIR" ]]; then
-    write_marker "$BOOTSTRAP_CONTROL/environment.failed" "repository destination already exists: $SAMTOK_EDIT_REPO_DIR"
+    write_environment_failure "repository destination already exists: $SAMTOK_EDIT_REPO_DIR"
     echo "Refusing to overwrite existing repository destination: $SAMTOK_EDIT_REPO_DIR" >&2
     exit 1
   fi
@@ -186,7 +204,7 @@ if (( NODE_RANK == 0 )); then
   CLONE_STATUS=$?
   set -e
   if (( CLONE_STATUS != 0 )); then
-    write_marker "$BOOTSTRAP_CONTROL/environment.failed" "git clone exit code $CLONE_STATUS"
+    write_environment_failure "git clone exit code $CLONE_STATUS"
     exit "$CLONE_STATUS"
   fi
 
@@ -194,7 +212,7 @@ if (( NODE_RANK == 0 )); then
   log "installing uv==$SAMTOK_EDIT_UV_VERSION after clearing clone proxies"
   BOOTSTRAP_PYTHON="${SAMTOK_EDIT_PYTHON:-$(command -v python3.11 || true)}"
   if [[ -z "$BOOTSTRAP_PYTHON" || ! -x "$BOOTSTRAP_PYTHON" ]]; then
-    write_marker "$BOOTSTRAP_CONTROL/environment.failed" "Python 3.11 is unavailable"
+    write_environment_failure "Python 3.11 is unavailable"
     echo "Python 3.11 was not found; set SAMTOK_EDIT_PYTHON." >&2
     exit 1
   fi
@@ -207,13 +225,13 @@ if (( NODE_RANK == 0 )); then
   UV_STATUS=$?
   set -e
   if (( UV_STATUS != 0 )); then
-    write_marker "$BOOTSTRAP_CONTROL/environment.failed" "uv installation exit code $UV_STATUS"
+    write_environment_failure "uv installation exit code $UV_STATUS"
     exit "$UV_STATUS"
   fi
   UV_USER_BASE="$("$BOOTSTRAP_PYTHON" -c 'import site; print(site.getuserbase())')"
   UV_EXECUTABLE="$UV_USER_BASE/bin/uv"
   if [[ ! -x "$UV_EXECUTABLE" ]]; then
-    write_marker "$BOOTSTRAP_CONTROL/environment.failed" "uv executable is missing: $UV_EXECUTABLE"
+    write_environment_failure "uv executable is missing: $UV_EXECUTABLE"
     echo "uv installation completed but executable is missing: $UV_EXECUTABLE" >&2
     exit 1
   fi
@@ -233,12 +251,12 @@ if (( NODE_RANK == 0 )); then
   SETUP_STATUS=$?
   set -e
   if (( SETUP_STATUS != 0 )); then
-    write_marker "$BOOTSTRAP_CONTROL/environment.failed" "setup_env.sh exit code $SETUP_STATUS"
+    write_environment_failure "setup_env.sh exit code $SETUP_STATUS"
     exit "$SETUP_STATUS"
   fi
 
   git -C "$SAMTOK_EDIT_REPO_DIR" rev-parse HEAD >"$BOOTSTRAP_CONTROL/git_commit.txt"
-  write_marker "$BOOTSTRAP_CONTROL/environment.ok"
+  write_marker "$BOOTSTRAP_CONTROL/environment.ok" "$BOOTSTRAP_SESSION_ID"
   log "shared clone and environment are ready"
 else
   unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
