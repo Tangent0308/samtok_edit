@@ -34,7 +34,10 @@ from diffsynth.core.data.samtok_dataset import (  # noqa: E402
 from diffsynth.core.data.unified_dataset import UnifiedDataset  # noqa: E402
 from diffsynth.models.qwen_image_dit import QwenImageTransformerBlock  # noqa: E402
 from diffsynth.diffusion import loss as loss_module  # noqa: E402
-from diffsynth.pipelines.qwen_image_samtok import shifted_cot_supervision  # noqa: E402
+from diffsynth.pipelines.qwen_image_samtok import (  # noqa: E402
+    _record_user_mask_audit,
+    shifted_cot_supervision,
+)
 from diffsynth.utils.state_dict_converters.qwen_image_text_encoder_samtok import (  # noqa: E402
     QwenImageSamtokTextEncoderStateDictConverter,
 )
@@ -51,7 +54,12 @@ from build_edit_mt_metadata import (  # noqa: E402
     source_identity_from_row,
 )
 from build_edit_metadata import select_candidates as select_edit_candidates  # noqa: E402
+from build_scaleedit_stage2_validation import SELECTIONS as SCALEEDIT_SELECTIONS  # noqa: E402
 from compose_training_metadata import arrange_stage1_rows, arrange_stage2_rows  # noqa: E402
+from audit_refined_metadata import (  # noqa: E402
+    _check_materialized_references,
+    _shard_requires_images,
+)
 from train_samtok_edit import (  # noqa: E402
     QwenImageSamtokTrainingModule,
     samtok_parser,
@@ -64,6 +72,12 @@ from run_stage1_eval import (  # noqa: E402
     run_samtok_setting,
     stock_edit,
 )
+from run_stage2_eval import (  # noqa: E402
+    SETTINGS as STAGE2_EVAL_SETTINGS,
+    official_output_size,
+    parse_settings as parse_stage2_eval_settings,
+    run_method as run_stage2_method,
+)
 from make_stage1_category_comparisons import (  # noqa: E402
     crop_decoded_mask_cells,
 )
@@ -73,6 +87,78 @@ SPAN_A = "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>"
 
 
 class SamtokEditTests(unittest.TestCase):
+    def test_cfg_negative_prompt_does_not_overwrite_user_mask_audit(self):
+        pipe = SimpleNamespace(last_user_mask_audit=None)
+        positive = {
+            "user_mask_span_count": 1,
+            "user_mask_span_token_ids": [[151665, 151937, 152193, 151666]],
+            "user_mask_spans_atomic": True,
+            "user_mask_spans_in_template": True,
+        }
+        negative = {
+            "user_mask_span_count": 0,
+            "user_mask_span_token_ids": [],
+            "user_mask_spans_atomic": True,
+            "user_mask_spans_in_template": True,
+        }
+        _record_user_mask_audit(pipe, positive)
+        _record_user_mask_audit(pipe, negative)
+        self.assertEqual(pipe.last_user_mask_audit, positive)
+
+    def test_refined_audit_accepts_byte_identical_storage_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            references = set()
+            for namespace in ("images", "images_edit"):
+                source = root / namespace / "source.jpg"
+                target = root / namespace / "target.jpg"
+                source.parent.mkdir(parents=True)
+                source.write_bytes(b"source-bytes")
+                target.write_bytes(b"target-bytes")
+                references.add(
+                    (
+                        source.relative_to(root).as_posix(),
+                        target.relative_to(root).as_posix(),
+                    )
+                )
+            self.assertEqual(
+                _check_materialized_references(
+                    ("add_00000.parquet", 7),
+                    references,
+                    root,
+                    b"source-bytes",
+                    b"target-bytes",
+                ),
+                2,
+            )
+
+    def test_refined_audit_loads_images_for_matching_shard_identity(self):
+        wanted_indices = {3, 7}
+        self.assertTrue(
+            _shard_requires_images(
+                "add_00000.parquet",
+                wanted_indices,
+                {("add_00000.parquet", 7)},
+                set(),
+            )
+        )
+        self.assertTrue(
+            _shard_requires_images(
+                "add_00000.parquet",
+                wanted_indices,
+                set(),
+                {("add_00000.parquet", 3)},
+            )
+        )
+        self.assertFalse(
+            _shard_requires_images(
+                "add_00000.parquet",
+                wanted_indices,
+                {("remove_00000.parquet", 7)},
+                {("add_00000.parquet", 9)},
+            )
+        )
+
     def test_category_mask_sheet_uses_separate_decoded_cells(self):
         panel = Image.new("RGB", (1600, 410), "white")
         for column, color in enumerate(
@@ -428,6 +514,79 @@ class SamtokEditTests(unittest.TestCase):
         self.assertEqual((kwargs["height"], kwargs["width"]), (1024, 1235))
         self.assertTrue(kwargs["edit_image_auto_resize"])
         self.assertTrue(kwargs["zero_cond_t"])
+
+    def test_scaleedit_stage2_selection_is_balanced_and_unique(self):
+        self.assertEqual(len(SCALEEDIT_SELECTIONS), 32)
+        self.assertEqual(
+            len({selection.sample_id for selection in SCALEEDIT_SELECTIONS}), 32
+        )
+        self.assertEqual(
+            Counter(selection.primary_category for selection in SCALEEDIT_SELECTIONS),
+            Counter(
+                small_object=8,
+                fine_grained=8,
+                multi_instance=8,
+                precise_edit=8,
+            ),
+        )
+        self.assertTrue(
+            all(selection.umt_replaced_text for selection in SCALEEDIT_SELECTIONS)
+        )
+
+    def test_stage2_eval_three_setting_and_prompt_contract(self):
+        settings = parse_stage2_eval_settings(["1", "s2", "3"])
+        self.assertEqual(settings, list(STAGE2_EVAL_SETTINGS))
+        self.assertEqual(
+            [setting.cot_mode for setting in settings],
+            ["disabled", "online", "disabled"],
+        )
+        self.assertEqual(
+            [setting.prompt_mode for setting in settings],
+            ["original_instruction", "original_instruction", "edit_umt"],
+        )
+        self.assertEqual(
+            [setting.stage2_dit_lora for setting in settings], [False, True, True]
+        )
+
+        row = {
+            "prompt": "Replace the cup with a bottle.",
+            "edit_umt_prompt": f"Replace {SPAN_A} with a bottle.",
+        }
+        common = {
+            "seed": 3,
+            "num_inference_steps": 40,
+            "cfg_scale": 4.0,
+            "samtok_max_new_tokens": 128,
+        }
+        pipe = SimpleNamespace(
+            last_user_mask_audit={
+                "user_mask_span_count": 1,
+                "user_mask_spans_atomic": True,
+                "user_mask_spans_in_template": True,
+            }
+        )
+        with mock.patch("run_stage2_eval.run_edit", return_value="output") as run:
+            output, prompt = run_stage2_method(
+                pipe, settings[1], row, "source", common
+            )
+            self.assertEqual((output, prompt), ("output", row["prompt"]))
+            self.assertTrue(run.call_args.kwargs["enable_samtok_cot"])
+            self.assertIsNone(run.call_args.kwargs["mt_cot"])
+
+            output, prompt = run_stage2_method(
+                pipe, settings[2], row, "source", common
+            )
+            self.assertEqual((output, prompt), ("output", row["edit_umt_prompt"]))
+            self.assertFalse(run.call_args.kwargs["enable_samtok_cot"])
+            self.assertIsNone(run.call_args.kwargs["mt_cot"])
+
+    def test_stage2_eval_uses_official_one_megapixel_output_scale(self):
+        self.assertEqual(
+            official_output_size(Image.new("RGB", (2250, 1500))), (1248, 832)
+        )
+        self.assertEqual(
+            official_output_size(Image.new("RGB", (1024, 1024))), (1024, 1024)
+        )
 
     def test_stage1_eval_metadata_validation_checks_all_rows_before_slicing(self):
         with tempfile.TemporaryDirectory() as folder:

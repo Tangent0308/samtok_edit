@@ -39,6 +39,22 @@ EDIT_DROP_IDX = 64
 IMAGE_PROMPT_TEMPLATE = "Picture {}: <|vision_start|><|image_pad|><|vision_end|>"
 
 
+def _record_user_mask_audit(pipe, audit: dict) -> None:
+    """Keep the positive user-prompt audit across the CFG negative pass.
+
+    ``PipelineUnitRunner`` invokes separate-CFG embedders for the positive prompt
+    first and the negative prompt second.  The latter is normally empty and must
+    not overwrite a non-empty SAMTok span audit produced by the user prompt.
+    """
+
+    previous = getattr(pipe, "last_user_mask_audit", None)
+    if previous is None or (
+        previous.get("user_mask_span_count", 0) == 0
+        and audit.get("user_mask_span_count", 0) > 0
+    ):
+        pipe.last_user_mask_audit = audit
+
+
 def shifted_cot_supervision(
     hidden: torch.Tensor,
     cot_ids: torch.Tensor,
@@ -232,7 +248,7 @@ class QwenImageUnit_SamtokPromptEmbedder(QwenImageUnit_PromptEmbedder):
                 span, add_special_tokens=False, return_tensors="pt"
             ).input_ids[0].tolist()
             prompt_span_ids.append(ids)
-        pipe.last_user_mask_audit = {
+        user_mask_audit = {
             "user_mask_span_count": len(prompt_spans),
             "user_mask_span_token_ids": prompt_span_ids,
             "user_mask_spans_atomic": all(len(ids) == 4 for ids in prompt_span_ids),
@@ -244,6 +260,7 @@ class QwenImageUnit_SamtokPromptEmbedder(QwenImageUnit_PromptEmbedder):
                 for ids in prompt_span_ids
             ),
         }
+        _record_user_mask_audit(pipe, user_mask_audit)
 
         if mt_cot is not None:
             cot_ids = pipe.processor.tokenizer(
@@ -465,6 +482,7 @@ class QwenImageSamtokPipeline(QwenImagePipeline):
         self.last_mt_cot = None
         self.last_pass1_raw = None
         self.last_parse_layer = None
+        self.last_user_mask_audit = None
         self._samtok_requested_mt_cot = mt_cot
         self._samtok_online_cot = bool(enable_samtok_cot)
         self._samtok_max_new_tokens = int(samtok_max_new_tokens)

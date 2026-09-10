@@ -124,6 +124,7 @@ def select_candidates(
 def materialize_parquet(
     raw_path: Path,
     output_root: Path,
+    image_subdir: Path,
     selected_row_indices: set[int] | None,
     remaining_rows: int | None,
 ) -> tuple[list[dict], Counter]:
@@ -142,8 +143,8 @@ def materialize_parquet(
         _, source_ext = _decode_image(source_bytes)
         _, target_ext = _decode_image(target_bytes)
         stem = raw_path.stem.replace(" ", "_")
-        source_rel = Path("images") / stem / f"{row_idx:06d}_source.{source_ext}"
-        target_rel = Path("images") / stem / f"{row_idx:06d}_target.{target_ext}"
+        source_rel = image_subdir / stem / f"{row_idx:06d}_source.{source_ext}"
+        target_rel = image_subdir / stem / f"{row_idx:06d}_target.{target_ext}"
         _write_bytes_once(output_root / source_rel, source_bytes)
         _write_bytes_once(output_root / target_rel, target_bytes)
         rows.append(
@@ -174,6 +175,12 @@ def main():
         "--output_root",
         type=Path,
         default=_REPO_ROOT / "data" / "crispedit_samtok",
+    )
+    parser.add_argument(
+        "--image_subdir",
+        type=Path,
+        default=Path("images"),
+        help="Relative output-root subdirectory used for materialized images",
     )
     parser.add_argument("--output_jsonl", type=Path, default=None)
     parser.add_argument("--max_files", type=int, default=None)
@@ -220,6 +227,12 @@ def main():
         raise ValueError("Multi-worker construction requires --skip_combine")
     if args.deprioritize_metadata_jsonl and args.sample_rows is None:
         raise ValueError("--deprioritize_metadata_jsonl requires --sample_rows")
+    if (
+        args.image_subdir.is_absolute()
+        or args.image_subdir == Path(".")
+        or ".." in args.image_subdir.parts
+    ):
+        raise ValueError("--image_subdir must be a non-empty relative path without '..'")
 
     output_root = args.output_root.resolve()
     output_jsonl = args.output_jsonl or output_root / "edit_all.jsonl"
@@ -297,6 +310,7 @@ def main():
             rows, stats = materialize_parquet(
                 raw_path,
                 output_root,
+                args.image_subdir,
                 selected_indices,
                 None,
             )
