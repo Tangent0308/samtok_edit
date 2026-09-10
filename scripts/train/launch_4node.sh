@@ -63,6 +63,15 @@ require_wandb() {
   done
 }
 
+configure_four_node_wandb() {
+  # byted-wandb 0.13.98 unconditionally enables a subprocess service whose
+  # startup timeout is hard-coded to 30 seconds.  Under 32-rank model-loading
+  # pressure that subprocess can miss the deadline and crash rank 0.  The
+  # supported legacy thread backend has no service port-file handshake.
+  export WANDB_DISABLE_SERVICE=true
+  export WANDB_START_METHOD=thread
+}
+
 model_paths_stage1() {
   "$PYTHON_BIN" - "$SAMTOK_TE" "$QWEN_2511" <<'PY'
 import glob
@@ -132,6 +141,7 @@ case "$PHASE" in
     require_path OUTPUT_PATH
     require_path MERGED_TE_DIR
     require_wandb
+    configure_four_node_wandb
     [[ -d "$SAMTOK_TE" ]] || { echo "SAMTok gres-ft TE is missing: $SAMTOK_TE" >&2; exit 1; }
     [[ -f "$STAGE1_METADATA" ]] || { echo "Stage-1 metadata is missing: $STAGE1_METADATA" >&2; exit 1; }
     [[ -d "$MERGED_TE_DIR" ]] || { echo "Merged TE directory is missing: $MERGED_TE_DIR" >&2; exit 1; }
@@ -170,6 +180,7 @@ case "$PHASE" in
       --save_steps "${SAVE_STEPS:-2000}" \
       --enable_csv_log \
       --enable_wandb_log \
+      --eager_init_loggers \
       --output_path "$OUTPUT_PATH" \
       "${TRAIN_EXTRA_ARGS[@]}" \
       --task sft
@@ -213,6 +224,7 @@ case "$PHASE" in
     require_path OUTPUT_PATH
     require_path MERGED_TE_DIR
     require_wandb
+    configure_four_node_wandb
     [[ -d "$CACHE_ROOT" ]] || { echo "Stage-2 cache is missing: $CACHE_ROOT" >&2; exit 1; }
     [[ -d "$MERGED_TE_DIR" ]] || { echo "Merged TE directory is missing: $MERGED_TE_DIR" >&2; exit 1; }
     MODEL_PATHS="$(model_paths_stage2_train)"
@@ -240,6 +252,7 @@ case "$PHASE" in
       --save_steps "${SAVE_STEPS:-4000}" \
       --enable_csv_log \
       --enable_wandb_log \
+      --eager_init_loggers \
       --output_path "$OUTPUT_PATH" \
       "${TRAIN_EXTRA_ARGS[@]}" \
       --task sft:train

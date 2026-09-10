@@ -1087,6 +1087,41 @@ class SamtokModelLogger(ModelLogger):
                 logger.log("debug/" + name, float(value), self.num_steps)
 
 
+def eager_initialize_loggers(accelerator, model_logger):
+    """Initialize external loggers before model loading on distributed jobs.
+
+    Only the global main process owns the logger.  A distributed minimum makes
+    every rank observe initialization failure before any model weights are
+    loaded or training collectives are entered.
+    """
+
+    logger_error = None
+    logger_ready = True
+    if accelerator.is_main_process:
+        try:
+            model_logger.init_loggers()
+        except Exception as error:  # Propagate the failure to every rank below.
+            logger_error = error
+            logger_ready = False
+
+    status = torch.tensor(
+        [int(logger_ready)],
+        dtype=torch.int32,
+        device=accelerator.device,
+    )
+    if accelerator.num_processes > 1:
+        torch.distributed.all_reduce(status, op=torch.distributed.ReduceOp.MIN)
+    if not bool(status.item()):
+        message = "Eager logger initialization failed on the global main process."
+        if logger_error is not None:
+            raise RuntimeError(message) from logger_error
+        raise RuntimeError(message + " See the global-rank-0 log for the root cause.")
+
+    accelerator.print(
+        "[SamtokLogger] eager initialization passed before model loading"
+    )
+
+
 class QwenImageSamtokTrainingModule(DiffusionTrainingModule):
     @staticmethod
     def _model_path_lookup_key(path):
@@ -1461,6 +1496,14 @@ def samtok_parser():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--debug_train_metrics", action="store_true")
     parser.add_argument("--debug_log_steps", type=int, default=1)
+    parser.add_argument(
+        "--eager_init_loggers",
+        action="store_true",
+        help=(
+            "Initialize external loggers on global rank 0 and synchronize the "
+            "result before loading model weights."
+        ),
+    )
     return parser
 
 
@@ -1504,6 +1547,20 @@ def main():
     # Keep the metadata schedule identical on all ranks while giving each rank
     # independent timestep/noise RNG streams.
     accelerate.utils.set_seed(args.seed, device_specific=True)
+
+    model_logger = SamtokModelLogger(
+        args.output_path,
+        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
+        enable_tensorboard_log=args.enable_tensorboard_log,
+        enable_swanlab_log=args.enable_swanlab_log,
+        swanlab_project=args.swanlab_project,
+        enable_wandb_log=args.enable_wandb_log,
+        wandb_project=args.wandb_project,
+        enable_csv_log=args.enable_csv_log,
+        run_config=vars(args),
+    )
+    if args.eager_init_loggers:
+        eager_initialize_loggers(accelerator, model_logger)
 
     edit_image_operator = RouteByType(
         operator_map=[
@@ -1577,17 +1634,6 @@ def main():
         ntp_loss_weight=args.ntp_loss_weight,
         fm_loss_weight=args.fm_loss_weight,
         lora_dropout=args.lora_dropout,
-    )
-    model_logger = SamtokModelLogger(
-        args.output_path,
-        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
-        enable_tensorboard_log=args.enable_tensorboard_log,
-        enable_swanlab_log=args.enable_swanlab_log,
-        swanlab_project=args.swanlab_project,
-        enable_wandb_log=args.enable_wandb_log,
-        wandb_project=args.wandb_project,
-        enable_csv_log=args.enable_csv_log,
-        run_config=vars(args),
     )
     launcher = {
         "sft:data_process": launch_data_process_task_samtok,

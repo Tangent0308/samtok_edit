@@ -526,6 +526,26 @@ $SAMTOK_RUN_ID-stage2
 
 Stage 2 cache 构建和 cache audit 不记录 W&B 曲线。
 
+四机训练使用固定的 `byted-wandb==0.13.98`。该版本的 subprocess service 只有 30 秒固定启动
+等待时间；在 32 rank 同时加载模型时可能因启动过慢而让 global rank 0 报
+`assert ports_found`，随后其他 rank 才出现 TCPStore/NCCL watchdog 连锁错误。四机 launcher 因此
+专门设置：
+
+```text
+WANDB_DISABLE_SERVICE=true
+WANDB_START_METHOD=thread
+```
+
+并向两个训练阶段传入 `--eager_init_loggers`。global rank 0 会在读取 dataset 和模型权重之前初始化
+W&B/CSV logger，再通过 distributed all-reduce 把初始化结果同步给全部 32 个 rank。成功日志必须
+先出现：
+
+```text
+[SamtokLogger] eager initialization passed before model loading
+```
+
+如果 W&B 初始化失败，所有 rank 会在模型加载前一致退出；单机训练入口不传该开关，行为不变。
+
 ## 8. 常用覆盖项
 
 以下变量可在 Arnold job environment 中覆盖：
@@ -611,7 +631,11 @@ bash scripts/train/launch_4node.sh stage2_train
   新 `SAMTOK_RUN_ID` 重跑；如必须从某一阶段恢复，人工核验已有 checkpoint/cache 后再使用第
   9 节的 phase 入口。
 - W&B 失败：确认入口顶部的 `WANDB_API_KEY`/`WANDB_ENTITY` 已填写，且
-  `WANDB_ENTITY/WANDB_PROJECT` 在四节点一致。
+  `WANDB_ENTITY/WANDB_PROJECT` 在四节点一致。如果 global rank 0 出现 `assert ports_found` 或
+  `/tmp/.../port-<pid>` 不存在，说明运行的 clone 尚未包含 thread-backend/eager-init 修复；检查
+  `$RUN_ROOT/bootstrap_control/git_commit.txt`，并确认启动日志在模型加载前出现
+  `[SamtokLogger] eager initialization passed before model loading`。不要通过增加 NCCL watchdog
+  timeout 掩盖该错误。
 
 ## 11. 完成判据
 
