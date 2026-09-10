@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit refined Stage-1 metadata against every authoritative source row."""
+"""Audit refined Stage-1/Stage-2 metadata against authoritative source rows."""
 
 from __future__ import annotations
 
@@ -88,8 +88,53 @@ def _write_json_atomic(payload: dict, path: Path):
     os.replace(temporary, path)
 
 
+def _shard_requires_images(
+    filename: str,
+    wanted_indices: set[int],
+    image_audit_ids: set[tuple[str, int]],
+    codec_audit_ids: set[tuple[str, int]],
+) -> bool:
+    return any(
+        (filename, row_idx) in image_audit_ids
+        or (filename, row_idx) in codec_audit_ids
+        for row_idx in wanted_indices
+    )
+
+
+def _check_materialized_references(
+    identity: tuple[str, int],
+    references: set[tuple[str, str]],
+    base_path: Path,
+    expected_source: bytes,
+    expected_target: bytes,
+) -> int:
+    """Verify every storage alias for one source identity against raw bytes."""
+
+    for source_reference, target_reference in references:
+        actual_source = _resolve(source_reference, base_path).read_bytes()
+        actual_target = _resolve(target_reference, base_path).read_bytes()
+        if actual_source != expected_source or actual_target != expected_target:
+            raise ValueError(
+                "Materialized image bytes differ for "
+                f"{identity}: {source_reference}, {target_reference}"
+            )
+    return len(references)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--stage",
+        choices=("stage1", "stage2"),
+        default="stage1",
+        help="Select the expected sample types, ratio, and padding semantics",
+    )
+    parser.add_argument(
+        "--world_size",
+        type=int,
+        default=8,
+        help="Distributed strided-shard count checked for Stage 2",
+    )
     parser.add_argument("--metadata_jsonl", type=Path, required=True)
     parser.add_argument("--base_path", type=Path, required=True)
     parser.add_argument("--crispedit_dir", type=Path, default=DEFAULT_CRISPEDIT)
@@ -130,18 +175,60 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--report_json", type=Path, default=None)
     args = parser.parse_args()
+    if args.world_size < 1:
+        raise ValueError("world_size must be positive")
 
     rows, metadata_sha256 = _read_jsonl(args.metadata_jsonl)
     counts = Counter(row.get("sample_type") for row in rows)
-    expected_types = {"edit_mt", "edit_ntp", "edit", "edit_umt"}
+    expected_types = (
+        {"edit_mt", "edit_ntp", "edit", "edit_umt"}
+        if args.stage == "stage1"
+        else {"edit_mt", "edit", "edit_umt"}
+    )
     if set(counts) != expected_types:
-        raise ValueError(f"Expected all refined Stage-1 types, got {dict(counts)}")
-    if not (
-        counts["edit_mt"] == 2 * counts["edit_ntp"]
-        and counts["edit_mt"] == 4 * counts["edit"]
-        and counts["edit_mt"] == 4 * counts["edit_umt"]
-    ):
-        raise ValueError(f"Bad refined Stage-1 ratio: {dict(counts)}")
+        raise ValueError(
+            f"Expected refined {args.stage} types {sorted(expected_types)}, "
+            f"got {dict(counts)}"
+        )
+    if args.stage == "stage1":
+        ratio_ok = (
+            counts["edit_mt"] == 2 * counts["edit_ntp"]
+            and counts["edit_mt"] == 4 * counts["edit"]
+            and counts["edit_mt"] == 4 * counts["edit_umt"]
+        )
+        ratio = "edit_mt:edit_ntp:edit:edit_umt=4:2:1:1"
+    else:
+        ratio_ok = (
+            counts["edit_mt"] == 2 * counts["edit"]
+            and counts["edit_mt"] == 2 * counts["edit_umt"]
+        )
+        ratio = "edit_mt:edit:edit_umt=2:1:1"
+    if not ratio_ok:
+        raise ValueError(f"Bad refined {args.stage} ratio: {dict(counts)}")
+
+    strided_shard_counts = None
+    if args.stage == "stage2":
+        if len(rows) % args.world_size:
+            raise ValueError(
+                f"Stage-2 rows do not divide world_size: {len(rows)} % {args.world_size}"
+            )
+        strided_shard_counts = [
+            dict(Counter(row["sample_type"] for row in rows[rank::args.world_size]))
+            for rank in range(args.world_size)
+        ]
+        expected_per_rank = {
+            sample_type: counts[sample_type] // args.world_size
+            for sample_type in sorted(expected_types)
+        }
+        if any(
+            counts[sample_type] % args.world_size for sample_type in expected_types
+        ) or any(
+            shard_counts != expected_per_rank for shard_counts in strided_shard_counts
+        ):
+            raise ValueError(
+                "Stage-2 strided DDP shards do not preserve the exact type ratio: "
+                f"{strided_shard_counts}"
+            )
 
     crisp_rows = defaultdict(dict)
     gres_rows = []
@@ -156,10 +243,14 @@ def main():
         sample_type = row["sample_type"]
         padding = row.get("schedule_padding")
         if padding is not None:
-            expected_reasons = {
-                "exact_4_to_2_to_1_to_1_ratio",
-                "exact_4_to_2_to_1_to_1_ratio_and_distributed_step_divisibility",
-            }
+            expected_reasons = (
+                {
+                    "exact_4_to_2_to_1_to_1_ratio",
+                    "exact_4_to_2_to_1_to_1_ratio_and_distributed_step_divisibility",
+                }
+                if args.stage == "stage1"
+                else {"exact_2_to_1_to_1_ratio_and_strided_shard_divisibility"}
+            )
             if padding.get("reason") not in expected_reasons:
                 raise ValueError(
                     f"Bad schedule padding at metadata row {metadata_index}: {padding}"
@@ -256,12 +347,16 @@ def main():
     if args.io_workers < 1:
         raise ValueError("io_workers must be positive")
     byte_checked = 0
+    materialized_reference_pairs_checked = 0
+    aliased_materialization_identities = 0
     mask_checked = 0
     manifest_checked = 0
     edit_types = Counter()
 
     def audit_crisp_shard(filename: str, wanted_indices: set[int]):
         local_byte_checked = 0
+        local_materialized_reference_pairs_checked = 0
+        local_aliased_materialization_identities = 0
         local_mask_checked = 0
         local_manifest_checked = 0
         local_edit_types = Counter()
@@ -271,8 +366,11 @@ def main():
         manifest_path = args.filter_manifest_dir / filename
         if not raw_path.is_file() or not mask_path.is_file() or not manifest_path.is_file():
             raise FileNotFoundError(f"Missing aligned source shard for {filename}")
-        need_raw_images = bool(
-            wanted_indices & (image_audit_ids | codec_audit_ids)
+        need_raw_images = _shard_requires_images(
+            filename,
+            wanted_indices,
+            image_audit_ids,
+            codec_audit_ids,
         )
         raw_columns = ["instruction", "type"]
         if need_raw_images:
@@ -315,10 +413,10 @@ def main():
                 for sample_type in ("edit_mt", "edit", "edit_umt")
                 if (record := crisp_rows[sample_type].get(identity)) is not None
             }
-            if len(identity_references) != 1:
-                raise ValueError(
-                    f"CrispEdit branches disagree on materialized images: {identity}"
-                )
+            if not identity_references:
+                raise ValueError(f"CrispEdit identity has no materialized images: {identity}")
+            if len(identity_references) > 1:
+                local_aliased_materialization_identities += 1
             for sample_type in ("edit_mt", "edit", "edit_umt"):
                 record = crisp_rows[sample_type].get(identity)
                 if record is None:
@@ -403,20 +501,22 @@ def main():
                         (identity, source_image, source_mask, expected_span)
                     )
             if identity in image_audit_ids:
-                representative = next(
-                    crisp_rows[sample_type][identity][1]
-                    for sample_type in ("edit_mt", "edit", "edit_umt")
-                    if identity in crisp_rows[sample_type]
-                )
                 expected_source = _image_bytes(source["input_img"], raw_path.parent)
                 expected_target = _image_bytes(source["output_img"], raw_path.parent)
-                actual_source = _resolve(representative["edit_image"], args.base_path).read_bytes()
-                actual_target = _resolve(representative["image"], args.base_path).read_bytes()
-                if actual_source != expected_source or actual_target != expected_target:
-                    raise ValueError(f"Materialized image bytes differ for {identity}")
+                local_materialized_reference_pairs_checked += (
+                    _check_materialized_references(
+                        identity,
+                        identity_references,
+                        args.base_path,
+                        expected_source,
+                        expected_target,
+                    )
+                )
                 local_byte_checked += 1
         return (
             local_byte_checked,
+            local_materialized_reference_pairs_checked,
+            local_aliased_materialization_identities,
             local_mask_checked,
             local_manifest_checked,
             local_edit_types,
@@ -432,12 +532,16 @@ def main():
         for completed, future in enumerate(as_completed(futures), start=1):
             (
                 shard_bytes,
+                shard_reference_pairs,
+                shard_aliases,
                 shard_masks,
                 shard_manifests,
                 shard_types,
                 shard_codec_inputs,
             ) = future.result()
             byte_checked += shard_bytes
+            materialized_reference_pairs_checked += shard_reference_pairs
+            aliased_materialization_identities += shard_aliases
             mask_checked += shard_masks
             manifest_checked += shard_manifests
             edit_types.update(shard_types)
@@ -476,43 +580,51 @@ def main():
                     )
                 codec_checked += 1
 
-    with args.gres_json.open(encoding="utf-8") as handle:
-        gres_source = json.load(handle)
-    expected_gres_dataset = args.gres_json.absolute()
-    for completed, (metadata_index, row) in enumerate(gres_rows, start=1):
-        provenance = row.get("provenance") or {}
-        source_index = int(provenance["source_row_idx"])
-        source = gres_source[source_index]
-        if Path(provenance.get("source_dataset", "")).absolute() != expected_gres_dataset:
-            raise ValueError(f"GRES source dataset changed at row {metadata_index}")
-        if provenance.get("source_image") != source["image"]:
-            raise ValueError(f"GRES source image provenance changed at row {metadata_index}")
-        conversations = source["conversations"]
-        source_cot = parse_and_canonicalize_mt_cot(conversations[1]["value"])
-        if source_cot != row["mt_cot"]:
-            raise ValueError(f"GRES CoT changed at metadata row {metadata_index}")
-        expression = expression_from_cot(source_cot) or expression_from_question(
-            conversations[0]["value"]
-        )
-        valid_prompts = {
-            template.format(expr=expression) for template in EDIT_VERB_TEMPLATES
-        }
-        if row["prompt"] not in valid_prompts:
-            raise ValueError(f"GRES template derivation changed at row {metadata_index}")
-        expected_image = (args.gres_image_root / source["image"]).absolute()
-        if _resolve(row["edit_image"], args.base_path).absolute() != expected_image:
-            raise ValueError(f"GRES image path changed at row {metadata_index}")
-        if completed % 5000 == 0 or completed == len(gres_rows):
-            print(
-                json.dumps(
-                    {
-                        "audit_progress": "gres_source_integrity",
-                        "completed_rows": completed,
-                        "total_rows": len(gres_rows),
-                    }
-                ),
-                flush=True,
+    if gres_rows:
+        with args.gres_json.open(encoding="utf-8") as handle:
+            gres_source = json.load(handle)
+        expected_gres_dataset = args.gres_json.absolute()
+        for completed, (metadata_index, row) in enumerate(gres_rows, start=1):
+            provenance = row.get("provenance") or {}
+            source_index = int(provenance["source_row_idx"])
+            source = gres_source[source_index]
+            if (
+                Path(provenance.get("source_dataset", "")).absolute()
+                != expected_gres_dataset
+            ):
+                raise ValueError(f"GRES source dataset changed at row {metadata_index}")
+            if provenance.get("source_image") != source["image"]:
+                raise ValueError(
+                    f"GRES source image provenance changed at row {metadata_index}"
+                )
+            conversations = source["conversations"]
+            source_cot = parse_and_canonicalize_mt_cot(conversations[1]["value"])
+            if source_cot != row["mt_cot"]:
+                raise ValueError(f"GRES CoT changed at metadata row {metadata_index}")
+            expression = expression_from_cot(source_cot) or expression_from_question(
+                conversations[0]["value"]
             )
+            valid_prompts = {
+                template.format(expr=expression) for template in EDIT_VERB_TEMPLATES
+            }
+            if row["prompt"] not in valid_prompts:
+                raise ValueError(
+                    f"GRES template derivation changed at row {metadata_index}"
+                )
+            expected_image = (args.gres_image_root / source["image"]).absolute()
+            if _resolve(row["edit_image"], args.base_path).absolute() != expected_image:
+                raise ValueError(f"GRES image path changed at row {metadata_index}")
+            if completed % 5000 == 0 or completed == len(gres_rows):
+                print(
+                    json.dumps(
+                        {
+                            "audit_progress": "gres_source_integrity",
+                            "completed_rows": completed,
+                            "total_rows": len(gres_rows),
+                        }
+                    ),
+                    flush=True,
+                )
 
     overlap = {}
     crisp_types = ("edit_mt", "edit", "edit_umt")
@@ -527,7 +639,10 @@ def main():
         "rows": len(rows),
         "counts": dict(counts),
         "schedule_padding": dict(schedule_padding),
-        "ratio": "edit_mt:edit_ntp:edit:edit_umt=4:2:1:1",
+        "stage": args.stage,
+        "ratio": ratio,
+        "world_size": args.world_size if args.stage == "stage2" else None,
+        "strided_shard_counts": strided_shard_counts,
         "unique_crispedit_identities": len(all_crisp_ids),
         "unique_crispedit_identities_by_type": {
             sample_type: len(identities)
@@ -549,6 +664,8 @@ def main():
         "manifest_source_rows_checked": manifest_checked,
         "gres_source_rows_checked": len(gres_rows),
         "exact_image_byte_identities_checked": byte_checked,
+        "materialized_reference_pairs_checked": materialized_reference_pairs_checked,
+        "aliased_materialization_identities": aliased_materialization_identities,
         "image_byte_check_scope": "all" if args.image_byte_sample == -1 else "sample",
         "codec_spans_reencoded_and_matched": codec_checked,
         "edit_types_over_unique_identities": dict(edit_types),
