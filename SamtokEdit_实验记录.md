@@ -2297,99 +2297,6 @@ decode mask；`edit_umt` 32/32 均满足一个四原子 token span、template �
 运行日志未出现 traceback、CUDA OOM、NCCL 或 worker failure，最终
 `controller.status=status=complete`，代码回归为 `36 passed, 17 subtests passed`。
 
-mask decode 相对 raw GT mask 的结果如下。GT token decode 行反映 codec 本身在当前图像分辨率
-与量化下的可达到上限，不应被当作 1.0；exact span 只作严格字符串参考，主要观察 decode 后的
-IoU/Dice。
-
-| mask 来源 | Mean IoU | Median IoU | Mean Dice | Mean Precision | Mean Recall | GT span exact |
-|---|---:|---:|---:|---:|---:|---:|
-| GT mask-token decode | 0.4828 | 0.4087 | 0.5831 | 0.7197 | 0.5491 | 32/32（输入本身） |
-| 单机 8 卡训练权重 online | 0.2003 | 0.0340 | 0.2470 | 0.2603 | 0.3630 | 0/32 |
-| 四机 32 卡训练权重 online | **0.2805** | **0.1398** | **0.3541** | **0.3542** | **0.5091** | 1/32 |
-
-在 32 个 case 中，四机权重 IoU 更高 15 条、单机权重更高 5 条、相同 12 条；四机权重的 mean
-IoU 比单机绝对提高 0.0802（相对约 40.1%），四个类别的平均 IoU 也都更高：fine-grained
-0.2597 vs 0.1411、multi-instance 0.1537 vs 0.0998、precise-edit 0.6263 vs 0.5469、
-small-object 0.0822 vs 0.0132。不过这是人工筛选的 32 条小验证集，且没有计算自动图像质量指标，
-所以只能说明本次验证集中四机权重的在线 mask 定位明显更好，不能据此宣称一般性的编辑质量提升。
-
-### 四机权重效果更好的原因分析
-
-主观对比中，四机权重在不少 case 上表现为目标区域更集中、非目标内容漂移更少；这个观察与
-mask 定量结果一致。四机 online mask 的 precision 从 0.2603 提高到 0.3542、recall 从 0.3630
-提高到 0.5091，同时预测 mask 的平均面积占比由 0.1079 降到 0.0821。这说明提升并不是通过简单
-扩大 mask 覆盖 GT，而是定位更集中且覆盖更完整。online setting 的编辑图因而直接受益于更好的
-Stage 1 mask-token CoT；`edit_umt` 使用给定 GT token，不依赖 online 预测，它的差异主要来自
-Stage 2 DiT 对 mask-token 条件和编辑目标的学习。
-
-单机与四机训练的实际差异如下：
-
-| 项目 | 单机 8 卡 | 四机 32 卡 |
-|---|---:|---:|
-| Stage 1 metadata 行数 | 84,672 | 84,736 |
-| Stage 1 effective global batch | 64 | 256 |
-| Stage 1 optimizer updates | 1,323 | 331 |
-| Stage 2 metadata 行数 | 84,640 | 84,736 |
-| Stage 2 dataset repeat | 2 | 2 |
-| Stage 2 effective global batch | 8 | 32 |
-| Stage 2 optimizer updates | 21,160 | 5,296 |
-
-两个实验的 epoch、LR、warmup ratio、weight decay、LoRA rank/target、dropout、loss 权重和 seed
-等训练参数保持一致。四机版本额外的 Stage 1/2 行数仅为 64/96，是分布式整除 padding，分别约
-0.076%/0.113%，不足以单独解释当前差距。更关键的是 world size 增加四倍但 gradient
-accumulation 没有缩小，所以两个阶段的 effective global batch 都增加四倍，并在相同样本曝光量
-下只执行约四分之一的 optimizer updates。更大的跨卡 batch 会平均更多样本和 edit 类型的梯度，
-降低单步方差；相同 LR 配合更少更新也会减弱对预训练 2511 能力的扰动。对当前含噪 mask 和多种
-编辑任务混合的数据，这很可能减少小 batch 对个别样本的过拟合，使定位和编辑泛化更稳定。
-
-训练 loss 不支持“只是四机拟合得更低”这一解释：rank-0 CSV 的 Stage 2 FM 全程均值几乎相同
-（单机 0.0489、四机 0.0499），Stage 1 NTP 均值甚至是单机更低（0.2596 vs 0.3065），但四机
-验证 IoU 更高。这与“单机训练 loss 更低、四机 generalization 更好”的现象相容，但 CSV 是
-rank-0 micro-batch 记录，不能当作严格的全局 loss 估计。
-
-还存在一个不能忽略的混杂因素：四机 metadata 为了 32 卡调度重新 compose 和 shuffle。两次
-Stage 1 的 `edit_mt/edit_ntp/edit` 唯一样本集合相同，但 `edit_umt` 子集只重合 26.21%；Stage 2
-的 `edit_mt/edit` 集合相同，`edit_umt` 子集重合 52.55%。因此目前可以较有把握地说“四机训练
-产出的 checkpoint 在该验证集更好”，但不能把因果完全归为机器数或 global batch；UMT 子集与
-样本顺序也可能贡献提升。要确认原因，应追加控制实验：固定同一份 metadata 和顺序，在 8/32 卡
-间对齐 effective global batch；再单独比较 batch=64/256（Stage 1）和 batch=8/32（Stage 2）。
-至少需要多个 training/evaluation seed，并对编辑结果做盲评，才能排除 32 条精选 case 和固定
-diffusion seed 带来的偶然性。
-
-### 可视化逐类观察
-
-对四张七列编辑 overview 和四张 mask overview 逐 case 查看后，主观结果支持“四机 checkpoint
-整体更好”，但提升不是全样本一致，也不能用 mask IoU 完全解释：
-
-- **Fine-grained**：`#0011` 中单机 online 把 `PRINCESS` 生成为 `PRINSESS`，单机 UMT 基本保留
-  原文，四机 online/UMT 都正确生成 `PRINCESS`；`#0009` 的单机 UMT 出现整幅空白，而四机两条
-  路径都保留完整 pitcher 并消除把手孔洞；`#0012` 中单机 online 错改球员衣服，四机避免了这类
-  明显的非目标漂移。`#0013` 的四机 online mask IoU 为 0.880，而单机仅 0.015，编辑也更集中在
-  草帽。反例是 `#0015`，单机 online 的表情更接近 neutral，四机仍保留较明显笑容。
-- **Multi-instance**：`#0016` 中单机两种路径生成过多鹅，四机结果明显更接近目标总数 5；
-  `#0017` 的四机 UMT 更接近七台手机，且四机 online mask IoU 从 0.024 提升到 0.297；`#0019`
-  四机在去孔的同时更好地保留了壶嘴和把手结构；`#0022` 中单机 UMT 几乎把整张图染红，四机
-  将变化更多限制在花坛。反例是 `#0018`，单机 online 对三只橙子的数量和排列更准确；`#0021`
-  四机 online 删除了全部鞋子，虽然四机 UMT 比单机 UMT 更接近“移动到右侧”；`#0023` 的两组
-  方法仍无法只修改灯笼，存在整座建筑变色或不编辑。
-- **Precise-edit**：`#0027` 的四机 mask IoU 从 0.059 提升到 0.136，文字区域更接近目标位置；
-  `#0031` 中四机生成的气球尺度和山路位置明显比单机的大型前景气球更接近 GT。最强的定位提升
-  出现在 `#0030`，mask IoU 从 0.002 提升到 0.564；但四机 online 最终图仍没有可靠生成 USB
-  接口，说明 Stage 1 定位变准后，Stage 2 仍可能没有充分执行局部编辑。`#0024/#0028` 仍可看到
-  glow 过强或相邻屋顶被连带染色；`#0025/#0026/#0029` 的单机与四机总体接近。
-- **Small-object**：整体仍是最难类别，但四机在 `#0002/#0003/#0004` 的 mask IoU 分别从
-  0/0.001/0 提升到 0.138/0.084/0.351，能更接近按钮、上臂和数字牌区域；`#0003` 的三个红点也
-  更整齐。与此同时，`#0000` 的两组 online mask 都覆盖整个充电器而不是新增 USB 孔位，
-  `#0001` 仍把球场/球网当成目标区域，`#0005/#0007` 的定位 IoU 仍为 0；`#0002` 的单机最终图
-  反而更像正确点亮图标，说明较高 mask IoU 不保证编辑语义一定正确。
-
-综合来看，四机结果最稳定的可见优势是：减少整图染色、空白图和非目标内容漂移；对多实例数量、
-小目标位置以及文字/结构编辑的约束更强。这与更高的 mask precision/recall 和更小的预测面积
-一致。另一方面，错误 mask、正确 mask 但执行失败、以及 UMT 下仍发生的范围泄漏都继续存在，
-表明后续优化不能只提高 Stage 1 mask token accuracy，还需要单独改善 Stage 2 对 mask 条件的
-遵循能力。上述判断是对固定 seed 的 32 条结果做的非盲主观检查，正式结论仍应通过多评审者盲评
-和多个 diffusion seed 验证。
-
 ### 结果和可视化
 
 新增原始结果与控制日志：
@@ -2476,8 +2383,5 @@ online decode、四机权重 online decode 分为四列独立 overlay。两类�
   完整性验收。实际编辑质量与 mask 重合效果留给分类 overview 的人工观察，不在本轮计算图像
   质量指标。
 - 四机 32 卡训练权重已在同一 ScaleEdit 验证集完成 online CoT 和 `edit_umt` 评测；新增结果
-  64/64、联合生成图 160/160 和两类可视化均通过审计。相对单机 8 卡训练权重，其 online mask
-  decode mean IoU 从 0.2003 提升到 0.2805，32 条中取得 15 胜/5 负/12 平；编辑图质量仍应结合
-  七列分类 overview 进行人工判断。当前最可信的机制是四倍 effective global batch 带来的低方差
-  更新和更弱的预训练能力漂移，但重新抽取的 UMT 子集与数据顺序仍是混杂变量；八张分类 overview
-  已纳入仓库，后续应用固定 metadata、对齐 global batch 的消融实验验证因果。
+  64/64、联合生成图 160/160 和两类可视化均通过审计；完整逐 case 图、分类 overview 和 manifest
+  已纳入仓库，供直接查看。
