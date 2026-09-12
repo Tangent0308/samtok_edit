@@ -2,7 +2,7 @@
 
 This module is the single serialization boundary for mask-token CoT text.  It
 also provides the ordered Stage-1 dataset used to keep every DDP rank on the
-same sample type while realizing an exact edit_mt:edit_ntp:edit ratio inside
+same sample type while realizing an exact edit_mt:edit_ntp:edit:edit_umt ratio inside
 each optimizer step.
 """
 
@@ -181,7 +181,7 @@ def parse_and_canonicalize_mt_cot(text: object, return_layer: bool = False):
     return result(None, "invalid")
 
 
-SAMPLE_TYPES = ("edit_mt", "edit_ntp", "edit")
+SAMPLE_TYPES = ("edit_mt", "edit_ntp", "edit", "edit_umt")
 
 
 class SamtokEditingDataset(UnifiedDataset):
@@ -190,7 +190,7 @@ class SamtokEditingDataset(UnifiedDataset):
     def __init__(
         self,
         *args,
-        type_ratio: str | None = "edit_mt:2,edit_ntp:1,edit:1",
+        type_ratio: str | None = "edit_mt:4,edit_ntp:2,edit:1,edit_umt:1",
         num_processes: int = 1,
         gradient_accumulation_steps: int = 1,
         seed: int = 0,
@@ -198,7 +198,7 @@ class SamtokEditingDataset(UnifiedDataset):
     ):
         super().__init__(*args, **kwargs)
         self.schedule: list[int] | None = None
-        if self.load_from_cache or type_ratio is None or type_ratio.strip().lower() in {"", "none"}:
+        if self.load_from_cache:
             return
 
         by_type = {sample_type: [] for sample_type in SAMPLE_TYPES}
@@ -209,12 +209,27 @@ class SamtokEditingDataset(UnifiedDataset):
             if sample_type in {"edit_mt", "edit_ntp"}:
                 cot = row.get("mt_cot")
                 canonical, layer = parse_and_canonicalize_mt_cot(cot, return_layer=True)
-                if not isinstance(cot, str) or canonical != cot or layer not in {"strict", "empty"}:
+                if not isinstance(cot, str) or canonical != cot or layer != "strict":
                     raise ValueError(
-                        f"Row {row_id} ({sample_type}) must contain canonical mt_cot; "
-                        "use to_cot([]) for no-target/global edits"
+                        f"Row {row_id} ({sample_type}) must contain non-empty canonical mt_cot"
+                    )
+            elif "mt_cot" in row:
+                raise ValueError(
+                    f"Row {row_id} ({sample_type}) must not contain mt_cot"
+                )
+            if sample_type == "edit_umt":
+                prompt = row.get("prompt")
+                spans = list(SPAN_RE.finditer(prompt if isinstance(prompt, str) else ""))
+                if len(spans) != 1 or not is_valid_span(spans[0].group(0)):
+                    raise ValueError(
+                        f"Row {row_id} (edit_umt) must contain exactly one valid mask span"
                     )
             by_type[sample_type].append(row_id)
+
+        # Stage 2 deliberately keeps the pre-arranged metadata order, but its
+        # rows still need the same schema/CoT checks as Stage 1 before caching.
+        if type_ratio is None or type_ratio.strip().lower() in {"", "none"}:
+            return
 
         ratio: dict[str, int] = {}
         for part in type_ratio.split(","):

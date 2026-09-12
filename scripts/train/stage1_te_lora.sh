@@ -12,7 +12,7 @@ DATASET_BASE="${DATASET_BASE:-$REPO_ROOT/data/crispedit_samtok}"
 STAGE1_METADATA="${STAGE1_METADATA:-$DATASET_BASE/stage1.jsonl}"
 OUTPUT_PATH="${OUTPUT_PATH:-$REPO_ROOT/models/stage1_te_lora}"
 MAX_PIXELS="${MAX_PIXELS:-1048576}"
-GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-4}"
+GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-8}"
 NUM_EPOCHS="${NUM_EPOCHS:-1}"
 TRAIN_EXTRA_ARGS=()
 ENABLE_WANDB_LOG="${ENABLE_WANDB_LOG:-1}"
@@ -75,7 +75,7 @@ PYTHONPATH="$DIFFSYNTH_DIR:${PYTHONPATH:-}" "${LAUNCH_CMD[@]}" \
   --dataset_base_path "$DATASET_BASE" \
   --dataset_metadata_path "$STAGE1_METADATA" \
   --data_file_keys "image,edit_image" \
-  --sample_type_ratio "${SAMPLE_TYPE_RATIO:-edit_mt:2,edit_ntp:1,edit:1}" \
+  --sample_type_ratio "${SAMPLE_TYPE_RATIO:-edit_mt:4,edit_ntp:2,edit:1,edit_umt:1}" \
   --max_pixels "$MAX_PIXELS" --dataset_repeat "${DATASET_REPEAT:-1}" --dataset_num_workers "${DATASET_WORKERS:-8}" \
   --model_paths "$MODEL_PATHS" \
   --tokenizer_path "$MERGED_TE_DIR" --processor_path "$MERGED_TE_DIR" \

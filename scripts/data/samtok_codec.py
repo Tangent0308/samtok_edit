@@ -203,3 +203,42 @@ class SamtokCodec:
             masks, size=(height, width), mode="bilinear", align_corners=False
         ) > 0.5
         return [mask for mask in masks[:, 0].cpu().numpy().astype(np.uint8)]
+
+    @torch.no_grad()
+    def decode_single_batch(self, image_text_pairs) -> list[np.ndarray]:
+        """Batch different source images when each text contains exactly one span."""
+
+        pairs = list(image_text_pairs)
+        if not pairs:
+            return []
+        images, codes = [], []
+        for image, text in pairs:
+            spans = [
+                (int(first), int(second))
+                for first, second in SPAN_RE.findall(
+                    fix_mt_format_comprehensive(str(text))
+                )
+                if valid_span_codes(int(first), int(second))
+            ]
+            if len(spans) != 1:
+                raise ValueError(
+                    "decode_single_batch requires exactly one valid SAMTok span per row"
+                )
+            first, second = spans[0]
+            images.append(image)
+            codes.append([first, second - CODEBOOK_SIZE])
+        masks = self.vq.forward_with_codes(
+            self._pixel_values(images),
+            torch.tensor(codes, dtype=torch.long, device=self.device),
+        )
+        output = []
+        for index, image in enumerate(images):
+            width, height = image.size
+            mask = torch.nn.functional.interpolate(
+                masks[index : index + 1],
+                size=(height, width),
+                mode="bilinear",
+                align_corners=False,
+            ) > 0.5
+            output.append(mask[0, 0].cpu().numpy().astype(np.uint8))
+        return output

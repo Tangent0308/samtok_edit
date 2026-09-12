@@ -19,8 +19,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "DiffSynth-Studio"))
 
 from diffsynth.core.data.samtok_dataset import (  # noqa: E402
+    SPAN_RE,
+    is_valid_span,
     parse_and_canonicalize_mt_cot,
-    to_cot,
 )
 
 
@@ -28,6 +29,7 @@ REQUIRED_FIELDS = {
     "edit_mt": {"image", "edit_image", "prompt", "mt_cot", "sample_type"},
     "edit_ntp": {"edit_image", "prompt", "mt_cot", "sample_type"},
     "edit": {"image", "edit_image", "prompt", "sample_type"},
+    "edit_umt": {"image", "edit_image", "prompt", "sample_type"},
 }
 
 
@@ -67,7 +69,10 @@ def main():
     parser.add_argument(
         "--expected_counts",
         default=None,
-        help="Comma-separated exact counts, for example edit_mt:20000,edit_ntp:10000,edit:10000",
+        help=(
+            "Comma-separated exact counts, for example "
+            "edit_mt:64,edit_ntp:32,edit:16,edit_umt:16"
+        ),
     )
     parser.add_argument("--require_ascii", action="store_true")
     parser.add_argument("--check_paths", action="store_true")
@@ -84,6 +89,7 @@ def main():
     qc_flags = Counter()
     image_paths = set()
     empty_cot = 0
+    umt_spans = Counter()
     digest = hashlib.sha256()
 
     with args.metadata_jsonl.open("rb") as handle:
@@ -104,13 +110,27 @@ def main():
                 raise ValueError(f"Row {row_id} prompt contains non-ASCII text")
 
             if sample_type in {"edit_mt", "edit_ntp"}:
-                canonical = parse_and_canonicalize_mt_cot(row["mt_cot"])
-                if canonical != row["mt_cot"]:
-                    raise ValueError(f"Row {row_id} has non-canonical mt_cot")
+                canonical, layer = parse_and_canonicalize_mt_cot(
+                    row["mt_cot"], return_layer=True
+                )
+                if canonical != row["mt_cot"] or layer == "empty":
+                    raise ValueError(f"Row {row_id} has empty or non-canonical mt_cot")
                 if args.require_ascii and not row["mt_cot"].isascii():
                     raise ValueError(f"Row {row_id} mt_cot contains non-ASCII text")
-                if row["mt_cot"] == to_cot([]):
-                    empty_cot += 1
+            elif "mt_cot" in row:
+                raise ValueError(f"Row {row_id} ({sample_type}) must not contain mt_cot")
+
+            if sample_type == "edit_umt":
+                matches = list(SPAN_RE.finditer(row["prompt"]))
+                if len(matches) != 1 or not is_valid_span(matches[0].group(0)):
+                    raise ValueError(
+                        f"Row {row_id} edit_umt prompt must contain exactly one valid mask span"
+                    )
+                umt_spans[matches[0].group(0)] += 1
+            elif SPAN_RE.search(row["prompt"]):
+                raise ValueError(
+                    f"Row {row_id} ({sample_type}) unexpectedly contains a prompt mask span"
+                )
 
             for key in ("image", "edit_image"):
                 if key in row:
@@ -158,6 +178,7 @@ def main():
         "rows": sum(counts.values()),
         "counts": dict(counts),
         "empty_cot": empty_cot,
+        "unique_umt_spans": len(umt_spans),
         "unique_referenced_images": len(image_paths),
         "all_image_paths_exist": args.check_paths,
         "decoded_image_sample": decoded,

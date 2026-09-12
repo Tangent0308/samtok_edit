@@ -2,9 +2,9 @@
 
 > SAMTok mask-token CoT 引导的 Qwen-Image-Edit-2511 细粒度编辑实现说明。
 >
-> 本文基于 `/opt/tiger/tanyue/SamtokEdit 训练方案.md` 更新，描述当前仓库
-> `/opt/tiger/tanyue/samtok_edit` 的实际代码、数据规范、训练入口和实现约束。
-> 原始方案中的目标与章节组织保留；代码片段和命令以当前实现为准。
+> 本文是当前仓库的自包含实现规范，完整描述方法目标、四类数据 schema、数据构建、
+> 两阶段训练、推理评测、实现路径和运行约束；代码片段和命令均以当前实现为准，
+> 不依赖仓库外的设计说明文档。
 
 当前代码实现包含 Stage 1/Stage 2 训练入口、canonical CoT 数据管线、SAMTok codec 构建器、
 Qwen-Image-Edit-2511 / SAMTok gres-ft 模型适配和 Stage 1/Stage 2 评测入口。实验运行过程与结果单独记录在
@@ -191,10 +191,11 @@ Qwen-Image DiT denoise（zero_cond_t=True）→ VAE decode
 
 ```text
 Stage 1（TE LoRA，task=sft）
-  metadata: edit_mt : edit_ntp : edit = 2 : 1 : 1
-  edit_ntp: edit_image + prompt + CoT，input_image=None，只有 NTP
+  metadata: edit_mt : edit_ntp : edit : edit_umt = 4 : 2 : 1 : 1
+  edit_ntp: edit_image + prompt + 非空 CoT，input_image=None，只有 NTP
   edit:     source edit_image + target image，无 CoT，只有 FM
-  edit_mt:  source edit_image + target image + CoT，单次 text encoder forward，NTP + FM
+  edit_umt: source edit_image + target image，prompt 内嵌一个 mask span，无 CoT，只有 FM
+  edit_mt:  source edit_image + target image + 非空 CoT，单次 text encoder forward，NTP + FM
   可训：text encoder 的 model.language_model.layers.* LoRA A/B，fp32
   冻结：vision tower、embed/lm_head 原权重、DiT、VAE
   runner：顺序 DataLoader + DDP-aware schedule，避免 shuffle 打散子步类型
@@ -266,10 +267,32 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 }
 ```
 
+`edit_umt` 同样没有 `mt_cot`，但把原 prompt 中一个可明确定位的指代短语替换为
+source mask 的四个原子 token：
+
+```json
+{
+  "image": "images/remove_00000/000008_target.jpg",
+  "edit_image": "images/remove_00000/000008_source.jpg",
+  "prompt": "Remove <|mt_start|><|mt_0037|><|mt_0368|><|mt_end|>.",
+  "sample_type": "edit_umt",
+  "provenance": {
+    "source_parquet": "remove_00000.parquet",
+    "row_idx": 8,
+    "original_prompt": "Remove the red cup.",
+    "umt_replaced_text": "the red cup",
+    "umt_rewrite_method": "remove_object"
+  }
+}
+```
+
 约束：
 
-- `edit_mt` 和 `edit_ntp` 的 `mt_cot` 必须已经是 `to_cot` 产生的 canonical 形式；
-- 全局编辑或空 mask 使用 `to_cot([])`，即 ````json\n[]\n````，不是缺失值；
+- `edit_mt` 和 `edit_ntp` 的 `mt_cot` 必须是 `to_cot` 产生的**非空** canonical strict 形式；
+- refined 训练数据彻底禁止空 mask、global/noop 和 `to_cot([])`；style/background 也必须有
+  有效 mask span，否则构建阶段丢弃；
+- `edit` 和 `edit_umt` 必须完全省略 `mt_cot`；`edit_umt.prompt` 必须恰好包含一个合法
+  `<|mt_start|> code0 code1 <|mt_end|>` span；
 - `edit_ntp` 省略 `image`，训练入口会令 `input_image=None`，从而不计算 FM；
 - `edit_image` 在训练算子中无论输入是字符串还是路径列表，最终都会成为非空 PIL image list；
 - 真实 mask 的 SAMTok 编码在源图上进行，避免 pass-1 只看源图而训练 CoT 却来自 target 图。
@@ -277,17 +300,19 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 训练数据由 `compose_training_metadata.py` 生成 Stage 1/Stage 2 JSONL；输出目录不在代码中
 硬编码，由 launcher 的 `DATASET_BASE`、`STAGE1_METADATA` 和 `OUTPUT_PATH` 参数指定。
 
-### 2.2 三类样本
+### 2.2 四类样本
 
-**edit_mt** 来自带 mask 的 CrispEdit 数据：
+**edit_mt / edit_umt** 来自新的带 mask CrispEdit 数据：
 
 1. 从原始 `CrispEdit-2M` parquet 读取 input/source、output/target、instruction、type；
-2. 从 `CrispEdit-2M-mask-parquet-101697` 按同名 parquet 和 `row_idx` 对齐 mask；
-3. 仅保留 `filter_decision == "keep"`；
+2. 从 `CrispEdit-2M-mask` 按同名 parquet 和 `row_idx` 对齐 mask；
+3. 仅保留 `filter_decision == "keep"` 且 `mask_png` 解码非空、`mask_sum > 0` 的行；
 4. 对 source/target 图片进行落盘；
 5. 非空 mask 由 `SamtokCodec.encode_single_batch` 编码，写入一条 mask span；
-6. global/noop 或空 mask 写成 `to_cot([])`；
-7. 同时生成 `edit_mt.jsonl` 和无 CoT 的 `edit.jsonl`。
+6. `edit_mt` 将 span 放入非空 canonical CoT；
+7. 对能无歧义定位指代短语的行，以确定性语法模板生成 `edit_umt`，只替换该短语，原始
+   instruction、被替换文本和规则名写入 provenance；不可靠的 UMT 改写直接丢弃；
+8. 同时生成共享同一 source/target 图片的 `edit_mt.jsonl` 与 `edit_umt.jsonl`。
 
 当前构建器按每个 mask parquet row 处理一张 mask；它不是原方案中尚未实现的“多表达式、多 mask
 分组编排器”。后续如要支持多 mask，需要在 `build_edit_mt_metadata.py` 中扩展输入 schema，
@@ -299,26 +324,22 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 - 图片根目录默认是 `/mnt/bn/strategy-mllm-train/intern/common_datasets/Sa2VA-Training/osprey-724k`；
 - 从 release conversation 的 CoT 或 segmentation question 中提取 expression；
 - 对已存在的 mask 复用原 CoT 重新 canonicalize，并将 prompt 改写为英文编辑模板；
-- 默认按 `global_ratio=0.10` 增加全局英文编辑行，CoT 为 `to_cot([])`；
-- 当前 `EDIT_VERB_TEMPLATES` 和 `GLOBAL_TEMPLATES` 全部 ASCII 英文，不使用中文模板。
+- 先过滤空 CoT、非法 span 和非 ASCII 文本，再从完整合格池进行固定种子抽样；
+- 不再合成 global/noop 行，也不存在 `global_ratio` 或 `GLOBAL_TEMPLATES`。
 
-**edit** 使用 CrispEdit 原始 instruction，不带 CoT，作为通用编辑/FM 保持项。当前脚本支持
-按 mask parquet 的 `filter_decision=keep` 过滤，也支持 `--max_files`、`--max_rows` 做构建烟测。
+**edit** 从 `CrispEdit-2M-fact-prefilter/manifest` 读取 filter-only manifest，并与原始
+`CrispEdit-2M` 的同名 parquet/`row_idx` 严格 join；只使用 fact prefilter 的 keep 行，保留
+原始 source、target 和 instruction，不带 CoT，作为通用编辑/FM 保持项。
+
+三个 CrispEdit 分支 `edit_mt/edit/edit_umt` 允许在原始 source identity 上重合；正式训练量下
+不再把它们互斥或最小化重合作为约束。来源重合是明确允许的采样策略，不是数据泄漏。
 
 ### 2.3 CoT canonical 格式
 
 当前唯一序列化函数是
 `DiffSynth-Studio/diffsynth/core/data/samtok_dataset.py:to_cot`。
 
-骨架：
-
-````text
-```json
-[]
-```
-````
-
-非空 item：
+训练 metadata 只允许非空 item：
 
 ```json
 {"mask_2d": "<|mt_start|><|mt_0001|><|mt_0257|><|mt_end|>", "label": "left cat"}
@@ -347,6 +368,8 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 
 恢复过程只丢弃信息：过滤非法 code、去重、保序、清洗 label；不会猜缺失 code，也不会注入
 词表外 `<|mt_9999|>`。解析层记录到 `pipe.last_parse_layer`，供推理和评测统计。
+这里的 `empty/no target` 解析只为兼容历史 checkpoint/评测输出；refined builder、composer、
+validator 和训练 Dataset 都会拒绝空 CoT，它不会进入新的 Stage 1/Stage 2 训练数据。
 
 ---
 
@@ -372,6 +395,10 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 │   │   ├── build_edit_ntp_metadata.py
 │   │   ├── build_edit_mt_metadata.py
 │   │   ├── build_edit_metadata.py
+│   │   ├── build_stage1_refined_full.sh
+│   │   ├── build_stage2_refined_full.sh
+│   │   ├── audit_refined_metadata.py
+│   │   ├── audit_stage1_schedule.py
 │   │   ├── sanitize_stage2_validation_content.py
 │   │   ├── compose_training_metadata.py
 │   │   ├── validate_training_metadata.py
@@ -381,6 +408,8 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 │   │   ├── stage1_te_lora.sh
 │   │   ├── stage2_data_process.sh
 │   │   ├── stage2_dit_lora.sh
+│   │   ├── audit_stage1_training_log.py
+│   │   ├── audit_stage2_training_log.py
 │   │   ├── audit_stage2_cache.py
 │   │   └── run_stage2_8gpu_pipeline.sh
 │   ├── inference/infer_samtok_edit.py
@@ -388,6 +417,9 @@ GRES builder 默认写绝对 `edit_image` 路径，CrispEdit builder 默认写 o
 │   ├── eval/run_eval.py                   # S1–S8 统一评测入口
 │   ├── eval/run_stage1_eval_8gpu.sh
 │   ├── eval/run_stage2_eval_8gpu.sh
+│   ├── eval/run_stage2_eval.py
+│   ├── eval/run_scaleedit_refined_eval_8gpu.sh
+│   ├── eval/run_stage2_four_node_checkpoint_eval_8gpu.sh
 │   ├── eval/analyze_stage1_eval.py
 │   ├── eval/analyze_stage1_cot_masks.py
 │   ├── eval/analyze_eight_setting_eval.py
@@ -482,10 +514,12 @@ parse_and_canonicalize_mt_cot
 
 `SamtokEditingDataset` 继承 `UnifiedDataset`。
 
-- `type_ratio` 默认 `edit_mt:2,edit_ntp:1,edit:1`；
+- `type_ratio` 默认 `edit_mt:4,edit_ntp:2,edit:1,edit_umt:1`；
 - `metadata_path` 非空且 ratio 非 `none` 时建立 Stage 1 schedule；
-- `metadata_path=None` 或 ratio=`none` 时不建立 schedule，走父类 cache 行为；
-- 构造期检查 `edit_mt/edit_ntp` 的 CoT 必须已 canonicalize，且只能是 `strict` 或 `empty`；
+- `metadata_path=None` 时走父类 cache 行为；ratio=`none` 时保留 metadata 原顺序，供 Stage 2a
+  精确分片，但仍执行全部 schema/CoT 校验；
+- 构造期检查 `edit_mt/edit_ntp` 的 CoT 必须为非空 canonical `strict`，`edit/edit_umt` 不得
+  含 CoT，且 UMT prompt 恰有一个合法 span；
 - 每个 optimizer step 的 A 个 micro-step 类型由配比块重复并随机排列；
 - 每个 micro-step 连续放置 P 个相同类型样本，保证 DDP rank 同型；
 - 要求 `gradient_accumulation_steps % ratio_block_size == 0`，不要求卡数整除；
@@ -495,8 +529,8 @@ parse_and_canonicalize_mt_cot
 - `__getitem__` 额外写入仅在运行时使用的 `_samtok_schedule_position` 和
   `_samtok_source_row_id`，用于 debug 模式核对 Accelerate 的 rank 分片，不改变 metadata 文件。
 
-当 `P=1,A=4` 时，schedule contract 要求每个累积窗口包含 2 条 `edit_mt`、1 条 `edit_ntp`、
-1 条 `edit`；当 `P=8` 时每个同型 micro-step 连续占据 8 个位置。
+当 `P=1,A=8` 时，schedule contract 要求每个累积窗口包含 4 条 `edit_mt`、2 条 `edit_ntp`、
+1 条 `edit`、1 条 `edit_umt`；当 `P=8` 时每个同型 micro-step 连续占据 8 个位置。
 
 ### 4.5 Pipeline：`DiffSynth-Studio/diffsynth/pipelines/qwen_image_samtok.py`
 
@@ -596,6 +630,7 @@ BlockwiseControlNet
 ```text
 edit_ntp -> ntp_weight * SamtokNTPLoss
 edit     -> fm_weight  * FlowMatchSFTLoss
+edit_umt -> fm_weight  * FlowMatchSFTLoss
 edit_mt  -> ntp_weight * SamtokNTPLoss + fm_weight * FlowMatchSFTLoss
 ```
 
@@ -641,6 +676,8 @@ Stage 1 debug 模式的审计内容：
 - 每个 micro-step gather 8 个 rank 的 sample type、schedule position、source row 和 loss；
 - 卡间类型同型、schedule 连续分片和各 rank loss finite 的强制校验；
 - NTP/FM 分派、加权 loss 恒等式、NTP shift 边界和 `<|im_end|>` label 校验；
+- UMT prompt span 在 processor 模板中必须完整保留为四个原子 token，并且 UMT 只走 FM；
+- FM 的 timestep、training weight、fp32 MSE 和 latent/noise/target shape 会进入 debug 记录；
 - `input_latents` 只来自 metadata `image` 目标图，`edit_latents` 来自 `edit_image` 条件图；
 - CoT hidden/label、prompt embedding、input/edit latent 的 shape 和 dtype；
 - 每个 rank 的梯度有限性、非零梯度张量、冻结梯度张量；
@@ -648,12 +685,16 @@ Stage 1 debug 模式的审计内容：
 - 首个 LoRA B 张量的实际 update L2 norm，以及同步步后所有 rank 的参数一致性；
 - 每个累积窗口第一个 micro-step 的梯度未混入旧梯度，可作为 NTP/FM 加权尺度的调参观测。
 
+`scripts/train/audit_stage1_training_log.py` 会解析全部 `[SamtokDebug]` JSON，严格检查四类比例、
+loss 路由与恒等式、GT source/target、CoT/UMT token 位置、bf16/fp32、梯度累积、冻结参数梯度、
+每次 optimizer update 和 DDP 参数同步，并记录 checkpoint 大小/SHA256 与分类型 loss 统计。
+
 Stage 2 debug 模式的审计内容：
 
 - 只有 `pipe.dit.*.lora_A/B` 可训练，text encoder/VAE 可训练参数为 0；
 - DiT LoRA tensor 为 bf16，并统计 12 组官方 target module family 的命中数量；
-- 每个 epoch 的 24 个物理 cache 在 `dataset_repeat=2` 后恰好各消费两次，总类型为
-  `edit_mt=32, edit=16`；
+- 每个 epoch 的物理 cache 在 `dataset_repeat` 后恰好按配置次数消费；新 Stage 2 的类型比例为
+  `edit_mt:edit:edit_umt=2:1:1`；
 - 每步 gather 8 卡的 sample type、metadata index、FM loss、timestep、梯度范数、probe
   update 和参数范数；
 - FM loss 必须为 finite fp32，`input_latents/noise_pred/training_target` shape 必须一致；
@@ -703,7 +744,7 @@ Python 直启时对应使用 `--disable_wandb_log`；默认仍为开启。不要
 默认关键参数：
 
 ```text
-sample_type_ratio=edit_mt:2,edit_ntp:1,edit:1
+sample_type_ratio=edit_mt:4,edit_ntp:2,edit:1,edit_umt:1
 lora_base_model=text_encoder
 lora_rank=64
 lora_dropout=0.05
@@ -711,7 +752,7 @@ learning_rate=4e-5
 weight_decay=0.05
 warmup_ratio=0.05
 max_grad_norm=1.0
-gradient_accumulation_steps=4
+gradient_accumulation_steps=8
 ntp_loss_weight=0.05
 fm_loss_weight=1.0
 zero_cond_t=True
@@ -726,15 +767,15 @@ DATASET_BASE=/path/to/dataset_base \
 STAGE1_METADATA=/path/to/dataset_base/stage1.jsonl \
 MERGED_TE_DIR=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/artifacts/merged_samtok_te \
 OUTPUT_PATH=/path/to/experiment/stage1_te_lora \
-MAX_PIXELS=1048576 GRADIENT_ACCUMULATION_STEPS=4 NUM_EPOCHS=1 \
+MAX_PIXELS=1048576 GRADIENT_ACCUMULATION_STEPS=8 NUM_EPOCHS=1 \
 NTP_LOSS_WEIGHT=0.05 FM_LOSS_WEIGHT=1.0 \
 WANDB_API_KEY=<your-api-key> WANDB_ENTITY=<your-user-or-team> WANDB_PROJECT=<your-project> \
 bash scripts/train/stage1_te_lora.sh
 ```
 
 多卡时将 `NUM_PROCESSES` 设为大于 1，launcher 才会调用 Accelerate；
-`MAIN_PROCESS_PORT` 可避免同机任务的 rendezvous 端口冲突。`gradient_accumulation_steps` 需要是 4 的
-倍数，以保持每个窗口的 2:1:1 类型结构。NTP 和 FM 都经过全部 TE LoRA，因此
+`MAIN_PROCESS_PORT` 可避免同机任务的 rendezvous 端口冲突。`gradient_accumulation_steps` 需要是 8 的
+倍数，以保持每个窗口的 4:2:1:1 类型结构。NTP 和 FM 都经过全部 TE LoRA，因此
 `find_unused_parameters` 默认关闭；仅在修改可训练图后确有 unused parameter 时设
 `FIND_UNUSED_PARAMETERS=1`。其他可覆盖项包括 `SAMPLE_TYPE_RATIO`、`LEARNING_RATE`、
 `WEIGHT_DECAY`、`WARMUP_RATIO`、`MAX_GRAD_NORM`、`LORA_RANK`、`LORA_DROPOUT`、
@@ -751,8 +792,8 @@ export TE_LORA_PATH=/path/to/stage1_te_lora.safetensors
 该脚本加载 SAMTok TE 和 Qwen VAE，processor/tokenizer 指向合并目录，
 `--preset_lora_path "$TE_LORA_PATH" --preset_lora_model text_encoder`，任务为
 `sft:data_process`；该缓存步骤不初始化训练 logger，shell 会显式传入
-`--disable_wandb_log`。数据 `stage2.jsonl` 由 `compose_training_metadata.py` 生成，默认由
-`edit_mt + edit` 构成。
+`--disable_wandb_log`。数据 `stage2.jsonl` 由 `compose_training_metadata.py` 生成，包含
+`edit_mt + edit + edit_umt`，精确比例为 2:1:1。
 
 当前 Stage 2a runner 要求 metadata 行数能被 world size 整除，逐批检查 rank 收到的
 metadata index 是否连续覆盖且类型总数不变。每个 `<rank>/<local_id>.pth` 旁写
@@ -796,11 +837,15 @@ to_out.0,to_add_out,img_mlp.net.2,img_mod.1,txt_mlp.net.2,txt_mod.1
 
 Stage 2b 也默认启用 W&B，并使用与 Stage 1 相同的账户环境变量门禁；CSV 始终同步写入
 `$OUTPUT_PATH/loss.csv`。设置 `DEBUG_TRAIN_METRICS=1` 后启用上述 Stage 2 强审计 runner。
-24 行 8 卡 smoke 在 `dataset_repeat=2,num_epochs=5` 时，每卡每 epoch 6 个 micro-step，
-全局有效 batch 为 8，总计 30 个 optimizer step。
-该 `num_epochs=5` 仅是已完成 smoke 的历史验证配置；当前正式 Stage 2b 默认为
-`num_epochs=1`。对 165,960 个物理 cache、`dataset_repeat=2`、8 卡、每卡 batch 1 和
-gradient accumulation 1，正式运行为 41,490 个 global optimizer step。
+32 行 8 卡 smoke 在 `dataset_repeat=2,num_epochs=5` 时，每卡每 epoch 8 个 micro-step，
+全局有效 batch 为 8，总计 40 个 optimizer step。
+`audit_stage2_training_log.py` 对 debug 日志、CSV 和最终 safetensors 做离线一致性验收：检查
+三类数据的逐 rank/逐 epoch 消费、FM target/预测 shape 与 dtype、fp32 MSE、有限梯度、
+LoRA probe 每步更新和八卡同步、DiT-only trainable graph、学习率、checkpoint schema 及 W&B
+正常结束。它还显式识别 Qwen flow-matching 在 `timestep=1000` 时 training weight 为零的
+合法端点样本；这类单 rank loss 为零不会被误报成数值故障。
+该 `num_epochs=5` 仅用于 smoke；当前正式 Stage 2b 默认为 `num_epochs=1`，实际 optimizer
+step 数由新 2:1:1 metadata 行数、`dataset_repeat`、world size 与 gradient accumulation 共同决定。
 
 `scripts/train/run_stage2_8gpu_pipeline.sh` 用于正式运行的可复现串行编排：先执行
 Stage 2a，再由 `audit_stage2_cache.py` 全量反序列化 cache，检查数量、来源、必需 tensor、
@@ -839,7 +884,8 @@ Stage 2 LoRA。生产训练可用多卡 DDP，单卡 launcher 适合调试。
 
 ```text
 /mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M
-/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-mask-parquet-101697
+/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-fact-prefilter/manifest
+/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-mask
 /mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTok_Training_Data/mask_generation_gres209k.json
 /mnt/bn/strategy-mllm-train/intern/common_datasets/Sa2VA-Training/osprey-724k
 ```
@@ -884,11 +930,11 @@ python scripts/data/build_edit_ntp_metadata.py \
   --input_json /mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTok_Training_Data/mask_generation_gres209k.json \
   --image_root /mnt/bn/strategy-mllm-train/intern/common_datasets/Sa2VA-Training/osprey-724k \
   --output_jsonl /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/data/crispedit_samtok/edit_ntp_gres.jsonl \
-  --global_ratio 0.10 --seed 0 --check_images
+  --sample_rows 21158 --ascii_only --seed 0 --check_images
 ```
 
 主循环读取 conversation，恢复 release CoT，提取 expression，随机选择英文
-`EDIT_VERB_TEMPLATES`；global 行使用英文 `GLOBAL_TEMPLATES` 和 `to_cot([])`。默认路径写
+`EDIT_VERB_TEMPLATES`；空/非法 CoT 在抽样前丢弃，不创建任何 global/noop 样本。默认路径写
 绝对图片路径；传 `--relative_image_paths` 可保持相对 GRES path。
 
 #### 4.9.4 CrispEdit 三类 metadata
@@ -897,7 +943,7 @@ python scripts/data/build_edit_ntp_metadata.py \
 
 ```text
 edit_mt.jsonl  # image + edit_image + prompt + mt_cot
-edit.jsonl     # image + edit_image + prompt
+edit_umt.jsonl # image + edit_image + prompt-with-mask-span，不含 mt_cot
 ```
 
 构建器调用示例：
@@ -905,7 +951,7 @@ edit.jsonl     # image + edit_image + prompt
 ```bash
 python scripts/data/build_edit_mt_metadata.py \
   --crispedit_dir /mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M \
-  --mask_dir /mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-mask-parquet-101697 \
+  --mask_dir /mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-mask \
   --output_root /path/to/experiment/data/crispedit_samtok \
   --sample_rows 20000 --seed 0 --ascii_only \
   --device cuda --dtype float32 --codec_batch_size 32
@@ -918,12 +964,17 @@ keep、instruction join、phrases、canonical type、ASCII 和 source exclusion 
 连续出现超过 64 个非空 mask；当前 released SAM2 在 H100 上使用 batch 64 可能触发 SDPA
 kernel configuration error，因此正式全量构建使用 `--codec_batch_size 32`。
 
-`build_edit_metadata.py` 用于不需要 mask 的纯 edit 数据，并已支持与 mask builder 一致的
+`build_edit_metadata.py` 用于不需要 mask 的纯 edit 数据。它把
+`CrispEdit-2M-fact-prefilter/manifest` 与原始图片 parquet 做严格长度、row_idx、instruction
+对齐，只保留 manifest keep 行；并支持与 mask builder 一致的
 全局 `--sample_rows/--seed/--ascii_only`、hard `--exclude_metadata_jsonl`、多 worker 原子
 shard、`--resume` 和 `--combine_only`。每行写入原始 parquet/row/type provenance。
+`--image_subdir` 可把图片写入 output root 下的独立相对目录，默认为 `images`；正式 Stage 2
+使用 `images_edit`，从而可以只读复用已经通过 codec 构建的 mask 图片池，且不会向该池写入
+纯 edit 文件。
 `--deprioritize_metadata_jsonl` 用于数据池不足以完全互斥时最小化来源重合：先使用所有不在
-deprioritized metadata 中的合格行，仅从重合池随机补足必要差额。`--filter_with_mask_parquets`
-仍可限制到 mask parquet 的 keep rows。两个脚本都将图像 bytes 原子落盘为
+deprioritized metadata 中的合格行，仅从重合池随机补足必要差额。refined 正式方案允许三类
+CrispEdit 数据重合，因此不传 exclusion/deprioritization 参数。两个脚本都将图像 bytes 原子落盘为
 `images/<shard>/...`，避免只生成 JSONL 而缺图。
 
 放大构建时不要使用按文件名/行号截断的 `--max_rows`：文件名按 edit type 排序，会造成类型
@@ -938,7 +989,9 @@ deprioritized metadata 中的合格行，仅从重合池随机补足必要差额
 目录的下划线会先 canonicalize，再在全局随机抽样前排除。启用 `--sample_rows` 时，codec
 阶段只读取实际命中的 parquet，不再为小样本扫描全部含图 raw shard。
 
-大数据构建还支持多 GPU parquet 分区：每个进程使用相同的全局抽样集合，传
+大数据构建还支持多 GPU parquet 分区：随机抽样时每个进程使用相同的全局抽样集合；
+`--all_eligible` 时每个 worker 只扫描自己的确定性 parquet 分区，避免 N 卡重复扫描全量。
+传
 `--num_workers 8 --worker_index 0..7 --skip_combine --resume` 后只写互不重叠的原子 shard；
 所有进程完成后用 `--combine_only` 检查全部预期 shard 并合并，不再次加载 codec。
 多进程 codec 构建应同时设置
@@ -946,6 +999,7 @@ deprioritized metadata 中的合格行，仅从重合池随机补足必要差额
 PyTorch/SAM2 进程可能各自创建约 250 个 host thread，造成严重 CPU oversubscription 和
 吞吐下降。该限制只影响 host 并行度，不改变 codec 数值。
 
+旧数据版本为验证集做内容隔离时使用过以下工具；它不用于 refined 三个训练分支之间的互斥。
 source identity 互斥不足以排除 CrispEdit 内部“不同 parquet row 复用同一原图”的情况。
 `sanitize_stage2_validation_content.py` 在 Stage 2 source pools compose 前执行内容级净化：先对
 验证集 source/target 建立 SHA256 集合，只对训练池中 size-compatible 的唯一路径做 hash，
@@ -954,39 +1008,46 @@ source identity 互斥不足以排除 CrispEdit 内部“不同 parquet row 复�
 再以固定 seed 从重合池补足，因此训练分支 source overlap 达到理论最小；脚本原子输出两个
 `*_train.jsonl` 和包含排除/重合统计的 JSON 报告。
 
-`compose_training_metadata.py` 将三类输入校验、抽样、打乱并生成 Stage 1/Stage 2 JSONL：
+`compose_training_metadata.py` 将四类输入校验、抽样、打乱并生成 Stage 1/Stage 2 JSONL：
 
 ```bash
 python scripts/data/compose_training_metadata.py \
   --edit_mt_jsonl .../edit_mt.jsonl \
   --edit_ntp_jsonl .../edit_ntp_gres.jsonl \
   --edit_jsonl .../edit.jsonl \
+  --edit_umt_jsonl .../edit_umt.jsonl \
   --stage1_output .../stage1.jsonl \
   --stage2_output .../stage2.jsonl \
-  --max_edit_mt 8 --max_edit_ntp 4 --max_edit 4 --seed 0
+  --max_edit_mt 16 --max_edit_ntp 8 --max_edit 4 --max_edit_umt 4 --seed 0
 ```
 
-它只负责 metadata 级别的比例和随机化；Stage 1 运行时的精确 2:1:1 由
+它只负责 metadata 级别的比例和随机化；Stage 1 运行时的精确 4:2:1:1 由
 `SamtokEditingDataset` schedule 再次保证。
 
 `--stage1_output` 和 `--stage2_output` 现在可独立选择；仅构建 Stage 2 时不需要
-`--edit_ntp_jsonl`。Stage 2 metadata 只包含 `edit_mt + edit`，默认依次随机抽样并
+`--edit_ntp_jsonl`。Stage 2 metadata 包含 `edit_mt + edit + edit_umt`，比例 2:1:1，并
 打乱。针对多卡 data-process，可传 `--stage2_num_shards P`；构建器会先将每种类型
 均分到 P 个 shard，再按 position-major 顺序写文件，使 Accelerate 的
 `rows[rank::P]` 分片在每个 rank 都保持相同类型比例。各类型数量必须可被 P
 整除；若全量 source pool 因奇数或过滤后只能接近 2:1，可额外传
-`--pad_stage2_to_shards`。构建器保留全部输入行，求满足最终 `edit_mt=2*edit` 且两类均可被
+`--pad_stage2_to_shards`。构建器保留全部输入行，求满足最终
+`edit_mt=2*edit=2*edit_umt` 且三类均可被
 P 整除的最小不小于输入的计数，再按固定 seed 复制缺少的行；复制行写入
 `schedule_padding` 及原因/ordinal，避免 DDP sampler 隐式 padding。报告会同时给出未
-padding 的 source counts、最终 counts 和 padding counts。例如 Stage 2 的 8 卡 smoke
-可单独构建 16:8 的 24 行：
+padding 的 source counts、最终 counts 和 padding counts。Stage 1 的最大池总数不是 4 的
+倍数时可用 `--pad_stage1_to_ratio` 做最小显式 padding；再传 `--stage1_num_processes 8`
+会把比例 block 对齐到 8 卡 optimizer step，避免 Dataset 在 epoch 尾部隐式回卷。例如全部
+42,313 个合格 `edit_mt` 会保留，四类 source pool 为 42,313:21,158:10,579:10,579，最终
+显式 padding 23/10/5/5 行得到 42,336:21,168:10,584:10,584。Stage 2 的 8 卡 smoke
+可单独构建 16:8:8 的 32 行：
 
 ```bash
 python scripts/data/compose_training_metadata.py \
   --edit_mt_jsonl .../edit_mt.jsonl \
   --edit_jsonl .../edit.jsonl \
+  --edit_umt_jsonl .../edit_umt.jsonl \
   --stage2_output .../stage2.jsonl \
-  --max_edit_mt 16 --max_edit 8 --stage2_num_shards 8 --seed 8
+  --max_edit_mt 16 --max_edit 8 --max_edit_umt 8 --stage2_num_shards 8 --seed 8
 ```
 
 #### 4.9.5 `validate_training_metadata.py` —— 构建产物验收
@@ -994,6 +1055,46 @@ python scripts/data/compose_training_metadata.py \
 验收器不改变数据，只检查 JSONL schema、sample type、canonical CoT、文本字符集、图片路径
 和随机图片解码；支持 `--expected_counts`、`--check_paths`、`--decode_image_sample`、
 `--report_json`，路径检查和图片解码使用有界线程池。
+
+`audit_refined_metadata.py` 进一步逐条回查原始 CrispEdit、mask、fact manifest 和 GRES：
+校验 prompt/CoT/UMT rewrite provenance、允许且统计三类 CrispEdit identity 重合、检查显式
+schedule padding、可对全部落盘图片做原始 bytes 等值比较，并可随机重新运行 SAMTok codec
+确认 mask token span 没有改变。`--stage stage2 --world_size 8` 还会严格检查 2:1:1 比例、
+Stage 2 padding 原因，以及 `rows[rank::8]` 的逐卡同比例；不含 GRES 的 Stage 2 数据不会加载
+GRES 大 JSON。源 parquet/图片核验默认按 8 个 shard 并发执行，并定期把
+完成 shard 数写入日志；GRES 图片存在性检查由 builder 使用 32 个 I/O 线程并行完成，绝对
+路径构造不触发重复远端 `resolve`。`build_stage1_refined_full.sh` 把 8 GPU codec 构建、纯 edit
+的 8-worker 原子分片、NTP 构建、compose、通用验证和上述强审计串成单一失败即停的入口。
+`audit_stage1_schedule.py` 还会在
+不加载图片/模型的情况下验证每个 8 卡 accumulation window 的 32:16:8:8 消费、rank 同型、
+所有 metadata 行恰好使用一次且不存在隐式 pool recycling。
+
+refined Stage 1 全量入口：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+RUN_ROOT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full \
+  bash scripts/data/build_stage1_refined_full.sh
+```
+
+默认 8 个 GPU worker、codec batch 32，并将每个 worker 的 OMP/MKL/OpenBLAS/NumExpr 线程限制为
+8，避免 96 核机器被数百线程/进程过度订阅。脚本支持对 atomic shard 直接 `--resume`。
+
+refined Stage 2 全量入口：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+RUN_ROOT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full \
+  bash scripts/data/build_stage2_refined_full.sh
+```
+
+该入口保留全部 42,313 条合格 `edit_mt`，固定种子抽取 21,157 条纯 `edit` 和 21,157 条
+`edit_umt`，再为 2:1:1 与八卡 strided shard 整除做最小显式 padding，最终为
+42,320:21,160:21,160，共 84,640 行。完整 mask metadata 和图片复用已经由真实 builder/codec
+生成的 refined Stage 1 数据池，入口先做固定 SHA256 门禁；mask 图片目录只读链接到该池，
+纯 edit 图片独立写入 `images_edit/`。最终仍会对 Stage 2 实际选中的全部 CrispEdit identity
+重新执行 source prompt/type/mask/manifest、落盘图片 bytes 等值检查，并抽样重跑 128 条 codec，
+因此复用不跳过内容验收。该脚本只构建和审计数据，不启动 cache 或训练。
 
 它适用于 smoke、正式训练数据以及后续重新构建的 metadata；实验命令和报告位置记录在
 `SamtokEdit_实验记录.md`。
@@ -1180,6 +1281,174 @@ pass-1 输出，并对 512 张输出做解码、唯一 hash、28 个 setting pai
 RGB MAE 审计。最后生成 64 张包含 Source、Target、S1–S8 和完整 instruction 的十列 panel，
 以及 7 类代表样本总览。RGB MAE 只用于输出敏感性/完整性检查，不作为语义编辑质量指标。
 
+### 4.13 Refined Stage 2 ScaleEdit 评测
+
+`scripts/data/build_scaleedit_stage2_validation.py` 从
+`/mnt/bn/strategy-mllm-train/user/tanyue/datasets/ScaleEdit-200-samples` 的 200 条已审计
+source/edited/mask 数据中构建固定 32 条验证集。样本不是随机前缀：先逐张查看 source、GT edited
+和 raw mask overlay，再固定 `sample_id`，四个主类别各 8 条：`small_object`、
+`fine_grained`、`multi_instance`、`precise_edit`。主类别用于平衡和分类出图；一条样本还可带
+多个 `selection_tags`。
+
+构建器执行以下门禁：
+
+- source/target 直接使用 parquet 内原始 bytes 落盘，raw mask 保持原 PNG；
+- prompt 必须为非空 ASCII English，mask 必须是 `qc_flag=OK` 的非空局部 mask；
+- 使用 released VQ-SAM2 codec 在 source 上真实编码 mask，并通过唯一 serializer `to_cot`
+  生成 non-empty canonical strict CoT；
+- `edit_umt` 使用人工复核过且在 instruction 中只出现一次的精确指代短语，将其替换为一个
+  `<|mt_start|> code0 code1 <|mt_end|>` span，不修改 instruction 的其他内容；
+- codec 编码和 GT token decode 均按小 batch 执行，`SamtokCodec.decode_single_batch` 支持
+  不同 source image 的单 span 批量反解；每条 decode 必须尺寸正确且非空；
+- 扫描 refined Stage 1/Stage 2 正式 metadata 的全部去重图片引用，先并行检查 byte size，
+  对 size-compatible 文件计算 SHA256；任何 source/target exact-content 重合都会使构建失败。
+
+输出包含一个评测主视图和两个标准数据视图：
+
+```text
+data/scaleedit_samtok/validation.jsonl          # 评测字段、GT CoT、UMT prompt、mask 路径
+data/scaleedit_samtok/validation_edit_mt.jsonl  # 标准 edit_mt schema
+data/scaleedit_samtok/validation_edit_umt.jsonl # 标准 edit_umt schema
+data/scaleedit_samtok/images/                   # 32 source + 32 GT edited
+data/scaleedit_samtok/masks/                    # raw GT + GT token decode
+reports/data_build_report.json
+```
+
+`scripts/eval/run_stage2_eval.py` 实现三组严格对照：
+
+1. `s1_qwen2511_stock`：只加载原始 Qwen-Image-Edit-2511 TE/DiT/VAE 和官方 processor，
+   使用 `QwenImagePipeline` 直接编辑；
+2. `s2_stage2_online_cot`：加载 gres-ft TE、refined Stage 1
+   `step-10584.safetensors` TE LoRA 和 refined Stage 2 `step-21160.safetensors` DiT LoRA，
+   用原 instruction greedy 自回归生成 mask-token CoT，canonicalize 后再出图；
+3. `s3_stage2_edit_umt`：加载与第 2 组完全相同的 TE/DiT 权重，关闭在线 CoT，把
+   `edit_umt_prompt` 中的 GT mask span 作为 user instruction 的一部分直接出图。
+
+三组均固定 `seed=base_seed+eval_index`、bf16、40 inference steps、CFG 4.0、
+`edit_image=[source]`、`edit_image_auto_resize=True`、`zero_cond_t=True`。输出保持 source
+宽高比、目标面积为官方约 `1024*1024`，宽高各自按 32 对齐；例如 2250×1500 输入统一生成
+1248×832，避免把原始大图尺寸直接用于 diffusion latent。输入条件图仍由官方
+`edit_image_auto_resize=True` 独立缩放到约 1024²。
+第 2 组 `do_sample=False`、默认最多生成 128 token；第 3 组运行时额外检查 mask span 被 tokenizer
+处理为四个原子 token，并实际出现在 2511 user template 内。由于 CFG 会先后调用同一 prompt
+embedder 编码 positive/negative prompt，pipeline 每次调用都会重置审计状态，并保留正向 user
+prompt 的非空 mask-span 审计，防止空 negative prompt 覆盖结果。sidecar 保存原 prompt、实际
+conditioning prompt、raw pass-1、canonical CoT、parser layer、seed、耗时和模型 provenance。
+
+`scripts/eval/run_scaleedit_refined_eval_8gpu.sh` 默认依次运行 1--3，每次只启动一个 8-rank torchrun，所有卡
+按 `rows[rank::8]` 处理不同样本，完成后再聚合。`SETTING_SEQUENCE` 可指定需要执行的 setting，
+配合 `RESUME=1` 定点补跑失败组而不重新生成已完成图片，例如
+`SETTING_SEQUENCE=3 RESUME=1`。评测前可运行不加载模型的完整门禁：
+
+```bash
+python scripts/eval/run_stage2_eval.py --dry_run
+```
+
+正式 8 卡入口为：
+
+```bash
+bash scripts/eval/run_scaleedit_refined_eval_8gpu.sh
+```
+
+最终出图不计算图像质量指标。`run_stage2_eval.py --finalize_only` 为每条样本生成 Source、GT、
+Stock、Online CoT、edit_umt 五列对比，并按四个主类别生成 overview；
+`scripts/eval/visualize_stage2_eval_masks.py` 使用 released codec 反解 online CoT，分别以三个
+独立 source overlay 展示 raw GT mask、GT mask-token decode 和 online mask-token decode，
+不会把三种 mask 混合在同一个 overlay 中。完整 instruction 会写在每一行图的标题中；报告只
+记录 parser/decode 是否有效和文件位置，不对编辑图计算自动指标。
+
+### 4.14 Arnold 四机 32 卡入口
+
+四机入口是独立新增实现，不改变 4.8 节的单机 8 卡脚本。目标拓扑固定为 4 台机器、
+每机 8 卡、全局 32 个 DDP process，直接读取 Arnold 注入的
+`ARNOLD_WORKER_HOSTS`、`ARNOLD_WORKER_NUM`、`ARNOLD_WORKER_GPU` 和 `ARNOLD_ID`。
+`scripts/train/arnold_4node_env.sh` 同时支持 `host:port` 和 `[IPv6]:port` 两种
+`ARNOLD_WORKER_HOSTS` 格式，并转换为 Accelerate 所需参数：
+
+```text
+--num_processes 32
+--num_machines 4
+--machine_rank $ARNOLD_ID
+--main_process_ip $ARNOLD_WORKER_0_HOST
+--main_process_port <Arnold allocated port>
+--rdzv_backend static
+--same_network
+```
+
+各节点只可见本机 `CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7`；Accelerate 的
+`num_processes` 表示全局进程数，而不是每机进程数。
+
+新增文件及职责如下：
+
+- `scripts/train/arnold_4node_env.sh`：解析/校验 Arnold 拓扑并封装多机 Accelerate；
+- `scripts/train/launch_4node.sh`：提供 `stage1`、`stage2_cache`、`stage2_train`
+  三个独立的 32-rank launch phase，模型与训练参数和单机入口一致；
+- `scripts/data/prepare_4node_metadata.sh`：复用已验收 refined component JSONL 和落盘
+  图片，只生成并验证新的 ws32 metadata，不重新运行 codec；
+- `scripts/train/run_arnold_4node_pipeline.sh`：按 Stage 1 training → Stage 2 cache →
+  rank-0 cache audit → Stage 2 training 串行编排，使用共享 marker 做跨节点阶段同步；
+- `scripts/train/bootstrap_arnold_4node.sh`：可作为 Arnold 从裸 worker 开始的完整入口。每个
+  worker 安装 `ffmpeg/libsm6/libxext6/tmux/htop`；rank 0 清除 proxy 后使用已在 Arnold worker
+  实测成功的 GitHub 直连，在共享 `/mnt/bn` 路径 clone `dev`，随后执行
+  `python3.11 -m pip install --user uv==0.11.32`、`cd` 进入仓库并运行
+  `setup_env.sh`。其他 worker 通过共享 marker 等待，环境就绪后四节点共同进入
+  pipeline。
+
+ws32 metadata 使用独立实验目录，不覆盖单机 metadata。固定统计为：
+
+```text
+Stage 1: edit_mt=42368, edit_ntp=21184, edit=10592, edit_umt=10592
+         total=84736
+Stage 2: edit_mt=42368, edit=21184, edit_umt=21184
+         total=84736
+```
+
+Stage 1 的 32-rank schedule 每个 optimizer step 仍由 8 个 homogeneous micro-step
+组成，全局类型计数为 `128:64:32:32`，331 optimizer steps 内每条 metadata 恰好使用
+一次。Stage 2 metadata 的 32 个 strided shards 每份均为
+`edit_mt=1324,edit=662,edit_umt=662`。Stage 2a 必须重新生成 32 个 rank 目录下的
+cache，不能复用 sidecar 中记录 `world_size=8` 的 cache；全量 cache audit 只在 node 0
+执行，其余节点等待 audit pass marker 后才进入 Stage 2b。
+
+数学训练 setting 保持原实现：Stage 1 为 1 epoch、gradient accumulation 8、
+`lr=4e-5`、`weight_decay=0.05`、`lambda_ntp=0.05`；Stage 2 为 1 epoch、
+dataset repeat 2、gradient accumulation 1、`lr=1e-4`、`weight_decay=0.01`。
+由于 world size 从 8 增至 32，有效 global batch 分别从 64/8 变为 256/32；四机入口
+不自动缩放 learning rate。每 rank dataloader worker 默认从 8 降为 2，使全局 worker
+总数仍为 64，这只改变 I/O 并发度，不改变优化语义。
+
+完整 Arnold 入口在脚本顶部保留用户填写区：必填 `WANDB_API_KEY` 和每次唯一的
+`SAMTOK_RUN_ID`；`WANDB_ENTITY` 默认为 `2200012743-peking-university`，`WANDB_PROJECT`
+默认为 `samtok-edit`。入口不调用 `wandb login`，
+API key 不会写进 metadata、`training_args.json` 或控制 marker。该入口
+必须在 clone 前已经可被 Arnold 读取（推荐把完整内容直接粘贴到 Arnold entry）；不能在
+尚未 clone 时通过目标仓库路径调用它。完整可复制版见
+`SamtokEdit_四机训练运行指南.md`：
+
+```bash
+export WANDB_API_KEY=""   # 必填
+export WANDB_ENTITY=2200012743-peking-university
+export WANDB_PROJECT=samtok-edit
+export SAMTOK_RUN_ID=""   # 必填，每次实验使用新名称
+
+# 实际任务中由四个 worker 执行已粘贴到 Arnold entry 的完整
+# scripts/train/bootstrap_arnold_4node.sh 内容。
+```
+
+同一入口脚本必须由 Arnold 在四台 worker 上执行。输出默认位于
+`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/`
+`crispedit_refined_4node/$SAMTOK_RUN_ID`；每个分布式阶段按 node 分日志，最终
+`reports/run_manifest.json` 记录两阶段 metadata/checkpoint SHA256 和 cache audit 结果。实验
+名称统一使用 `crispedit-refined-4node-<唯一后缀>`，不使用 `v1`；W&B 两个 run 分别追加
+`-stage1` 和 `-stage2`。
+
+bootstrap 从确定实验目录开始，将四个 worker 的完整 stdout/stderr 分别 tee 到
+`$RUN_ROOT/logs/bootstrap.node0.log`--`bootstrap.node3.log`，覆盖 apt、Git clone、uv 安装、
+环境校验、metadata、训练和最终验收。bootstrap marker 位于 `$RUN_ROOT/bootstrap_control/`；
+pipeline 只允许该次 bootstrap 预先创建的 `logs/bootstrap.node*.log`、`environment.ok` 和
+`git_commit.txt`，发现其他旧产物仍会拒绝复用目录。phase 自身的细分日志继续写入
+`$RUN_ROOT/logs/<stage>.node<N>.log`。
+
 ---
 
 ## 代码回归入口
@@ -1192,5 +1461,7 @@ python -m unittest tests/test_samtok_edit.py
 测试覆盖 canonical CoT、分层 parser、DDP schedule、非 canonical 拒绝、codec 空 mask 拒绝、
 英文模板、全局随机抽样与 worker 分区、state-dict converter、KV-cache 转发和新版 DiffSynth
 分片路径兼容，以及分类 mask 大图从审计 panel 中提取 GT/online 独立面板的列顺序、
-S1–S8 分类汇总对 S4/S7 在线 CoT 完全一致性的强制校验。
+S1–S8 分类汇总对 S4/S7 在线 CoT 完全一致性的强制校验、ScaleEdit 32 条选择平衡、
+Stage 2 三 setting 的 CoT/UMT 调用契约、CFG negative
+prompt 不覆盖正向 UMT span 审计和官方约 1MP 输出尺寸换算。
 测试运行结果和训练/数据实验结果统一记录在 `SamtokEdit_实验记录.md`。

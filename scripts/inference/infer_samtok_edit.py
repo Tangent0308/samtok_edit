@@ -83,6 +83,8 @@ def run_edit(
     mt_cot=None,
     enable_samtok_cot=True,
     samtok_max_new_tokens=128,
+    output_height=None,
+    output_width=None,
 ):
     return pipe(
         prompt,
@@ -90,8 +92,8 @@ def run_edit(
         seed=seed,
         num_inference_steps=num_inference_steps,
         cfg_scale=cfg_scale,
-        height=image.size[1],
-        width=image.size[0],
+        height=output_height if output_height is not None else image.size[1],
+        width=output_width if output_width is not None else image.size[0],
         edit_image_auto_resize=True,
         zero_cond_t=True,
         mt_cot=mt_cot,

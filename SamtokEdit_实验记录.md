@@ -1,7 +1,8 @@
 # SamtokEdit 实验记录
 
 本文只记录已经实际运行的实验、数据构建验收和回归检查，不描述代码设计。代码实现、
-数据 schema、训练入口和 CLI 参数见 [`SamtokEdit_训练方案_当前实现.md`](</opt/tiger/tanyue/samtok_edit/SamtokEdit_训练方案_当前实现.md>)。
+数据 schema、训练入口和 CLI 参数见仓库内的
+[`SamtokEdit_训练方案_当前实现.md`](SamtokEdit_训练方案_当前实现.md)。
 
 所有实验产物统一放在：
 
@@ -18,7 +19,9 @@ Stage 1 五 setting 正式评测已于 2026-08-23 用 8 卡完整结束；Stage 
 2026-08-26 12:36:35 UTC 在另一台共享机器上完成；本机已先后对 step-4,000、step-8,000、
 step-16,000、step-24,000、step-32,000 和最终 step-41,490 checkpoint 完成同协议的
 direct/online CoT/GT CoT 评测，并将已有 S1–S5 与六组 Stage 2 结果合并完成 S1–S23
-分类审计和可视化。
+分类审计和可视化。Refined Stage 1/2
+全量数据的单机 8 卡与四机 32 卡单 epoch 训练均已正常结束；四机权重也已在同一组
+ScaleEdit 32 条训练外验证集上完成 online CoT 和 `edit_umt` 评测，并与单机结果联合可视化。
 
 ## 实验索引
 
@@ -37,6 +40,15 @@ direct/online CoT/GT CoT 评测，并将已有 S1–S5 与六组 Stage 2 结果�
 | E11 | Stage 2 放大规模数据构建 | 使用全部安全 `edit_mt`，按 2:1 配纯 edit 并做内容级验证隔离 | 通过 |
 | E12 | Stage 2 正式 8 卡训练 | 融合 Stage 1 TE 并在 165,960 份 cache 上训练 DiT LoRA | 完成（41,490 步） |
 | E13 | Stage 2 训练结果评测 | 在固定 64 张验证集上评测中间及最终 checkpoint 的 direct/online CoT/GT CoT | 完成（6 个 checkpoint，S1–S23 对比） |
+| E14 | Refined Stage 1 四类数据与 8 卡 smoke | 验证新 mask/fact 数据、UMT、无空 CoT、4:2:1:1、loss/梯度/DDP | 通过 |
+| E15 | Refined Stage 1 全量数据构建 | 最大类使用全部合格样本，完成 8 卡步对齐和完整回源审计 | 通过 |
+| E16 | Refined Stage 1 全量 8 卡训练 | 在 84,672 行四类新数据上训练 1 epoch，并在线记录 W&B | 完成（训练审计通过，未评测） |
+| E17 | Refined Stage 2 数据与 8 卡 smoke | 验证 2:1:1、cache、FM loss、DiT LoRA 和 DDP | 通过 |
+| E18 | Refined Stage 2 全量数据构建 | 使用全部 edit_mt 构建 84,640 行 2:1:1 数据 | 通过 |
+| E19 | Refined Stage 2 全量 8 卡训练 | 执行单 epoch DiT LoRA 训练并审计 | 完成（训练审计通过） |
+| E20 | Refined Stage 2 ScaleEdit 评测 | 对比 stock、online CoT 和 edit_umt | 完成（96/96） |
+| E21 | Refined 四机首次启动 | 验证裸 worker 环境、clone 和四机 pipeline 入口 | bootstrap 两次失败均已定位，后续已修复 |
+| E22 | Refined 四机权重 ScaleEdit 对比评测 | 在同一验证集上对比单机/四机 online CoT 与 edit_umt | 完成（新增 64/64；联合审计通过） |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -1262,6 +1274,1102 @@ S1–S23 结果对比图，完整分类图保存在[仓库目录](docs/assets/ev
 
 [![S1–S23 add 类别结果对比](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_step32000_step41490_category_comparisons/add_final_results.jpg)](docs/assets/evaluation/stage2_step4000_step8000_step16000_step24000_step32000_step41490_category_comparisons/add_final_results.jpg)
 
+## E14：Refined Stage 1 四类数据构建与 8 卡 smoke
+
+### 目标和输入
+
+本轮在新分支 `dev_crispedit_refined` 上实现四类 refined 数据：新增 `edit_umt`，其 user
+prompt 用源图 mask span 替换编辑区域指代、保留目标图、不含 assistant CoT，只计算 FM；
+`edit_mt` 使用 NTP+FM，`edit_ntp` 使用 NTP，普通 `edit` 使用 FM。Stage 1 比例改为
+`edit_mt:edit_ntp:edit:edit_umt=4:2:1:1`，并从所有新训练数据中删除空 mask、global/noop
+和 `to_cot([])`。style/background 也必须使用非空 mask span，不设置特殊全局 token。输入为：
+
+```text
+原始图片编辑：/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M
+纯 edit filter：/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-fact-prefilter/manifest
+带 mask edit：/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-mask
+edit_ntp：/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTok_Training_Data/mask_generation_gres209k.json
+GRES 图片：/mnt/bn/strategy-mllm-train/intern/common_datasets/Sa2VA-Training/osprey-724k
+```
+
+591 个 raw/mask/manifest 同名 shard 均存在，三者 row 总数均为 150,421，逐 shard 长度和
+`row_idx` 全部对齐。新 mask 中 42,639 行标为 keep；其中 42,442 行 `mask_sum>0`，197 行
+空/无效 mask（140 条 `GROUND_FAIL`、57 条 `OK`）按新规范丢弃。加入 ASCII prompt/label
+约束后 `edit_mt` 合格池为 42,313。fact manifest 的纯 edit 英文合格池为 42,515。
+GRES 共 209,344 行，过滤 19,140 条空 CoT 后有 190,204 条合格英文非空样本。
+
+### Smoke 数据构建和验收
+
+结果根目录：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke
+```
+
+实际依次运行真实构建器：
+
+```bash
+python scripts/data/build_edit_mt_metadata.py \
+  --output_root .../data/crispedit_samtok --sample_rows 64 --seed 260904 \
+  --ascii_only --device cuda:0 --dtype float32 --codec_batch_size 8
+python scripts/data/build_edit_metadata.py \
+  --output_root .../data/crispedit_samtok --output_jsonl .../edit.jsonl \
+  --sample_rows 16 --seed 260905 --ascii_only
+python scripts/data/build_edit_ntp_metadata.py \
+  --output_jsonl .../edit_ntp_gres.jsonl --sample_rows 32 --seed 260906 \
+  --ascii_only --check_images
+python scripts/data/compose_training_metadata.py \
+  --edit_mt_jsonl .../edit_mt.jsonl --edit_ntp_jsonl .../edit_ntp_gres.jsonl \
+  --edit_jsonl .../edit.jsonl --edit_umt_jsonl .../edit_umt.jsonl \
+  --stage1_output .../stage1.jsonl \
+  --max_edit_mt 64 --max_edit_ntp 32 --max_edit 16 --max_edit_umt 16 --seed 260907
+```
+
+64 条 mask 样本全部走 source image 上的真实 VQ-SAM2 codec，生成 64 条 `edit_mt`；其中
+62 条可做无歧义 UMT 语法改写，compose 固定种子取 16 条。最终 metadata 为 128 行：
+`64/32/16/16`，空 CoT 0、非 ASCII 0、UMT 每行恰有一个合法 span。192 个唯一图片引用
+全部存在，128 个抽样文件全部解码成功。强回源审计逐条核对 64 个 mask row、16 个 fact
+manifest row、32 个 GRES row，并对全部 80 个唯一 CrispEdit identity 的 source/target bytes
+与原 parquet 做等值比较；UMT 是 MT 子集且两者 mask span 一致。Stage 1 schedule 预检也确认
+每个 8 卡 optimizer window 都是 32/16/8/8、各 rank 类型序列一致。
+
+构建过程中发现并修复两点：小样本 codec 阶段曾不必要地打开未命中的 raw 图片 shard；
+GRES 曾在空 CoT 过滤前抽样，可能使精确条数中混入不可用行。修复后均从完整合格池抽样，
+数据重新覆盖生成并通过上述审计。
+
+### 8 卡训练配置与结果
+
+使用 Qwen-Image-Edit-2511 与 SAMTok `Qwen2.5-VL-7B-SAMTok-gres-ft`，实际配置为 8 卡、
+bf16 基座/激活、fp32 TE LoRA、rank 64、dropout 0.05、`lr=4e-5`、`weight_decay=0.05`、
+cosine、`warmup_ratio=0.05`、梯度裁剪 1.0、`gradient_accumulation_steps=8`、
+`dataset_repeat=2`、1 epoch、`max_pixels=262144`、`lambda_ntp=0.05`、`lambda_fm=1.0`、
+`zero_cond_t=True`、seed 260910。第一次 rendezvous 端口 29741 已被占用，模型加载前退出；
+失败日志保留，改用 46125 后从零正常运行。
+
+模型冷加载约 15 分钟，正式训练 32 micro-step 用时 1 分 50 秒，完成 4 个 optimizer step。
+机器审计报告全部检查项通过：全局实际消费 `edit_mt=128,edit_ntp=64,edit=32,edit_umt=32`，
+四个 accumulation window 均严格 4:2:1:1；MT 为 NTP+FM、NTP 为 NTP-only、edit/UMT 为
+FM-only。NTP shift 与 `<|im_end|>` label 正确，UMT span 在 processor 模板中保持为四个原子
+token；source conditioning 和 target FM latent 路由正确。所有 loss/梯度 finite，最大加权
+恒等误差 `6.71e-9`。一个纯 edit rank loss 恰为 0；源/目标图片 SHA 不同，这是官方
+flow scheduler 在端点把最小 training weight 置 0 的合法采样，不是图片错位或 NaN。
+
+只有 392 个 TE LoRA tensor、161,480,704 个参数可训练且为 fp32；DiT/VAE 可训练参数为 0，
+冻结参数梯度始终为 0。4 次同步更新的 probe L2 norm 依次为
+`0.0188262/0.0125994/0.00609574/0.00158586`，均非零且 8 卡参数范数完全一致。最终 checkpoint
+为 645,978,056 bytes，SHA256
+`75413f6aaec04895f7db448a3fe2f4c606d254922a0144e6d499b32fdeecdd43`。W&B online run 正常
+finish；API key 未写入训练日志或 `training_args.json`。
+
+### 结果文件
+
+- [stage1.jsonl](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke/data/crispedit_samtok/stage1.jsonl>)；
+- [metadata_validation.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke/reports/metadata_validation.json>)；
+- [source_integrity_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke/reports/source_integrity_audit.json>)；
+- [schedule_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke/reports/schedule_audit.json>)；
+- [training_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke/reports/training_audit.json>)；
+- [训练日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke/train/train.log>)；
+- [step-32.safetensors](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_8gpu_smoke/train/step-32.safetensors>)；
+- [W&B run](https://wandb.ai/2200012743-peking-university/samtok-edit/runs/run_20260904_34500705)。
+
+## E15：Refined Stage 1 全量数据构建
+
+### 目标和运行
+
+在 E14 的四类 smoke 构建和 8 卡训练全部通过后，只构建正式 Stage 1 数据，不启动正式训练。
+最大比例类 `edit_mt` 使用新的 mask 数据中全部 42,313 条合格英文非空 mask 样本，其余三类
+按 `4:2:1:1` 取 21,158/10,579/10,579 条。三类 CrispEdit 分支允许 source identity 重合，
+不做旧版训练分支间互斥。结果根目录为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full
+```
+
+主入口实际使用 8 个 codec/物化 worker、codec batch 32 和固定 seed 260911：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+CODEC_BATCH_SIZE=32 NUM_WORKERS=8 \
+  bash scripts/data/build_stage1_refined_full.sh
+```
+
+mask/UMT 共生成 591 对 atomic metadata shard；纯 edit 生成 591 个 atomic shard。构建器先写
+临时文件再原子替换，支持按完整 shard 断点续跑。正式执行过程中完成了以下性能修正，已写回
+同一入口脚本和 builder：
+
+- 每个 GPU worker 的 OMP/MKL/OpenBLAS/NumExpr 线程限制为 8，避免 SAM2 在 8 进程下创建
+  近两百 host thread 并反向降速；
+- 纯 edit 从单进程改为 8 个互斥 shard worker，已有 8 个完整 shard 直接恢复，最终 591/591；
+- GRES 的 21,158 个远端图片存在性检查改为 32 线程并显示进度，完整检查用时约 5 秒；
+- 全量源审计改为 8 路 shard 并发且每 25 个 shard 输出进度；检查范围仍为全部入选图片，
+  没有降级为抽样。
+
+所有中断都发生在 atomic 文件边界；最终临时文件为 0，已完成的 codec 结果未被重复或篡改。
+
+### 构建结果
+
+四个源 pool 为：
+
+```text
+edit_mt    42,313  # 42,313/42,313 合格样本全部使用
+edit_ntp   21,158  # 从 190,204 条英文非空 GRES 样本确定性抽样
+edit       10,579  # 从 42,515 条 fact-prefilter 英文样本确定性抽样
+edit_umt   10,579  # 从 39,797 条可无歧义改写的 edit_mt pool 抽样
+```
+
+为同时满足精确 `4:2:1:1` 和 8 卡、accumulation 8 的完整 optimizer-step 边界，composer 显式
+复制并标记 `23/10/5/5` 条 `schedule_padding`；最终 `stage1.jsonl` 为：
+
+```text
+edit_mt    42,336
+edit_ntp   21,168
+edit       10,584
+edit_umt   10,584
+total      84,672
+```
+
+这些 padding 行不引入新图片或修改正文，均带原因和序号。最终仍保留 42,313 个唯一 MT 源行、
+21,158 个唯一 GRES 源行、10,579 个唯一 edit 源行和 10,579 个唯一 UMT 源行。允许的实际
+CrispEdit identity 重合为：MT/edit 10,532，MT/UMT 10,579，edit/UMT 2,669。
+
+### 训练数据存放与读取关系
+
+本次正式构建使用的权威上游数据位置为：
+
+```text
+CrispEdit 原始图像：/mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M
+纯 edit manifest： /mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-fact-prefilter/manifest
+带 mask edit：     /mnt/bn/strategy-mllm-train/user/tanyue/datasets/CrispEdit-2M-mask
+edit_ntp metadata： /mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTok_Training_Data/mask_generation_gres209k.json
+GRES 图片根目录：  /mnt/bn/strategy-mllm-train/intern/common_datasets/Sa2VA-Training/osprey-724k
+```
+
+构建完成后，Stage 1 正式训练使用的物化数据统一位于：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage1_full/data/crispedit_samtok
+```
+
+目录内 `stage1.jsonl` 是唯一的正式训练入口；`edit_mt.jsonl`、`edit_ntp_gres.jsonl`、
+`edit.jsonl` 和 `edit_umt.jsonl` 是 compose 前的四类组件 metadata。CrispEdit 三个分支的
+source/target 图片以相对路径引用该目录下的 `images/`；`edit_ntp` 没有 FM target，其
+`edit_image` 保持指向上述 GRES 图片根目录的绝对路径，不额外复制图片。
+`metadata_shards/` 和 `edit_metadata_shards/` 是可恢复的原子构建分片，不作为 trainer 的
+直接入口。Stage 1 trainer 实际传入：
+
+```text
+--dataset_base_path     .../stage1_full/data/crispedit_samtok
+--dataset_metadata_path .../stage1_full/data/crispedit_samtok/stage1.jsonl
+```
+
+### 格式、内容和调度验收
+
+通用 metadata 验收全部通过：84,672 行均符合四类 schema，空 CoT 为 0，非 ASCII 文本为 0；
+所有 96,715 个唯一图片引用存在，固定随机抽样 1,024 张全部成功解码。`edit_mt/edit_ntp`
+均为非空 canonical CoT，`edit/edit_umt` 完全没有 `mt_cot`；每条 UMT prompt 恰好包含一个
+四 token mask span。
+
+强回源审计逐条完成且无 mismatch：
+
+- 42,313 个 MT 行均对应新 mask parquet 的 keep、非空 `mask_png`、正 `mask_sum` 和相同
+  instruction/QC/type；其 CoT label 也全部由 `instance_masks/ground_json` 重新派生并完全匹配；
+  10,579 个纯 edit 行均通过 fact manifest；
+- 21,168 个 NTP metadata 行逐条回查原始 GRES index、source image、canonical CoT 和合法
+  英文模板；其中 10 条为明确标记的 schedule padding；
+- 全部 42,360 个入选 CrispEdit 唯一 identity 的已落盘 source/target 均与原 parquet 做
+  byte-for-byte 比较并完全一致；
+- UMT 全部是 MT identity 子集，prompt 可由原 instruction、canonical type 和记录的唯一
+  替换规则重新推导，MT/UMT span 完全一致；
+- 固定随机抽取 128 个 mask，重新运行真实 SAMTok codec，128/128 span 与 metadata 完全一致。
+
+8 卡 schedule 审计得到 1,323 个 optimizer step；每步固定消费
+`edit_mt/edit_ntp/edit/edit_umt=32/16/8/8`，所有 rank 的类型序列一致、每个 micro-step 同类，
+84,672 个 metadata index 均恰好消费一次，没有隐式 pool recycling。
+
+最终 metadata SHA256：
+
+```text
+edit_mt.jsonl       4365a3a17758bb96995ce41c795b0faf92434312ccc3484a59d27c55345a1e9b
+edit_ntp_gres.jsonl 0c6252a5b3de794aa31ddc19ec96dbddba9b07b955c756cca50f07b510c596e6
+edit.jsonl          223d9cc7163a3c1ae539822c59887abedfc7e3aef1cabca980b8e1dde14aa777
+edit_umt.jsonl      76250185c8052fd4ce29a5f59fa2f40a3bdc74f2732effb6c53aa5315edd6966
+stage1.jsonl        1b793255f992667a832eacd607cd3c155cd6af595de7c886fb13c8d03c53f32b
+```
+
+本实验到此停止，没有加载训练模型或启动全量训练。
+
+### 结果文件
+
+- [stage1.jsonl](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/data/crispedit_samtok/stage1.jsonl>)；
+- [metadata_validation.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/metadata_validation.json>)；
+- [source_integrity_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/source_integrity_audit.json>)；
+- [source_semantic_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/source_semantic_audit.json>)；
+- [schedule_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/schedule_audit.json>)；
+- [metadata_sha256.txt](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/reports/metadata_sha256.txt>)；
+- [构建和审计日志目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/logs>)。
+
+## E16：Refined Stage 1 全量 8 卡训练（完成，未评测）
+
+### 目标与启动前检查
+
+使用 E15 已通过完整验收的 84,672 行 `stage1.jsonl` 训练 text encoder LoRA 1 epoch，
+不训练 DiT/VAE，不进行评测。启动前重新确认 metadata SHA256 为
+`1b793255f992667a832eacd607cd3c155cd6af595de7c886fb13c8d03c53f32b`；格式、完整回源、
+MT label 重新派生、128 条 codec 复编码和 8 卡 schedule 四份报告均通过。模型路径严格使用
+Qwen-Image-Edit-2511 和 SAMTok `Qwen2.5-VL-7B-SAMTok-gres-ft`，合并 processor/TE 目录存在。
+W&B 凭据目录/文件权限为 `700/600`，三个必需账户变量均存在，API key 没有写入启动脚本或日志。
+
+GPU 上存在用户自己的长期保活进程 `run.py --size 8000 --gpus 8 --interval 0.0005`，每卡约
+1.6 GiB；它从 2026-07-11 起一直运行，也是此前正式实验的相同基线，本次未停止。除此以外
+启动前没有训练进程，8 卡剩余显存足够；rendezvous 端口 20061 已同时通过 IPv4/IPv6 bind
+检查。
+
+### 配置与后台启动
+
+```text
+8 x H100 80GB
+world_size=8, gradient_accumulation_steps=8, effective global batch=64
+metadata=84,672, local microsteps=10,584, optimizer steps=1,323
+dataset_repeat=1, num_epochs=1, dataset_workers=8/rank
+max_pixels=1,048,576
+TE LoRA rank=64, dropout=0.05, fp32
+frozen base/activation=bf16, NTP/FM loss=fp32
+AdamW lr=4e-5, weight_decay=0.05, max_grad_norm=1.0
+warmup_ratio=0.05, cosine decay, zero_cond_t=True
+lambda_ntp=0.05, lambda_fm=1.0, seed=0
+save_steps=2,000 local microsteps
+sample ratio=edit_mt:edit_ntp:edit:edit_umt=4:2:1:1
+```
+
+训练于 `2026-09-04T14:38:42Z` 在独立 detached tmux session
+`samtok_stage1_refined_full_1ep` 启动。controller PID/SID/PGID 均为 `1290982`，session
+`attached=0`；退出发起训练的终端或当前 tmux 不会向训练进程传递挂断信号。实际启动器为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage1_full/train_8gpu_1ep/launch_stage1_full.sh
+```
+
+该启动器只 source 权限为 600 的外置 W&B env，设置明确的训练参数，然后调用
+`scripts/train/stage1_te_lora.sh`；训练退出码最终会写入 `exit_code`。
+
+### 完成状态
+
+8 个 Accelerate rank 全部启动成功，8 次 dataset 初始化都报告：
+
+```text
+sizes=42336/21168/10584/10584
+per_step=32/16/8/8
+steps=1323
+schedule_len=84672
+```
+
+NCCL 使用 IB 初始化，模型加载后每卡约占 58.3 GiB。训练于
+`2026-09-05T01:46:16Z` 结束，controller 记录 `exit_code=0`；本地进度条完成
+`10,584/10,584` micro-step，进度条耗时 `11:06:14`、平均 `3.78 s/step`，包含加载、
+保存和 W&B finish 的总 wall time 为 `11:07:34`。8 个 rank 均打印
+`NCCL ... Destroy COMPLETE`，训练进程和专用 detached tmux session 均已退出，不是意外残留或
+失联。对完整日志扫描未发现 OOM、Traceback、CUDA/NCCL error、NaN/Inf、exception、
+killed 或 segmentation fault。
+
+### 数据消费与 loss 审计
+
+`loss.csv` 共有 26,460 条数据记录，`loss` 覆盖连续的 step 1–10,584，没有缺失、
+重复或非有限值。按实际出现的 loss key 逐 step 反推 rank-0 数据分支：
+
+```text
+edit_mt  (NTP + FM)  5,292
+edit_ntp (NTP only)  2,646
+FM only               2,646  # edit + edit_umt
+```
+
+这与 4:2:1:1 的完整 epoch 期望精确一致。`edit` 和 `edit_umt` 都只产生 FM key，因此
+单看 rank-0 CSV 不能再区分这两类；启动前 schedule 强审计已确认它们分别为 1,323
+条/rank，所有 rank 类型序列相同、每个 micro-step 同类，且训练完成了整个 schedule。
+
+使用实际配置 `lambda_ntp=0.05`、`lambda_fm=1.0` 逐条重算总 loss：
+
+- `edit_mt`: `loss = 0.05 * loss_ntp + loss_fm`；
+- `edit_ntp`: `loss = 0.05 * loss_ntp`；
+- `edit/edit_umt`: `loss = loss_fm`。
+
+全部 10,584 条均通过，最大绝对误差仅 `1.49e-8`。前 1,000 与后 1,000 step 的
+均值对比为：
+
+```text
+total loss  0.06230 -> 0.04666  (-25.1%)
+raw NTP     0.52288 -> 0.21633  (-58.6%)
+raw FM      0.05692 -> 0.05140  (-9.7%)
+```
+
+`edit_mt` 的 raw NTP 从 `0.63076` 降到 `0.27385`，`edit_ntp` 的 raw NTP 从
+`0.30714` 降到 `0.10128`；FM 在随机 timestep/noise 和多样本混合下波动更大。日志中
+38 条 FM 分量为精确 0，与 flow-matching 端点权重为 0 的设计一致；它们均不是
+NaN/Inf，且 loss 组合公式仍通过。
+
+### Checkpoint 与 W&B 审计
+
+训练在 step 2,000/4,000/6,000/8,000/10,000 和最终 step 10,584 共保存 6 份 checkpoint。
+六者 schema 完全一致，每份都是 392 个 fp32 LoRA tensor，包含 196 个 A 和 196 个 B，
+共 161,480,704 个参数，没有意外的非 LoRA key。最终 checkpoint 所有 tensor 均 finite，
+也没有整张量全零。将 step 10,584 与 step 10,000 比较，392/392 个 tensor 全部继续变化，
+99.9386% 的元素有变化，证明最后 584 micro-step 并非只记录 loss 而没有更新权重。
+
+最终权重：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/
+train_8gpu_1ep/step-10584.safetensors
+SHA256: 67b9d759b99259388e832b35204e4779b088d0783921b960afdb1fdf98b0fad2
+```
+
+W&B 以 success 状态 finish 并同步 5 个文件。Online run name 为
+`stage1-refined-full-8gpu-1ep-20260904`，run id 为 `run_20260904_b96a9122`：
+
+```text
+https://ml.tiktok-row.net/experiment/tracking/detail?Id=project_20260823_dd21e517&selectedTrial=run_20260904_b96a9122
+```
+
+完整日志、loss 和退出码：
+
+```bash
+less /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/train.log
+less /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/loss.csv
+cat /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage1_full/train_8gpu_1ep/exit_code
+```
+
+W&B 本地数据位于
+`train_8gpu_1ep/wandb_log/wandb/run-20260904_143945-run_20260904_b96a9122/`。本节只完成
+训练状态、loss 和 checkpoint 审计，没有运行 inference；因此可以判定训练执行正常且
+有明确的 NTP 学习趋势，但不在本次结论中声称编辑质量或泛化效果。
+
+## E17：Refined Stage 2 数据构建与 8 卡 smoke（完成）
+
+### 目标与输入
+
+目标是验证新三类 Stage 2 数据和完整两段式链路：
+
+```text
+edit_mt : edit : edit_umt = 2 : 1 : 1
+```
+
+其中 `edit_mt` 带 GT mask CoT，`edit` 是 fact-prefilter 后的普通编辑，`edit_umt` 是从
+mask 编辑样本派生的不带 reference 表达；Stage 2 不包含 `edit_ntp`。Stage 2a 使用 refined
+Stage 1 全量训练最终 TE LoRA：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage1_full/train_8gpu_1ep/step-10584.safetensors
+SHA256: 67b9d759b99259388e832b35204e4779b088d0783921b960afdb1fdf98b0fad2
+```
+
+实验根目录为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_8gpu_smoke
+```
+
+### Smoke 数据构建与源内容审计
+
+实际通过 `build_edit_mt_metadata.py` 的 codec 路径构建 16 条 `edit_mt`，同时派生 16 条
+`edit_umt`；通过 `build_edit_metadata.py` 的 manifest 路径构建 8 条纯 `edit`。两者均要求
+ASCII，并使用固定 seed。compose 从 UMT 池取 8 条，生成 32 行 Stage 2 metadata；没有
+padding。最终计数为 16:8:8，8 个 `rows[rank::8]` shard 均精确为 2:1:1。
+
+通用校验解码了全部 48 个唯一图片引用；强源审计逐条回查 16 条 mask source、8 条 manifest
+source、全部 24 个唯一 CrispEdit identity 的 source/target 原始 bytes，并对全部 16 条
+`edit_mt` 重新运行 codec。prompt/type、GT CoT label、UMT rewrite、图片 bytes 和 codec span
+全部一致；所有文本为英文，`edit_umt` 是 `edit_mt` identity 子集且对应 mask span 一致。
+
+在首次执行 Stage 2 强审计时发现审计器自身对 `(filename,row_idx)` 与整数 row id 做了错误的
+集合相交，导致需要全量图片 bytes 时没有加载图片列。该问题已修正为按 shard identity 判断，
+并增加回归测试；修正后的完整强审计通过。最终项目测试结果为 32 passed，另有 17 个 subtests
+passed。
+
+`stage2.jsonl` SHA256：
+
+```text
+a3e618c68bd3e781fec544dc05b82e7c48f5fb61eb2e0b54aede20e3a066327e
+```
+
+### Stage 2a 八卡缓存
+
+使用 Qwen-Image-Edit-2511 的 VAE、SAMTok gres-ft TE 和上述 step-10584 TE LoRA，在 8 卡上
+运行 `stage2_data_process.sh`。8 个 rank 均融合了 196 个 TE LoRA tensor；共生成 32 个
+`.pth` 与 32 个 sidecar，metadata index 唯一覆盖 0–31。每卡恰好缓存
+`edit_mt=2, edit=1, edit_umt=1`。
+
+缓存强审计重新加载每个 `.pth`，结果 `passed=true, errors=[]`：160 个 bf16 tensor、64 个
+int64 tensor 全部 finite，必需的 target latent、edit conditioning latent、正负 prompt
+embedding/mask 均存在，不含任何 Stage 1 NTP hidden/label；sidecar 中 `edit_mt` 有非空 CoT，
+`edit_umt` 无 CoT。缓存总大小 102,795,552 bytes，组合 SHA256 为：
+
+```text
+8e69c4ab525fa54c32390e77892d4846a613ed15b088d27dcabf1ea54bb0eb89
+```
+
+### Stage 2b 八卡训练与结果
+
+Stage 2b 使用 Qwen-Image-Edit-2511 DiT、rank-32 LoRA、bf16 参数/激活、AdamW、
+`lr=1e-4`、`weight_decay=0.01`、官方 `ConstantLR`、`dataset_repeat=2`、5 个 smoke epoch、
+gradient accumulation 1、gradient checkpointing、`zero_cond_t=true`、
+`find_unused_parameters=true`。8 卡有效 global batch 为 8，每卡每 epoch 8 个 micro-step，
+总计完成 40/40 optimizer step，进程退出码为 0，8 个 NCCL rank 均正常 destroy。
+
+离线 `audit_stage2_training_log.py` 结果为 `passed=true, errors=[]`：
+
+- 每个 epoch 唯一覆盖全部 32 行，每行恰好消费 2 次，三类计数始终为 32:16:16；
+- metadata `image` 被编码为 FM target `input_latents`，`edit_image` 被编码为 conditioning
+  `edit_latents`；训练 target/noise/prediction shape 均为 `[1,16,128,128]`；
+- pipeline、LoRA、latent 和 prediction 为 bf16，MSE 在 fp32 计算；
+- 只有 DiT LoRA 可训练：1,440 个 tensor、235,929,600 个参数，覆盖 12 类官方 target
+  module，每类 120 个；TE/VAE trainable 参数均为 0；
+- 全部 40 步梯度 finite，frozen gradient tensor 始终为 0；LoRA probe 每步更新，且更新后
+  参数和 update norm 在 8 卡逐值一致；
+- rank-level FM loss 共 320 个，mean/median 为 0.04888/0.03408；按类型 mean 分别为
+  `edit_mt=0.05228`、`edit=0.04085`、`edit_umt=0.05012`；
+- 有 3 个 rank-level loss 精确为 0，均对应 `timestep=1000`。该点的官方 flow-matching
+  training weight 恰为 0，同一 optimizer step 的其他 rank 仍正常反传，属于预期端点而非
+  GT、loss 或数值错误；
+- `loss.csv` 有 480 行，12 个 metric 各完整覆盖 40 step，rank-0 loss 与 debug 记录一致；
+- 日志无 Traceback、OOM、CUDA/NCCL error、NaN/Inf 或 segfault。
+
+最终 checkpoint 为 1,440 个 bf16 LoRA tensor、235,929,600 参数，全部 finite；三个保持
+全零的末 block B tensor 与当前 Qwen-Image-Edit-2511 unused graph 完全吻合，其余参数已更新：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_8gpu_smoke/stage2_dit_lora/step-40.safetensors
+SHA256: 6438551f8b6c27ebbfbd18f14887bf0570522eaf2c55f2ac66dbafa8bbc8db1f
+```
+
+W&B 以 success 状态同步：
+
+```text
+https://wandb.ai/2200012743-peking-university/samtok-edit/runs/run_20260905_1b377eb3
+```
+
+结果文件：
+
+- [stage2.jsonl](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/data/crispedit_samtok/stage2.jsonl>)；
+- [metadata_validation.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/reports/metadata_validation.json>)；
+- [source_integrity_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/reports/source_integrity_audit.json>)；
+- [stage2_cache_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/reports/stage2_cache_audit.json>)；
+- [stage2_training_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/reports/stage2_training_audit.json>)；
+- [Stage 2a log](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/logs/stage2a_cache.log>)；
+- [Stage 2b log](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/logs/stage2b_train.log>)；
+- [loss.csv](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_8gpu_smoke/stage2_dit_lora/loss.csv>)。
+
+结论：refined Stage 2 的数据、TE LoRA 融合缓存和 DiT LoRA 八卡训练均已跑通，数据比例、
+GT/conditioning 位置、精度、loss、梯度、DDP 同步、超参数、checkpoint 与 W&B 均符合预期。
+本次只做训练链路 smoke，不做 inference 或质量评测。
+
+## E18：Refined Stage 2 全量数据构建（完成，未训练）
+
+### 目标与构建策略
+
+在 E17 smoke 完整通过后，按 `edit_mt:edit:edit_umt=2:1:1` 构造 refined Stage 2 全量数据。
+“全量”以数量最大的 `edit_mt` 为基准，保留全部 42,313 条合格样本；纯 `edit` 和
+`edit_umt` 各固定种子选择 `ceil(42313/2)=21,157` 条。三类数据允许在 CrispEdit source
+identity 上重合，不执行 exclusion 或 deprioritization。
+
+实际入口：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+RUN_ROOT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full \
+  bash scripts/data/build_stage2_refined_full.sh
+```
+
+完整 mask 数据由真实 builder/codec 在 refined Stage 1 全量构建时生成，本次先对
+`edit_mt.jsonl` 和 `edit_umt.jsonl` 做固定 SHA256 门禁，再复用 metadata 和图片；不是手写
+JSONL。mask 图片通过 `images/` 目录链接只读复用，新的纯 edit 仍通过
+`build_edit_metadata.py` 的 8-worker manifest 路径真实选样、原子图片落盘和 shard combine，
+图片写入独立的 `images_edit/`。这样既不重复存储完整 mask 图片，也不会修改 Stage 1 数据。
+
+### Compose 与通用验收
+
+compose 前 source pool 为：
+
+```text
+edit_mt pool   42,313  # 全部使用
+edit pool      21,157  # 从 42,515 条合格纯 edit 固定种子抽取
+edit_umt pool  39,797  # 固定种子选择 21,157 条进入 Stage 2
+```
+
+42,313 是奇数，且三类必须分别被 8 卡 strided shard 整除。因此 composer 保留全部 source
+row 后做最小显式 padding：`edit_mt +7`、`edit +3`、`edit_umt +3`。最终 metadata 为：
+
+```text
+edit_mt   42,320
+edit      21,160
+edit_umt  21,160
+total     84,640
+```
+
+8 个 `rows[rank::8]` shard 完全一致，每卡都是 `5,290:2,645:2,645`，每卡总计 10,580 行。
+13 个 padding row 均带正确的
+`exact_2_to_1_to_1_ratio_and_strided_shard_divisibility` 原因和连续 ordinal，不依赖 DDP
+sampler 隐式补样。
+
+`validate_training_metadata.py` 检查全部 schema、canonical CoT、ASCII 和图片路径，并随机
+解码 1,024 张图。结果为 84,640 行计数正确、0 个空 CoT、126,940 个唯一图片引用全部存在，
+1,024/1,024 解码成功。`edit_mt` 才有 `mt_cot`，`edit`/`edit_umt` 均不带该字段。
+
+### Metadata 与图片存放关系
+
+Stage 2a 使用的物化数据根目录为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_full/data/crispedit_samtok
+```
+
+其中 `stage2.jsonl` 是 Stage 2a 的唯一 compose 后入口；`edit_mt.jsonl`、`edit.jsonl` 和
+`edit_umt.jsonl` 是三类组件 metadata。`edit_mt/edit_umt` 的 `images/...` 相对路径通过
+只读目录链接复用 Stage 1 全量物化图片：
+
+```text
+stage2_full/data/crispedit_samtok/images
+  -> stage1_full/data/crispedit_samtok/images
+```
+
+纯 `edit` 的 source/target 则独立物化在 `images_edit/`，不会覆盖 Stage 1 文件；
+`edit_metadata_shards/` 仅用于可恢复构建。Stage 2a 实际传入：
+
+```text
+--dataset_base_path     .../stage2_full/data/crispedit_samtok
+--dataset_metadata_path .../stage2_full/data/crispedit_samtok/stage2.jsonl
+```
+
+本目录只用于 Stage 2a 编码；Stage 2b 不再直接读取这些 JSONL 或图片，而是读取 E19 中的
+全量 conditioning cache。
+
+### 全量源内容强审计
+
+修正后的 `audit_refined_metadata.py --stage stage2 --world_size 8` 对实际 Stage 2 数据执行：
+
+- 回查全部 591 个 aligned CrispEdit/mask/manifest parquet shard；
+- 42,313 条唯一 mask source 的 prompt/type、mask provenance 和 GT CoT label 全量重推导；
+- 21,157 条唯一纯 edit source 全部确认 manifest decision 为 keep；
+- 42,416 个唯一 CrispEdit identity 的原始 source/target 图片 bytes 全量比较；
+- 因 21,054 个 identity 同时存在于 mask 与纯 edit 存储命名空间，共检查 63,470 对实际
+  materialized path，两个路径别名都必须与同一原始 parquet bytes 相等；
+- 固定种子抽取 128 条 `edit_mt`，在 GPU 0 重跑真实 SAMTok codec，128/128 span 一致；
+- `edit_umt` 全部是 `edit_mt` identity 子集，对应 mask span 完全一致；
+- 0 个空 CoT、0 个非 ASCII 文本，三类 prompt/provenance/UMT rewrite 均与源数据一致。
+
+实际 source identity overlap 为：
+
+```text
+edit_mt & edit      21,054
+edit_mt & edit_umt  21,157
+edit & edit_umt     10,566
+```
+
+这些重合符合 refined 正式方案；审计要求的是每个分支的内容与权威源行一致，而不是强行互斥。
+
+首次全量审计曾因新存储布局触发审计器旧假设：同一 identity 的相对图片路径必须完全相同。
+mask 分支的 `images/...` 与纯 edit 的 `images_edit/...` 虽然 bytes 相同，但字符串不同。审计器
+现已改为允许 storage alias，同时逐一验证每个别名的 source/target bytes，并记录 alias 数；
+新增回归测试后全量重跑通过。早期逐文件硬链接方案生成但未使用的不完整目录已经删除，正式
+metadata 从未引用其中内容。
+
+### Hash 与结果路径
+
+```text
+edit_mt.jsonl   4365a3a17758bb96995ce41c795b0faf92434312ccc3484a59d27c55345a1e9b
+edit.jsonl      a42f9e60256730ecf64dbc31380401e27cdf95244a4b02c23d87f26051d54256
+edit_umt.jsonl  76250185c8052fd4ce29a5f59fa2f40a3bdc74f2732effb6c53aa5315edd6966
+stage2.jsonl    dd7455cae30291ceb45ccef6efc12d5bcfc334f8bbfbd6ddf1cfd4bfb6a8b341
+```
+
+- [stage2.jsonl](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/data/crispedit_samtok/stage2.jsonl>)；
+- [metadata_validation.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/metadata_validation.json>)；
+- [source_integrity_audit.json](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/source_integrity_audit.json>)；
+- [metadata_sha256.txt](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/metadata_sha256.txt>)；
+- [构建和审计日志目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/logs>)。
+
+为直观检查 `edit_umt`（mask UMT）内容，还从实际 `stage2.jsonl` 中按 7 个 canonical edit
+type 分层取样；每类选取 3 条非 padding、QC=OK 且来自不同 source shard 的样本，覆盖较小、
+中位和较大 `mask_sum`。可视化逐条展示原 instruction、替换 reference 后的 UMT prompt、源图、
+mask token 真实 decode overlay 和 GT edit；粉红为 decode mask，黄色为边界：
+
+- [全部类别总览](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_all_categories_overview.png>)；
+- [add](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_add.png>)；
+- [background](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_background.png>)；
+- [color](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_color.png>)；
+- [motion](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_motion.png>)；
+- [remove](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_remove.png>)；
+- [replace](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_replace.png>)；
+- [style](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/mask_umt_style.png>)；
+- [样本字段与来源清单](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/mask_umt_examples/examples.json>)。
+
+结论：Stage 2 全量数据的格式、2:1:1 比例、八卡分片顺序、原始内容、图片 bytes、GT mask
+token、UMT rewrite 和纯 edit manifest 均已通过验收，可以作为后续 Stage 2a 输入。本节没有
+生成 cache、加载训练模型或启动 Stage 2 正式训练。
+
+## E19：Refined Stage 2 全量 8 卡训练（完成，未评测）
+
+### 目标与启动前门禁
+
+在 E17 的 8 卡 smoke 和 E18 的全量数据强审计全部通过后，使用 refined Stage 1 全量训练
+得到的 TE LoRA 初始化 Stage 2，生成完整 conditioning cache，再训练 Qwen-Image-Edit-2511
+DiT LoRA。正式输入固定为：
+
+```text
+metadata  /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+          stage2_full/data/crispedit_samtok/stage2.jsonl
+TE LoRA   /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+          stage1_full/train_8gpu_1ep/step-10584.safetensors
+```
+
+启动前重新检查了 metadata 和 TE checkpoint 的 SHA256、三类数据计数、全量构建/源内容审计
+报告、W&B 凭据文件权限及登录状态、两个 DDP rendezvous 端口、bash 语法和仓库测试。
+`python -m pytest tests -q` 为 32 tests + 17 subtests 全部通过。固定输入 hash 为：
+
+```text
+stage2.jsonl        dd7455cae30291ceb45ccef6efc12d5bcfc334f8bbfbd6ddf1cfd4bfb6a8b341
+Stage 1 TE LoRA     67b9d759b99259388e832b35204e4779b088d0783921b960afdb1fdf98b0fad2
+```
+
+### 正式配置与流水线
+
+2026-09-05 06:30:58 UTC 通过 detached tmux session
+`samtok_stage2_refined_full_1ep` 启动，退出当前终端或 tmux 不会终止任务。启动入口保存在：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_full/launch_stage2_full_1ep.sh
+```
+
+流水线严格串行执行，并以前一阶段成功为后一阶段门禁：
+
+1. Stage 2a：8 卡、每 rank 8 个 dataset workers，加载 `gres-ft` TE、2511 VAE 与 Stage 1
+   `step-10584` TE LoRA，生成 84,640 条 cache；
+2. 使用 32 个 CPU workers 对全部 cache 做 schema、dtype/shape、finite、sample type、八卡分片、
+   GT latent/conditioning provenance 与 TE LoRA provenance 审计；只有报告 `passed=true` 才继续；
+3. Stage 2b：8 卡训练 DiT LoRA，TE 仅用于已冻结 cache，不参与反传。
+
+正式 Stage 2b 超参数为：DiT LoRA rank 32，bf16，AdamW，learning rate `1e-4`，weight decay
+`0.01`，constant scheduler，gradient accumulation 1，dataset repeat 2，1 epoch，gradient
+checkpointing 和 `zero_cond_t` 开启，每 4,000 optimizer steps 保存一次。全局 batch size 为 8，
+总消费 169,280 个 cache sample，预期 optimizer steps 为：
+
+```text
+84,640 * repeat 2 * epoch 1 / world size 8 / grad accumulation 1 = 21,160
+```
+
+W&B 使用 online 模式，entity/project 为 `2200012743-peking-university/samtok-edit`，run name 为
+`stage2-refined-full-8gpu-1ep-20260905`。Stage 2a 和 cache audit 不记录训练曲线，W&B run 会在
+Stage 2b 真正启动时创建并同步。
+
+### 完成状态与 cache 审计
+
+流水线于 2026-09-06 11:41:59 UTC 结束，总 wall time 约 29 小时 11 分，最终 `exit_code=0`：
+
+```text
+Stage 2a       2026-09-05 06:31:01 -- 07:58:21 UTC  success
+cache audit    2026-09-05 07:58:21 -- 08:01:42 UTC  success
+Stage 2b       2026-09-05 08:01:42 -- 2026-09-06 11:41:59 UTC  success
+```
+
+Stage 2a 生成 84,640 个 `.pth` 和 84,640 个 sidecar。32-worker 全量审计重新加载了所有 cache，
+报告 `passed=true, errors=[]`：metadata index 唯一覆盖 0--84,639；全局计数为
+`edit_mt=42,320, edit=21,160, edit_umt=21,160`；每个 Stage 2a rank 恰为
+`5,290:2,645:2,645`。423,200 个 bf16 tensor 和 169,280 个 int64 tensor 全部通过
+shape/dtype/finite/provenance 检查，cache 总大小 270,910,165,136 bytes，组合 SHA256 为：
+
+```text
+6ed20848eff8890b9c0d68284b5842a5a16da6819e7f96715efa16ab7fa06ede
+```
+
+### Stage 2b 步数、数据消费与 loss
+
+8 个训练 rank 启动时都发现 84,640 个 cache，并只加载指定的 Qwen-Image-Edit-2511 五个 DiT
+shard。每个 rank 都完整到达 `21160/21160`，训练循环耗时约 27 小时 24 分、平均约
+4.66 秒/step。物理数据数和 repeat 均能被 world size 整除；官方 runner 对
+`169,280=84,640*2` 个 dataset index 做一次无放回 shuffle，再由 Accelerate 均分到 8 个
+rank。因此完整 epoch 在全局上等价于每个物理 cache 恰消费两次，三类全局消费量为
+`84,640:42,320:42,320`。本次为控制正式日志体积关闭了 smoke 专用逐 rank debug，所以不能从
+日志事后还原每个 rank 的 realized type count；逐 rank 样本 ID、GT latent 位置、梯度 finite
+和 DDP 同步已经在同配置的 E17 smoke 中逐 step 验证。
+
+`loss.csv` 有 42,320 个数据行：21,160 个连续 step 各有一个 `loss` 和 `loss_fm`，两列逐值
+完全相同，全部 finite、非负，说明 Stage 2 只计算了预期 FM loss。这里 logger 记录的是
+rank 0 local loss，不是八卡 all-reduce mean。统计为：
+
+```text
+mean / median             0.048881 / 0.034422
+min / max                 0 / 0.274713
+p05 / p95                 0.003356 / 0.137267
+first 1,000 mean/median   0.048912 / 0.034754
+last  1,000 mean/median   0.048155 / 0.032435
+1,000-step rolling mean   first 0.048912, last 0.048155, min 0.045805
+```
+
+loss 在随机 timestep 和不重复样本下保持稳定且略降，没有爆炸或非有限值。110 个 rank-0 零
+loss 与 E17 中已定位到 `timestep=1000`、官方 flow-matching training weight 为 0 的端点行为
+一致；正式 run 未记录 timestep，因而不能逐条再次关联，但它们不是 NaN/Inf。
+
+Stage 2b 的直接训练数据不是 `stage2.jsonl`，而是 Stage 2a 已融合 refined Stage 1 TE LoRA
+并编码完成的 cache：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_full/stage2_cache
+```
+
+该目录下按 Stage 2a rank 分为 `0/`--`7/` 八个子目录，共 84,640 个 `.pth` 和 84,640 个
+同名 sidecar JSON。正式 Stage 2b 参数中
+`dataset_base_path=.../stage2_full/stage2_cache`、`dataset_metadata_path=null`，因此 trainer
+递归发现并读取这些 `.pth`，不会在训练时再次运行 codec、TE 或图片解码。
+
+### Checkpoint、W&B 与告警
+
+按计划保存 `step-{4000,8000,12000,16000,20000,21160}.safetensors`，六个文件大小均为
+472,047,184 bytes 且 hash 各不相同。最终 checkpoint 强审计结果为：1,440 个 bf16 LoRA
+tensor、235,929,600 参数、0 个 non-finite、0 个非 LoRA key；12 个目标 module family 各有
+120 个 A/B tensor。只有已在 smoke 中确认不进入当前 2511 forward graph 的末 block 三个
+LoRA-B tensor 保持全零。从 step 4,000 到 21,160，除此对应的 1,434 个 tensor 全部变化，
+差值 L2 norm 为 60.6749，说明 DiT LoRA 持续得到更新。最终权重为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_full/stage2_dit_lora/step-21160.safetensors
+SHA256: 6c2244554525030f553ce8c8052f5ba38af138c614e0b2a2684cd183d991945b
+```
+
+W&B 本地 run、summary 和 17 MB history 均完整，sender 记录 exit code 0、所有末尾文件上传成功
+并以 `Waiting for W&B process to finish... (success)` 结束；最终 `_step=21160`，summary
+`loss=loss_fm=0.0144134`。本环境实际 tracking 页面为：
+
+```text
+https://ml.tiktok-row.net/experiment/tracking/detail?Id=project_20260823_dd21e517&selectedTrial=run_20260905_ada37051
+```
+
+client 尾部还打印了一个 `wandb.ai` fallback URL，但当前 API key 在 public API 下无法发现该
+project；本环境应使用 `tracking_info.json` 给出的上述内部 tracking 页面。
+
+训练日志没有 Traceback、OOM、RuntimeError、NCCL ERROR、NaN 或 segfault。唯一非空告警是
+rank 0 在解释器退出前没有显式调用 `destroy_process_group()`；它出现在最终 checkpoint 和
+W&B success 之后，8 个 rank 随后全部退出、无训练进程或 GPU 占用残留，因此不影响本次产物。
+后续可在官方 runner 末尾补 `accelerator.end_training()`，消除这一清理告警。
+
+### 运行路径
+
+- [启动脚本](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/launch_stage2_full_1ep.sh>)；
+- [流水线状态日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/logs/stage2_pipeline.log>)；
+- [Stage 2a cache 日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/logs/stage2a_cache.log>)；
+- [cache 审计日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/logs/stage2_cache_audit.log>)；
+- [cache 审计报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/reports/stage2_cache_audit.json>)；
+- [Stage 2b 训练日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/logs/stage2b_train.log>)；
+- [Stage 2 cache](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/stage2_cache>)；
+- [DiT LoRA 输出目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_full/stage2_dit_lora>)。
+
+结论：refined Stage 2 全量 8 卡训练已经正常完整结束；数据/cache、训练步数、FM loss、数值
+稳定性、DiT-only LoRA 权重更新、checkpoint 和 W&B 同步均符合当前实现。本节只验收训练链路
+和产物，不对编辑质量作结论，尚未进行 inference 或评测。
+
+## E20：Refined Stage 2 ScaleEdit 三 setting 正式评测（已完成）
+
+### 目标与样本选择
+
+从以下独立数据发布构建新的 Stage 2 观察集：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/datasets/ScaleEdit-200-samples
+```
+
+该发布有 200 条 source/edited pair、最终 raw mask、instance grounding 和 QC metadata；200 条
+均为 `qc_flag=OK`。本次逐张查看 source、GT edited 与 raw-mask overlay 后固定 32 个
+`sample_id`，避免按 parquet 前缀或单一面积阈值机械抽样。四个主类别各 8 条：小物体、
+细粒度局部、多实例/多区域、精确编辑。32 条覆盖 16 个 `final_task`；mask 面积比例
+min/median/mean/max 为 `0.00285/0.03548/0.04222/0.15616`，没有 full-image mask。
+
+### 实际构建
+
+运行：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=4 \
+python -u scripts/data/build_scaleedit_stage2_validation.py \
+  --device cuda:0 --codec_batch_size 8 --disjointness_workers 32
+```
+
+构建走 released VQ-SAM2 的真实 encode/decode 路径，不手写 mask token。结果为：
+
+```text
+selected rows                  32
+primary categories             8 + 8 + 8 + 8
+ASCII English prompts          32/32
+canonical non-empty GT CoT     32/32
+single-span edit_umt prompt    32/32
+non-empty GT token decode      32/32
+unique ScaleEdit sample_id     32/32
+source/target images           64
+```
+
+构建时遇到两个性能/一致性问题并已处理：最初 NFS 上单线程扫描训练图片引用速度过慢，后改为
+32-worker 有界线程池并每 20,000 个引用打印进度；最初单张 decode 产物与改进后的 batch decode
+在少量阈值边界像素上字节不同，因此原始 source/target/raw mask 继续执行严格禁止覆盖，只有
+codec 派生的 `gt_token_decode.png` 允许原子重建，最终构建固定使用 batch size 8。
+
+训练外检查同时读取 refined Stage 1 正式 `84,672` 行和 refined Stage 2 正式 `84,640` 行
+metadata，遍历 `223,655` 个去重 source/target 文件引用。64 张验证图片与所有训练图片的 byte
+size 均不同，因而不存在可能的 exact byte hash 命中，最终 exact-content collision 为 0，
+报告 `passed=true`。验证数据来源命名空间也是独立的 ScaleEdit，而训练来源为 CrispEdit/GRES。
+
+最终数据位于：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_evaluation/scaleedit_precision_32/data/scaleedit_samtok
+```
+
+关键产物：
+
+- [评测主 metadata](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/data/scaleedit_samtok/validation.jsonl>)，SHA256 `2ee9a42757601fe1189a679007392e819ef2a1c264378d1d649f9894e20fa902`；
+- [标准 edit_mt 视图](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/data/scaleedit_samtok/validation_edit_mt.jsonl>)，SHA256 `5ae0517a79c958ab842e65acaa660d31cf010afc83b28cee11ed4e89cbaf0279`；
+- [标准 edit_umt 视图](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/data/scaleedit_samtok/validation_edit_umt.jsonl>)，SHA256 `28b1f65a11696b0d75a022f101b944d383aa647cdb6e22f6432dbbca4c16c4c0`；
+- [构建与训练外审计报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/reports/data_build_report.json>)；
+- [edit_mt schema/图片验收](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/reports/validation_edit_mt_schema.json>)；
+- [edit_umt schema/图片验收](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/reports/validation_edit_umt_schema.json>)；
+- [构建日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/logs/data_build.log>)。
+
+### 三 setting 评测实现与 preflight
+
+新入口固定比较：原始 2511 官方 direct edit、refined Stage 2 online CoT 方法、refined Stage 2
+`edit_umt`。后两组都加载 refined Stage 1 最终 TE LoRA 和 refined Stage 2 最终 DiT LoRA；
+online 组使用原 instruction 做 greedy pass-1，UMT 组关闭 pass-1 并把 GT span 直接放入 user
+instruction。三组保持同一 seed、40 steps、CFG 4.0、bf16、auto resize 和
+`zero_cond_t=True`；输出分辨率保持 source 宽高比、目标面积约 1024² 并按 32 对齐，而不是
+直接使用 ScaleEdit 中最高 2250×1500 的原尺寸。
+
+运行不加载模型的完整 preflight：
+
+```bash
+python -u scripts/eval/run_stage2_eval.py --dry_run
+```
+
+结果为 `status=ok`、`planned_generations=96`，验证了 32 条 metadata 全覆盖；真实 merged
+processor 进一步确认 32/32 GT span 均为四个原子 token，且 32/32 在带图像的 2511 user
+template 中保持为连续原子 span。模型身份为：
+
+```text
+Qwen-Image-Edit-2511 DiT/TE shards    5 / 4
+SAMTok gres-ft TE shards              4
+Stage 1 TE LoRA                       step-10584, 392 tensors, 196 pairs
+Stage 1 TE LoRA SHA256                67b9d759b99259388e832b35204e4779b088d0783921b960afdb1fdf98b0fad2
+Stage 2 DiT LoRA                      step-21160, 1,440 tensors, 720 pairs
+Stage 2 DiT LoRA SHA256               6c2244554525030f553ce8c8052f5ba38af138c614e0b2a2684cd183d991945b
+```
+
+代码回归为 `35 passed, 17 subtests passed`。另用 8-rank torchrun 对 online setting 执行
+dry-run，Gloo 8/8 rank 正常建联，每卡计划样本数严格为 `4,4,4,4,4,4,4,4`；日志位于
+[eval_8rank_dry_run.log](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/logs/eval_8rank_dry_run.log>)。
+8 卡控制器 `scripts/eval/run_scaleedit_refined_eval_8gpu.sh` 依次执行 1--3，一次只跑一个 setting；结束后
+自动生成带完整 instruction 的五列编辑图对比，以及 raw GT、GT token decode、online token
+decode 三列独立 overlay。编辑图不计算自动指标。
+
+### 正式运行、故障修复与重启
+
+2026-09-07 18:13:09 UTC 使用 8 卡后台启动，前两组分别于 18:34:40 和 18:45:25 完成，各生成
+32 张。首次 Setting 3 在 18:47:44 失败：UMT 正向 prompt 已完成 40-step diffusion，但 CFG
+随后编码空 negative prompt 时把 `last_user_mask_audit` 从 1 个有效 span 覆盖成 0，保存前的
+运行时门禁因而误报失败。数据、tokenizer 和生成路径本身没有损坏。
+
+修复位于 `DiffSynth-Studio/diffsynth/pipelines/qwen_image_samtok.py`：每次 pipeline call 先清空
+审计状态，separate-CFG 编码时保留正向 user prompt 的非空审计，不允许空 negative prompt
+覆盖；新增回归测试复现“正向 1 span、负向 0 span”的调用顺序。8 卡控制器同时增加
+`SETTING_SEQUENCE`，允许在保留已完成 setting 的情况下定点恢复。语法检查、py_compile 和
+全部 36 个单元测试通过后，于 18:52:02 UTC 使用以下方式只恢复 Setting 3：
+
+```bash
+SETTING_SEQUENCE=3 RESUME=1 bash scripts/eval/run_scaleedit_refined_eval_8gpu.sh
+```
+
+Setting 3 于 18:58:32 完成，随后 comparison panel 和 mask decode 于 18:59:29 完成，最终
+`controller.status` 为 `status=complete`。codec 初始化时打印的 `MISSING_KEYS` 是 released
+VQ-SAM2 先加载原始 SAM2 checkpoint 时对新增 mask-tokenizer 模块的预期提示；随后
+`mask_tokenizer_256x2.pth` 以 `strict=True` 完整加载，和 SAMTok 发布脚本顺序一致，不是最终
+模型缺权重。
+
+### 完整性验收与结果路径
+
+机器验收逐张打开图片并检查 sidecar、index、setting 和尺寸：三组均为 32/32，共 96 张图片和
+96 个逐样本 JSON，`output_size=requested_output_size`，无缺失、重复或损坏。online CoT 的
+parser 为 `strict` 32/32，全部 32 条都能解出一个 mask span；UMT 运行时审计 32/32 均满足
+`span_count=1`、四 token atomic、span 保留在 2511 template，同时
+`conditioned_mt_cot=None, parse_layer=None`，确认没有误开 online CoT。编辑和 mask 两套可视化
+各包含 32 张逐 case panel 与 4 张分类 overview，最终强审计 `FINAL_AUDIT=PASS`。
+
+结果根目录为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/
+stage2_evaluation/scaleedit_precision_32/three_settings
+```
+
+关键产物：
+
+- [总报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/report.json>)；
+- [最终控制日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/controller.log>)；
+- [首次失败日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/controller.failed_20260907T185202Z.log>)；
+- [Stock 结果](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/s1_qwen2511_stock/results.jsonl>)；
+- [Online CoT 结果](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/s2_stage2_online_cot/results.jsonl>)；
+- [edit_umt 结果](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/s3_stage2_edit_umt/results.jsonl>)；
+- [编辑对比图目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/visualizations/edit_comparisons>)；
+- [mask 对比图目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/visualizations/mask_comparisons>)及其 [报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/visualizations/mask_comparisons/report.json>)。
+
+## E21：Refined 四机首次启动（bootstrap 故障定位）
+
+### 目标和运行位置
+
+2026-09-09 首次使用 4 机×8 卡 Arnold 裸 worker 入口，实验名为
+crispedit-refined-4node-20260909。任务计划从系统包安装、Git clone 和 uv 环境构建开始，
+再串行进入 Stage 1 和 Stage 2 四机训练。输出根目录为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/
+crispedit-refined-4node-20260909
+```
+
+### 结果和原因
+
+四个 worker 的系统包安装都已完成。node 0 随后在 Git clone 阶段因脚本强制使用
+sys-proxy-rd-relay.byted.org:8118 失败：
+
+```text
+Failed to connect to sys-proxy-rd-relay.byted.org port 8118 after 30988 ms
+```
+
+node 0 主进程以 128 退出后，Arnold 终止整个 role。clone 目录未产生，uv、setup_env.sh、
+W&B、DDP、模型加载和训练均未开始；因此这不是训练或数据故障。apt 日志中的 debconf frontend
+信息是非交互环境提示，不是致命错误。
+
+随后在同类 Arnold worker 清除代理后，直接执行：
+
+```bash
+git ls-remote https://github.com/Tangent0308/samtok_edit.git dev_crispedit_refined
+```
+
+成功得到 refs/heads/dev_crispedit_refined，commit 为
+4f150791fb5c9e1b49f646c02d6c50898d3d6194，证明 worker 可以直连 GitHub，失败仅由强制代理引起。
+
+同日第二次使用直连后，Git clone、uv 环境安装和远端版本的 30 项单元测试全部完成，但四个
+worker 随后均以退出码 127 失败：
+
+```text
+bash: scripts/train/run_arnold_4node_pipeline.sh: No such file or directory
+```
+
+clone 的 branch、工作目录和 commit 均正确；远端 dev_crispedit_refined 仍停留在上述 commit，
+其 Git tree 不包含任何 4node 文件。本地工作区中的 run_arnold_4node_pipeline.sh 及其依赖仍为
+未跟踪文件，因此第二次失败是“实现尚未提交到远端”，不是 cd、环境、四机通信或训练故障。
+本次同样没有初始化 W&B、加载模型或进入训练。
+
+### 修正
+
+四机 bootstrap 现默认清除代理并直连 GitHub。SAMTOK_GIT_HTTP_PROXY 默认为空，仅在调用方
+显式提供时使用。展开版入口也会在 clone 失败时写入 environment.failed marker，避免其他
+worker 只能等待超时。下一次应使用新的 SAMTOK_RUN_ID，以保留本次失败目录用于诊断。
+
+关键日志：
+
+- node 0：/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/crispedit-refined-4node-20260909/logs/bootstrap.node0.log
+- node 1--3：同一 logs 目录下的 bootstrap.node1.log 至 bootstrap.node3.log
+
+## E22：Refined 四机权重 ScaleEdit 对比评测
+
+### 目的和严格可比性
+
+本实验使用四机 32 卡训练完成的 Stage 1 TE LoRA 与 Stage 2 DiT LoRA，复用 E20 的同一组
+ScaleEdit 32 条训练外验证数据，新增以下两种 inference：
+
+1. 四机训练权重 + online mask-token CoT；
+2. 四机训练权重 + `edit_umt` GT mask-token 输入。
+
+随后把新增结果与 E20 已有的 stock 2511、单机 8 卡训练权重 online CoT、单机 8 卡训练权重
+`edit_umt` 放入同一张图。验证 metadata 的 SHA256 固定为
+`2ee9a42757601fe1189a679007392e819ef2a1c264378d1d649f9894e20fa902`，四类各 8 条；五组生成
+结果均使用 `seed=0+eval_index`、40 diffusion steps、CFG 4.0、bf16、`zero_cond_t=True` 和完全
+相同的 resize 规则。因此这里改变的是训练 checkpoint，不是验证样本或 inference 超参数。
+本次评测本身在单机 8 卡上并行执行；“四机”指被评测权重来自四机 32 卡训练，不表示为 32 条
+样本重新占用四台机器做 inference。
+
+checkpoint 身份为：
+
+```text
+Stage 1 TE LoRA   .../crispedit-refined-4node-20260910-run2/stage1_te_lora/step-2648.safetensors
+SHA256            9ce0ad749df5b8602d9b741d4fb95b3081cdd86cd1dbba4a590b210f171aa119
+Stage 2 DiT LoRA  .../crispedit-refined-4node-20260910-run2/stage2_dit_lora/step-5296.safetensors
+SHA256            b37743956d44704f0294d045d34b22217c8c17e294afba2de97693a98524d2b4
+```
+
+### 运行结果和完整性验收
+
+2026-09-10 18:42:33 UTC 在后台依次运行 online CoT、`edit_umt`，一次只加载一个 setting；
+18:56:54 UTC 完成 inference、mask decode 和联合可视化。两组各生成 32 张 PNG 和 32 份 sidecar，
+共新增 64/64 张；联合检查还逐张读取 E20 的三组 96 张结果，共核验 160 张生成图。online CoT
+中四机权重 31/32 由 strict parser 提取，1/32 由合法 span fallback 提取，32/32 均得到非空可
+decode mask；`edit_umt` 32/32 均满足一个四原子 token span、template 连续保留且未误开 pass-1。
+运行日志未出现 traceback、CUDA OOM、NCCL 或 worker failure，最终
+`controller.status=status=complete`，代码回归为 `36 passed, 17 subtests passed`。
+
+### 结果和可视化
+
+新增原始结果与控制日志：
+
+- [四机权重评测目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/four_node_settings>)；
+- [控制日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/four_node_settings/controller.log>)；
+- [联合比较报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/single_vs_four_node/report.json>)。
+
+编辑对比图每个 case 共七列：Source、GT、stock 2511、单机 online、单机 UMT、四机权重 online、
+四机权重 UMT；图顶端写入完整 instruction。mask 对比图将 raw GT mask、GT token decode、单机
+online decode、四机权重 online decode 分为四列独立 overlay。两类图均有 32 张逐 case 图和四张
+分类 overview。为使结果随代码版本一起保存，八张 overview 已复制到仓库
+[`docs/assets/stage2_scaleedit_single_vs_four_node/`](docs/assets/stage2_scaleedit_single_vs_four_node/README.md)；
+下面直接嵌入仓库版本。
+
+#### 编辑结果：Fine-grained
+
+![Fine-grained edit comparison](docs/assets/stage2_scaleedit_single_vs_four_node/edit_comparisons/fine_grained.jpg)
+
+#### 编辑结果：Multi-instance
+
+![Multi-instance edit comparison](docs/assets/stage2_scaleedit_single_vs_four_node/edit_comparisons/multi_instance.jpg)
+
+#### 编辑结果：Precise-edit
+
+![Precise-edit comparison](docs/assets/stage2_scaleedit_single_vs_four_node/edit_comparisons/precise_edit.jpg)
+
+#### 编辑结果：Small-object
+
+![Small-object edit comparison](docs/assets/stage2_scaleedit_single_vs_four_node/edit_comparisons/small_object.jpg)
+
+#### Mask decode：Fine-grained
+
+![Fine-grained mask comparison](docs/assets/stage2_scaleedit_single_vs_four_node/mask_comparisons/fine_grained.jpg)
+
+#### Mask decode：Multi-instance
+
+![Multi-instance mask comparison](docs/assets/stage2_scaleedit_single_vs_four_node/mask_comparisons/multi_instance.jpg)
+
+#### Mask decode：Precise-edit
+
+![Precise-edit mask comparison](docs/assets/stage2_scaleedit_single_vs_four_node/mask_comparisons/precise_edit.jpg)
+
+#### Mask decode：Small-object
+
+![Small-object mask comparison](docs/assets/stage2_scaleedit_single_vs_four_node/mask_comparisons/small_object.jpg)
+
+完整 32 张编辑逐 case 图、32 张 mask 逐 case 图以及两份 JSONL manifest 也已按
+`edit_comparisons/<category>/` 和 `mask_comparisons/<category>/` 的层级纳入同一仓库目录；实验
+结果目录继续保留原始 inference sidecar、metric report 和对应副本。
 
 ## 当前结论和下一步
 
@@ -1284,3 +2392,21 @@ S1–S23 结果对比图，完整分类图保存在[仓库目录](docs/assets/ev
   验证集在 identity、路径与图像 SHA256 层面严格互斥，可作为后续正式 Stage 2a 输入。
 - Stage 2 checkpoint 统一评测实验已按同一协议完成 step-4,000、step-8,000、step-16,000、
   step-24,000、step-32,000 和最终 step-41,490 的 S6–S8 评测，并合并生成 S1–S23 对比图。
+- refined Stage 1 的四类 smoke 构建、8 卡 smoke 训练、全量数据构建和全量 8 卡
+  单 epoch 训练均已通过；84,672 行数据按 4:2:1:1 完整消费，最终 step-10,584
+  checkpoint 已保存并通过 finite/权重更新审计。本轮未运行 inference，后续仍需使用
+  训练外数据判断实际编辑质量与泛化效果。
+- refined Stage 2 的 32 行数据、Stage 2a cache 和 40-step 八卡 DiT LoRA smoke 均已通过；
+  随后构建的全量 84,640 行数据严格保持 2:1:1 和逐卡同比例，42,416 个唯一 source
+  identity、63,470 对实际图片路径及 128 条 codec 复编码均通过。全量 cache 及审计、
+  21,160-step 八卡单 epoch DiT LoRA 训练和 W&B 同步现已全部正常完成；最终
+  step-21,160 checkpoint 通过 bf16、finite、目标模块与权重更新强审计。本轮尚未运行
+  inference，下一步需要在训练外数据上验证编辑质量。
+- 新的 ScaleEdit 32 条训练外 Stage 2 验证集已经完成真实 codec 构建、GT token decode、
+  `edit_mt/edit_umt` 格式和训练图片 exact-content 去重验收；三 setting 正式评测现已完成
+  96/96 出图，online CoT strict/可 decode 均为 32/32，编辑与 mask 分类可视化全部生成并通过
+  完整性验收。实际编辑质量与 mask 重合效果留给分类 overview 的人工观察，不在本轮计算图像
+  质量指标。
+- 四机 32 卡训练权重已在同一 ScaleEdit 验证集完成 online CoT 和 `edit_umt` 评测；新增结果
+  64/64、联合生成图 160/160 和两类可视化均通过审计；完整逐 case 图、分类 overview 和 manifest
+  已纳入仓库，供直接查看。
