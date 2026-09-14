@@ -1,6 +1,6 @@
 # ScaleEdit single-node versus four-node-trained comparison
 
-This directory stores the checked-in category overviews for E21 in
+This directory stores the checked-in comparison visualizations for E22 in
 `SamtokEdit_实验记录.md`. The evaluation uses the same 32-sample ScaleEdit
 validation metadata and identical inference settings for every generated
 setting.

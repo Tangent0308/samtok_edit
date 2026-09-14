@@ -2414,13 +2414,45 @@ decode mask；`edit_umt` 32/32 均满足一个四原子 token span、template �
 运行日志未出现 traceback、CUDA OOM、NCCL 或 worker failure，最终
 `controller.status=status=complete`，代码回归为 `36 passed, 17 subtests passed`。
 
+### 2026-09-14 独立复核
+
+本次再次检查运行状态和落盘产物，当前没有残留的评测、torchrun 或可视化进程。单机三 setting
+和四机权重两 setting 的 controller 状态均为 `complete`，完成时间分别为
+`2026-09-07T18:59:29Z` 和 `2026-09-10T18:56:54Z`。两个 controller log 末尾均为正常
+complete，扫描未发现 traceback、CUDA OOM、NCCL error、worker failure、RuntimeError、
+segmentation fault 或 killed。
+
+| 复核项 | 结果 |
+|---|---:|
+| Stock 2511 输出/sidecar/results | 32/32/32 |
+| 单机权重 online CoT 输出/sidecar/results | 32/32/32 |
+| 单机权重 edit_umt 输出/sidecar/results | 32/32/32 |
+| 四机权重 online CoT 输出/sidecar/results | 32/32/32 |
+| 四机权重 edit_umt 输出/sidecar/results | 32/32/32 |
+| 五组生成图合计 | 160/160 |
+| 编辑逐 case 图/类别总览 | 32/4 |
+| Mask 逐 case 图/类别总览 | 32/4 |
+| 仓库内可视化 JPG | 72/72 可解码 |
+| 实验目录与仓库副本 SHA256 | 72/72 一致 |
+| 当前仓库回归测试 | 39/39 通过 |
+
+验证 metadata 重新计算的 SHA256 仍为
+`2ee9a42757601fe1189a679007392e819ef2a1c264378d1d649f9894e20fa902`。五组结果的
+`eval_index` 都唯一覆盖 0--31；联合报告保持 `status=complete` 和
+`generated_images_verified=160`。四机 online CoT 仍为 strict 31/32、合法 span fallback
+1/32，32/32 均能解码；四机 `edit_umt` 的 32 条 mask span 原子 token/template 审计全部通过。
+因此本评测在运行状态、输入身份、模型路由、输出覆盖、sidecar、mask decode 和可视化完整性上
+均正常完成。
+
 ### 结果和可视化
 
 新增原始结果与控制日志：
 
 - [四机权重评测目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/four_node_settings>)；
 - [控制日志](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/four_node_settings/controller.log>)；
-- [联合比较报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/single_vs_four_node/report.json>)。
+- [联合比较报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/single_vs_four_node/report.json>)；
+- [完整编辑可视化](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/single_vs_four_node/visualizations/edit_comparisons>)；
+- [完整 mask 可视化](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/single_vs_four_node/visualizations/mask_comparisons>)。
 
 编辑对比图每个 case 共七列：Source、GT、stock 2511、单机 online、单机 UMT、四机权重 online、
 四机权重 UMT；图顶端写入完整 instruction。mask 对比图将 raw GT mask、GT token decode、单机
@@ -2464,6 +2496,15 @@ online decode、四机权重 online decode 分为四列独立 overlay。两类�
 完整 32 张编辑逐 case 图、32 张 mask 逐 case 图以及两份 JSONL manifest 也已按
 `edit_comparisons/<category>/` 和 `mask_comparisons/<category>/` 的层级纳入同一仓库目录；实验
 结果目录继续保留原始 inference sidecar、metric report 和对应副本。
+
+#### 代表样例：#0000 Small-object
+
+Instruction: Add two additional USB interfaces to the side of the white charging device, aligned
+with the current four USB ports.
+
+![Case 0000 edit comparison](docs/assets/stage2_scaleedit_single_vs_four_node/edit_comparisons/small_object/0000.jpg)
+
+![Case 0000 mask comparison](docs/assets/stage2_scaleedit_single_vs_four_node/mask_comparisons/small_object/0000.jpg)
 
 ## 当前结论和下一步
 
