@@ -47,7 +47,7 @@ ScaleEdit 32 条训练外验证集上完成 online CoT 和 `edit_umt` 评测，�
 | E18 | Refined Stage 2 全量数据构建 | 使用全部 edit_mt 构建 84,640 行 2:1:1 数据 | 通过 |
 | E19 | Refined Stage 2 全量 8 卡训练 | 执行单 epoch DiT LoRA 训练并审计 | 完成（训练审计通过） |
 | E20 | Refined Stage 2 ScaleEdit 评测 | 对比 stock、online CoT 和 edit_umt | 完成（96/96） |
-| E21 | Refined 四机首次启动 | 验证裸 worker 环境、clone 和四机 pipeline 入口 | bootstrap 两次失败均已定位，后续已修复 |
+| E21 | Refined 四机 32 卡全量训练 | 验证裸 worker、四机 pipeline，并比较单机 8 卡与四机 32 卡效率 | 完成（Stage 1/2 均通过） |
 | E22 | Refined 四机权重 ScaleEdit 对比评测 | 在同一验证集上对比单机/四机 online CoT 与 edit_umt | 完成（新增 64/64；联合审计通过） |
 
 ## E1：Stage 1 smoke 数据构建
@@ -2225,7 +2225,7 @@ stage2_evaluation/scaleedit_precision_32/three_settings
 - [编辑对比图目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/visualizations/edit_comparisons>)；
 - [mask 对比图目录](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/visualizations/mask_comparisons>)及其 [报告](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/stage2_evaluation/scaleedit_precision_32/three_settings/visualizations/mask_comparisons/report.json>)。
 
-## E21：Refined 四机首次启动（bootstrap 故障定位）
+## E21：Refined 四机 32 卡全量训练（含 bootstrap 故障定位）
 
 ### 目标和运行位置
 
@@ -2238,7 +2238,7 @@ crispedit-refined-4node-20260909。任务计划从系统包安装、Git clone �
 crispedit-refined-4node-20260909
 ```
 
-### 结果和原因
+### 首次 bootstrap 故障和原因
 
 四个 worker 的系统包安装都已完成。node 0 随后在 Git clone 阶段因脚本强制使用
 sys-proxy-rd-relay.byted.org:8118 失败：
@@ -2272,7 +2272,7 @@ clone 的 branch、工作目录和 commit 均正确；远端 dev_crispedit_refin
 未跟踪文件，因此第二次失败是“实现尚未提交到远端”，不是 cd、环境、四机通信或训练故障。
 本次同样没有初始化 W&B、加载模型或进入训练。
 
-### 修正
+### 修正与最终成功训练
 
 四机 bootstrap 现默认清除代理并直连 GitHub。SAMTOK_GIT_HTTP_PROXY 默认为空，仅在调用方
 显式提供时使用。展开版入口也会在 clone 失败时写入 environment.failed marker，避免其他
@@ -2282,6 +2282,100 @@ worker 只能等待超时。下一次应使用新的 SAMTOK_RUN_ID，以保留�
 
 - node 0：/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/crispedit-refined-4node-20260909/logs/bootstrap.node0.log
 - node 1--3：同一 logs 目录下的 bootstrap.node1.log 至 bootstrap.node3.log
+
+完成上述修复后，使用新目录 crispedit-refined-4node-20260910-run2 从零重跑。四台机器均为
+8×NVIDIA H100 80GB HBM3，全局 world size 为 32；拓扑一致性、metadata 准备、Stage 1、
+Stage 2a cache、cache audit、Stage 2b 和最终产物验收全部通过。成功运行目录为：
+
+    /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/
+    crispedit-refined-4node-20260910-run2
+
+最终产物为：
+
+    Stage 1 TE LoRA   stage1_te_lora/step-2648.safetensors
+    Stage 2 DiT LoRA  stage2_dit_lora/step-5296.safetensors
+    Stage 2 cache     84,736 个 .pth + 84,736 个 sidecar
+
+Stage 1/Stage 2 checkpoint SHA256、32-rank metadata SHA256 和 cache audit 均写入
+reports/run_manifest.json；全部 phase marker 为 .ok，最终日志明确记录
+“four-node Stage-1 and Stage-2 pipeline completed”。
+
+### 与单机 8 卡的数据量和训练量对比
+
+两次训练使用相同的非 padding component source rows；四机版本只是为
+world size 32 做更多显式 schedule padding，没有引入新的训练样本。实际数据和优化步数如下：
+
+| 项目 | 单机 8 卡 | 四机 32 卡 |
+|---|---:|---:|
+| Stage 1 metadata 行数 | 84,672 | 84,736 |
+| Stage 1 非 padding 源行数 | 84,629 | 84,629 |
+| Stage 1 padding 行数 | 43 | 107 |
+| Stage 1 类型计数（MT/NTP/edit/UMT） | 42,336/21,168/10,584/10,584 | 42,368/21,184/10,592/10,592 |
+| Stage 1 dataset repeat × epoch | 1×1 | 1×1 |
+| Stage 1 global batch | 64 | 256 |
+| Stage 1 local micro-step | 10,584 | 2,648 |
+| Stage 1 optimizer update | 1,323 | 331 |
+| Stage 2 metadata/cache 行数 | 84,640 | 84,736 |
+| Stage 2 非 padding 源行数 | 84,627 | 84,627 |
+| Stage 2 padding 行数 | 13 | 109 |
+| Stage 2 类型计数（MT/edit/UMT） | 42,320/21,160/21,160 | 42,368/21,184/21,184 |
+| Stage 2 dataset repeat × epoch | 2×1 | 2×1 |
+| Stage 2 实际样本消费 | 169,280 | 169,472 |
+| Stage 2 global batch | 8 | 32 |
+| Stage 2 optimizer update | 21,160 | 5,296 |
+
+因此，两次运行从“样本曝光量”看基本等量，差异只有 64 条 Stage 1 padding 和 192 次
+Stage 2 含 repeat 的 padding 曝光；但四机保持相同的单卡 batch 和 gradient accumulation，
+使 global batch 扩大 4 倍，optimizer update 数相应降至约 1/4。Stage 1 checkpoint 文件名中的
+step-10584/step-2648 是 local micro-step 计数；对应的真实 optimizer update 分别为
+1,323/331。
+
+### 墙钟时间、吞吐和资源效率
+
+单机数据来自 E16/E19 的 refined 8 卡正式训练，四机时间来自成功 run 的 node-0 controller
+时间戳；模型、最大像素、LoRA、学习率、epoch 和 loss setting 保持一致。实测为：
+
+| 阶段 | 单机 8 卡 | 四机 32 卡 | 表观加速 |
+|---|---:|---:|---:|
+| Stage 1 训练循环 | 11:06:14 | 1:37:40 | 6.82× |
+| Stage 1 完整 phase | 11:07:34 | 2:16:14 | 4.90× |
+| Stage 2a cache | 1:27:20 | 0:24:19 | 3.59× |
+| Stage 2 cache audit | 0:03:21 | 0:07:36 | 0.44× |
+| Stage 2b 训练循环 | 27:24:00 | 3:42:14 | 7.40× |
+| Stage 2b 完整 phase | 27:40:17 | 3:52:28 | 7.14× |
+| Stage 2a + audit + Stage 2b | 29:10:58 | 4:24:23 | 6.62× |
+| Stage 1 + Stage 2 可比 phase | 约 40:18:32 | 6:40:40 | 6.04× |
+
+四机成功 run 还在训练前执行了 21:41 的 ws32 metadata 准备；从 metadata 准备开始到
+最终验收结束共 7:02:25。该数字不包含此前裸 worker 上缺少统一时间戳的 apt、Git clone 和
+uv 环境安装，因而不用于上表的训练效率比较。
+
+按训练循环计算，Stage 1 全局吞吐从约 2.12 提升到 14.46 sample/s，Stage 2b 从约
+1.72 提升到 12.71 sample/s。按完整 phase 粗略折算 GPU-hours：
+
+| 范围 | 单机 8 卡 | 四机 32 卡 | 四机相对单机 |
+|---|---:|---:|---:|
+| Stage 1 | 89.0 GPU·h | 72.7 GPU·h | 81.6% |
+| Stage 2 全流水线 | 233.5 GPU·h | 141.0 GPU·h | 60.4% |
+| 合计 | 322.5 GPU·h | 213.7 GPU·h | 66.3% |
+
+四机本次在近似相同样本曝光量下将可比总墙钟时间缩短到约 1/6，表面 GPU-hours 也降低约
+33.7%。但这不是保持相同 global batch 和 optimizer update 数的严格 strong-scaling
+benchmark，不能把 6.04× 直接解释为 4 倍 GPU 的纯并行扩展效率。单机运行位于共享机器，
+每卡还存在约 1.6 GiB 的长期保活 GPU 进程，而四机 Arnold worker 更干净；四机保存的
+checkpoint 数也更少。对应地，四机 local step 本身更快：Stage 1 约 3.78→2.21 s，
+Stage 2b 约 4.66→2.52 s，这些运行环境和 I/O 差异共同造成了超过理想 4× 的表观加速。
+
+Stage 2 cache audit 不使用多机 GPU 并行，只在 node 0 上以 CPU workers 读取共享存储；本次
+报告内部 elapsed 从单机 199.63 秒增加到四机 410.14 秒，因此它是当前流水线中唯一没有随
+GPU 数扩展、且四机反而更慢的阶段。
+
+成功运行的关键记录：
+
+- node 0：/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/crispedit-refined-4node-20260910-run2/logs/bootstrap.node0.log；
+- node 1--3：同一 logs 目录下的 bootstrap.node1.log 至 bootstrap.node3.log；
+- 汇总：/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/crispedit-refined-4node-20260910-run2/reports/run_manifest.json；
+- cache 审计：/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined_4node/crispedit-refined-4node-20260910-run2/reports/stage2_cache_audit.json。
 
 ## E22：Refined 四机权重 ScaleEdit 对比评测
 
