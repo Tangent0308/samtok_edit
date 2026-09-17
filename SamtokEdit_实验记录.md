@@ -2655,6 +2655,13 @@ token，便于直接确认两组条件的唯一文本差异。旧版 7/12/16-cel
 dog、giraffe 和 rabbit。以下汇总从统一 `metrics.jsonl` 重新计算；“双条件 margin 皆正”要求
 同一 case 的 A 和 B 都比另一实例获得更高 attention mass，是比单 condition 更严格的定位判据。
 
+下图是统一 `UNIFIED CASE 00--11` 编号的完整九列总览。每行从左到右依次为原图、
+raw mask A、mask-token A decode、raw mask B、mask-token B decode、A/B 的
+mask-query→source attention，以及 A/B 编辑结果。仓库内图片是便于随 Git 查看的展示副本；
+完整可复现产物仍以上述实验根目录为准。
+
+![12-case mask-token 反事实编辑与 attention 总览](docs/assets/dit_mask_token_counterfactual_12case/overview_12case.jpg)
+
 | Attention 方向 | 正 routing margin | 双条件 margin 皆正 | 正 density margin | mean top-area IoU / chance | mean IoU lift | mean shift cosine | 正 switch score |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Mask query → source key | 14/24 | 2/12 | 15/24 | 0.0515 / 0.0317 | 2.31× | 0.231 | 8/12 |
