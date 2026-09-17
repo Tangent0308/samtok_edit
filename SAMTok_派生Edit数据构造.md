@@ -14,8 +14,9 @@ canonical mask token，并将它们派生为 SAMTokEdit 可用的新图像编辑
 - 与 raw mask 对应的 canonical SAMTok span。
 
 但它们不包含编辑后的 target image，因此还不是可直接训练的 image-edit pair。
-完整构造还需为所选 source/mask 生成或收集 `edit_image`，执行局部性和指令一致性质检，
-最后转换成当前 `edit_mt` / `edit_umt` 规范。
+完整构造还需为所选 source/mask 生成或收集编辑后 target，执行局部性和指令一致性质检，
+最后转换成当前 `edit_mt` / `edit_umt` 规范。按现有 runner 的字段语义，这张编辑后
+target 写入 `image`，原始 source 写入 `edit_image`。
 
 ## 2. 数据路径与物理文件
 
