@@ -22,6 +22,8 @@ direct/online CoT/GT CoT 评测，并将已有 S1–S5 与六组 Stage 2 结果�
 分类审计和可视化。Refined Stage 1/2
 全量数据的单机 8 卡与四机 32 卡单 epoch 训练均已正常结束；四机权重也已在同一组
 ScaleEdit 32 条训练外验证集上完成 online CoT 和 `edit_umt` 评测，并与单机结果联合可视化。
+此外，E23 已在 fine-grained benchmark 的 12 类同类多实例样本上完成 mask-token
+反事实干预和 DiT 双向 joint-attention 探测。
 
 ## 实验索引
 
@@ -49,6 +51,7 @@ ScaleEdit 32 条训练外验证集上完成 online CoT 和 `edit_umt` 评测，�
 | E20 | Refined Stage 2 ScaleEdit 评测 | 对比 stock、online CoT 和 edit_umt | 完成（96/96） |
 | E21 | Refined 四机 32 卡全量训练 | 验证裸 worker、四机 pipeline，并比较单机 8 卡与四机 32 卡效率 | 完成（Stage 1/2 均通过） |
 | E22 | Refined 四机权重 ScaleEdit 对比评测 | 在同一验证集上对比单机/四机 online CoT 与 edit_umt | 完成（新增 64/64；联合审计通过） |
+| E23 | DiT mask-token 反事实与注意力分析 | 只替换同类实例的 mask token，观察编辑落点及 DiT attention 是否随之迁移 | 完成（12 case、24 次推理、1,200 张 attention map） |
 
 ## E1：Stage 1 smoke 数据构建
 
@@ -2506,6 +2509,223 @@ with the current four USB ports.
 
 ![Case 0000 mask comparison](docs/assets/stage2_scaleedit_single_vs_four_node/mask_comparisons/small_object/0000.jpg)
 
+## E23：DiT mask-token 反事实与注意力分析
+
+### 目的与实验设计
+
+本实验回答一个比普通编辑可视化更具体的问题：在没有 left/right/序数等文字定位线索时，
+refined 模型的 DiT 是否会根据 prompt 中的 mask token 改变关注区域与编辑落点。样本从
+`/opt/tiger/tanyue/finegrained_edit_benchmark_selection` 所构建的统一 benchmark
+`/mnt/bn/strategy-mllm-train/user/tanyue/datasets/samtok_edit_benchmark/benchmark.jsonl`
+中人工筛选，最终保留 12 个 mask 质量合格且语义类别互不重复的 CompBench 同类多实例
+case；其中 remove 8 例、replace 4 例：
+
+| Case | Benchmark ID | A：benchmark 目标 | B：SAM2 alternate 目标 | 指令模板 |
+|---:|---|---|---|---|
+| 0 | `cb_train-00002-of-00007_0206` | 右侧 zebra | 另一个 zebra | `Remove {region_1}.` |
+| 1 | `cb_train-00002-of-00007_0246` | 左侧 elephant | 中间 elephant | `Remove {region_1}.` |
+| 2 | `cb_train-00005-of-00007_0348` | 右侧 black cat | 中间 orange cat | `Replace {region_1} with a cup.` |
+| 3 | `cb_train-00002-of-00007_0331` | 上方 fish | 下方 fish | `Remove {region_1}.` |
+| 4 | `cb_train-00002-of-00007_0289` | 一只 turtle | 另一只 turtle | `Remove {region_1}.` |
+| 5 | `cb_train-00002-of-00007_0386` | 一只 monkey | 另一只 monkey | `Remove {region_1}.` |
+| 6 | `cb_train-00002-of-00007_0323` | 一只 duck | 另一只 duck | `Remove {region_1}.` |
+| 7 | `cb_train-00002-of-00007_0367` | 一只 chicken | 另一只 chicken | `Remove {region_1}.` |
+| 8 | `cb_train-00003-of-00007_0002` | 一匹 horse | 另一匹 horse | `Remove {region_1}.` |
+| 9 | `cb_train-00005-of-00007_0382` | 一只 dog | 另一只 dog | `Replace {region_1} with a black pot.` |
+| 10 | `cb_train-00005-of-00007_0274` | 一只 giraffe | 另一只 giraffe | `Replace {region_1} with background.` |
+| 11 | `cb_train-00005-of-00007_0297` | 一只 rabbit | 另一只 rabbit | `Replace {region_1} with a small table model.` |
+
+B 不是手工 mask。它由 gres-ft codec 内的 SAM2.1 Hiera-L 生成：在另一个同类实例上给正点，
+在原 benchmark 目标点给负点；随后 A/B 都经过真实 SAMTok encode/decode。12/12 个 case 的
+A/B mask token 均发生变化，24/24 个 prompt 不含位置词；raw A/B 最大 IoU 为 `0.170897`，
+A/B raw-to-token-decode 最小 IoU 分别为 `0.870620/0.528995`，decoded A/B 最大 IoU 为
+`0.0`。因此反事实条件真正改变了送入 DiT 的离散 mask span，而不只是可视化 mask。
+
+实际送入模型的 prompt 用各自 canonical mask span 替换 `{region_1}`。A/B 的 source、可读
+文本、seed、checkpoint、40 diffusion steps、CFG 4.0、bf16、`zero_cond_t=True` 与官方约
+1MP resize 完全相同，唯一改变的是四个 mask token。推理使用本方法的 `edit_umt` 路径：
+refined 四机最终 Stage 1 TE LoRA + Stage 2 DiT LoRA，关闭在线 pass-1，不是 stock Qwen
+pipeline。checkpoint 为：
+
+```text
+Stage 1 TE LoRA   .../crispedit-refined-4node-20260910-run2/stage1_te_lora/step-2648.safetensors
+SHA256            9ce0ad749df5b8602d9b741d4fb95b3081cdd86cd1dbba4a590b210f171aa119
+Stage 2 DiT LoRA  .../crispedit-refined-4node-20260910-run2/stage2_dit_lora/step-5296.safetensors
+SHA256            b37743956d44704f0294d045d34b22217c8c17e294afba2de97693a98524d2b4
+```
+
+### 注意力探测与指标
+
+probe 在不修改 DiT forward/output 的前提下，从该层真实
+`to_q/to_k/add_q_proj/add_k_proj`、Q/K RMSNorm 与 post-RoPE Q/K 重算
+`P = softmax(QK^T / sqrt(head_dim) + attention_mask)`。softmax 仍在完整
+`[text, output/noisy image, source image]` key 轴上完成，然后才切取 source-image 区间，
+不会把 output/noisy latent 误当成输入图。只记录 CFG positive branch。zero-based layer
+`5,15,30,45,59` 与 denoising step `0,10,20,30,39` 组成 25 个 layer-step 对；
+每个 condition 保存两个方向：
+
+- `mask_query_to_source`：四个 mask-token query 对 source-image key 的 attention；
+- `source_query_to_mask`：source-image query 对四个 mask-token key 的 attention 总和。
+
+`mask_query_to_source` 跨 batch、24 heads 和 4 mask-token queries 取平均；
+`source_query_to_mask` 对四个 mask-token keys 求和后跨 batch/head 取平均。两个方向都再在
+64×64 source grid 上归一化为和 1。主指标以 token decode mask 计算，因为这才是
+四个 token 实际表达的区域；raw mask 只作辅助审计。对每个方向的 25 张图：
+
+- `mass(H,M)=sum(H[M])`；`routing margin = mean mass(target) - mean mass(other)`；
+- `density=mean mass / mask area fraction`；`density margin=density(target)-density(other)`；
+- `top-area IoU`将每张 heatmap 取与 target 等格子数的 top-k，与 target 求 IoU 后再取
+  25 张平均；如 mask 面积比例为 `p`，同面积独立随机 baseline 为 `p/(2-p)`，
+  `lift=measured/chance`；
+- `peak-inside rate` 是 25 张图的 argmax 落在 target 内的比例；
+- `shift cosine = cos(c_attn,B-c_attn,A, c_mask,B-c_mask,A)`，其中 attention 质心来自 25 张
+  等权平均后的 aggregate map；
+- `switch score = [H_B(B)-H_A(B)] + [H_A(A)-H_B(A)]`，即 B 区域获得的 mass 加上
+  A 区域失去的 mass。
+
+上述 margin 只回答 attention 相对更偏向哪个区域，不是准确率；top-area IoU 也只是将
+连续 heatmap 与 mask 做等面积重合，不应当作分割 IoU。
+
+### 实际运行与完整性验收
+
+12 个 case 分两个只影响调度、不影响协议的 GPU job 完成；每个 case 内先跑 A、再跑 B，
+不同 case 可并行，不使用 DDP collective。原始产物仍保留在两个 source experiment 中，最后
+运行以下命令建立不复制 NPZ/推理图的统一入口：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+source .venv/bin/activate
+.venv/bin/python scripts/eval/consolidate_mask_token_interpretability.py
+```
+
+2026-09-17 对统一结果重新做了独立产物审计：
+
+| 验收项 | 结果 |
+|---|---:|
+| 合格同类多实例 case | 12/12 |
+| location-free prompt / mask token 已变化 | 24/24 / 12/12 |
+| 生成图片 / inference record / attention archive | 24/24 / 24/24 / 24/24 |
+| layer-step map | 25/方向/condition |
+| 双向 attention map 总数 | 1,200 |
+| attention finite、非负、source-space sum=1 | 1,200/1,200 |
+| checkpoint SHA256 匹配 | 24/24 |
+| 最终九列 summary | 12/12 |
+| 日志中的 traceback/OOM/NCCL/RuntimeError | 0 |
+
+完整实验根目录为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/interpretability/dit_mask_token_counterfactual_12case
+```
+
+其中 `manifest.jsonl` 和 `metrics.jsonl` 分别是统一 case/指标索引，`report.json` 保存汇总值、
+校验和及两个 source experiment 的可复现路径；`visualizations/` 包含 12 张以类别命名的最终
+九列图和 `overview_12case.jpg`。逐 case 图使用 symlink 指向 source experiment，不重复存储；
+原始 mask、输出图、inference sidecar、attention NPZ 和日志仍由 `report.json` 中列出的 source
+root 持有。统一 manifest SHA256 为
+`c8803e481ec0de1c081a4c0ced27aff67b564973b23d3bd14b7099f1b87eaaef`。
+
+### 九列可视化方法
+
+高清主图已按统一九列重做：原图、raw mask A overlay、mask-token A decode overlay、
+raw mask B overlay、mask-token B decode overlay、A mask-token query→source attention、B
+mask-token query→source attention、A 编辑结果、B 编辑结果。raw overlay 用于审核数据源，
+decode overlay 直接显示四个 token 实际表示的区域。attention panel 不包含任何 mask overlay
+或轮廓，只将原图压暗并显示 25 张 `mask_query_to_source` map 的等权平均。设归一化
+source grid 面积为 `N=64×64`，颜色显示 `E=N·H`，所以均匀注意力为 `1×`。A/B
+共享色标：下限为 `0.5×`，上限为 A/B 全50张原始 map enrichment 的 99.5 percentile
+与 `2×` 中的较大值，然后以 `((E-0.5)/(high-0.5))^0.52` 增强亮部对比度。黄/白色
+表示更高关注。该操作只影响显示，不改变 attention 数据或指标。
+实际颜色插值依次经过 near-black、purple、red、orange、yellow、pale-yellow 和 white；
+原图先乘 `0.20` 压暗，设上述 gamma 后的强度为 `s`，最终像素为
+`0.20·source·(1-0.55s) + color(s)·(0.10+0.90s)`。heatmap 从 64×64 双线性放大到 panel；
+这一操作只用于视觉化，指标始终在原 64×64 数值上计算。mask overlay 则用 nearest
+neighbor 放缩；A 使用 RGB `(255,55,55)`，B 使用 `(0,220,255)`，mask 内为
+`0.25·source+0.75·color`，并加 5 px 同色边界。raw 与 decode overlay 使用完全相同的
+绘制方式，避免显示样式引入不公平对比。
+图头同时逐字写出送入 TE 并编码为 DiT conditioning 的完整 A/B prompt，包括具体四个 mask
+token，便于直接确认两组条件的唯一文本差异。旧版 7/12/16-cell panel 和临时 layer-step grid
+不再保留或引用。
+
+### 12-case 编辑与 attention 结果
+
+12 个不重复类别为 zebra、elephant、cat、fish、turtle、monkey、duck、chicken、horse、
+dog、giraffe 和 rabbit。以下汇总从统一 `metrics.jsonl` 重新计算；“双条件 margin 皆正”要求
+同一 case 的 A 和 B 都比另一实例获得更高 attention mass，是比单 condition 更严格的定位判据。
+
+| Attention 方向 | 正 routing margin | 双条件 margin 皆正 | 正 density margin | mean top-area IoU / chance | mean IoU lift | mean shift cosine | 正 switch score |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Mask query → source key | 14/24 | 2/12 | 15/24 | 0.0515 / 0.0317 | 2.31× | 0.231 | 8/12 |
+| Source query → mask key | 15/24 | 3/12 | 15/24 | 0.0719 / 0.0317 | 3.12× | 0.496 | 8/12 |
+
+下表统一列出全部 12 case；`M→S` 为 mask-query→source-key，`S→M` 为
+source-query→mask-key。A/B margin 分别是两个 condition 的 decoded routing margin；cosine 和
+switch 也按 `M→S / S→M` 排列。编辑结果是直接观察九列图得出，不用 attention
+指标代替行为判断。
+
+| Case | 编辑结果 | M→S margin A/B | S→M margin A/B | shift cosine M→S / S→M | switch M→S / S→M |
+|---|---|---:|---:|---:|---:|
+| Zebra | A 基本没有删除目标；B 同时删除两只 zebra，未形成实例级反事实控制 | +0.0332 / -0.0336 | +0.0259 / -0.0277 | +0.775 / +0.075 | -0.0005 / -0.0017 |
+| Elephant | A 同时删除中间和右侧实例而过删；B 删除中间目标并保留左右实例，是较清楚的 B 条件成功 | +0.0252 / -0.0185 | -0.0150 / +0.0131 | +0.329 / +0.151 | +0.0067 / -0.0018 |
+| Cat | A/B 都在相近背景位置生成 cup，未随两个猫实例的 mask 明确迁移 | +0.0209 / +0.0100 | +0.0268 / +0.0597 | +0.672 / +0.736 | +0.0309 / +0.0865 |
+| Fish | A/B 几乎相同，都同时删除中部和下部鱼；无实例级区分 | -0.0446 / +0.0466 | -0.0497 / +0.0723 | -0.471 / +0.905 | +0.0020 / +0.0226 |
+| Turtle | A/B 视觉上相同，对换 token 基本不敏感 | +0.0660 / -0.0669 | +0.0538 / -0.0454 | -0.835 / -0.331 | -0.0008 / +0.0084 |
+| Monkey | B 比 A 删除更多实例；attention 质心随 mask 移动，但编辑仍过删 | -0.0095 / +0.0107 | -0.0166 / +0.0081 | +0.853 / +0.967 | +0.0012 / -0.0085 |
+| Duck | A 大范围过删；B 保留更多其他鸭，但仍不是干净的单实例对照 | +0.0056 / -0.0054 | +0.0053 / +0.0004 | +0.646 / +0.840 | +0.0002 / +0.0058 |
+| Chicken | A 大体删除前景目标；B 几乎删除所有鸡，表现为严重过删 | +0.0417 / -0.0342 | +0.0351 / -0.0272 | +0.988 / +0.836 | +0.0074 / +0.0080 |
+| Horse | B 删除左侧白马并保留右侧 A 目标；A 同时删除 A/B，因此为部分成功 | -0.0271 / +0.0286 | -0.0448 / +0.0620 | +0.898 / +0.913 | +0.0015 / +0.0172 |
+| Dog | A 在黑狗处生成黑锅但未干净替换；B 错改右下狗，未替换上方目标 | +0.0100 / +0.0055 | +0.0027 / +0.0202 | +0.195 / +0.752 | +0.0156 / +0.0230 |
+| Giraffe | A/B 几乎相同，都变成全局背景重绘；无实例级控制 | +0.0306 / -0.0335 | +0.0331 / -0.0369 | -0.689 / -0.823 | -0.0029 / -0.0038 |
+| Rabbit | B 正确将中间前景兔替换为桌子；A 却变成手持微缩桌子的全局重构 | -0.0634 / +0.0499 | -0.1024 / +0.1675 | -0.590 / +0.934 | -0.0135 / +0.0651 |
+
+当前 case 的 attention 分析是：
+
+- `source_query_to_mask` 比 `mask_query_to_source` 更稳定：平均 top-area IoU 为
+  `0.0719` vs `0.0515`，IoU lift 为 `3.12×` vs `2.31×`，平均 shift cosine 为
+  `0.496` vs `0.231`。
+- 但严格的成对判据仍很弱：A/B routing margin 都为正的 case 只有 `3/12`
+  （S→M）或 `2/12`（M→S）。这比“某一个 condition margin 为正”更能反映是否真正区分 A/B。
+- 九列图展示的只是 `mask_query_to_source` aggregate map；它在多数 case 中仍呈现对
+  物体轮廓、高对比边缘和场景结构的弥散响应，不是一张 mask 预测图。
+- elephant、horse 和 rabbit 的 B 条件提供了较清楚的行为迁移证据；horse 的两个方向均有
+  高正 shift cosine 和正 switch score，rabbit 则只有 S→M 方向强正，与各自不对称行为一致。
+- cat 和 fish 是重要反例：attention 的 cosine/switch 明显为正，但 A/B 生成图没有随目标
+  实例产生对应迁移。因此 attention 迁移不等于可观察的编辑迁移，不能单独当作成功指标。
+
+指标绝对值较低不是汇总脚本把 mask 用错：主指标明确使用九列图中的 decode
+mask，每张 attention 也都经过 finite/非负/和为 1 验收。但数值需要按以下限制解读：
+
+1. 这里测的是 DiT joint-attention，不是专门训练的 segmentation attention；高对比物体边缘和
+   场景结构会分走大量概率。
+2. 报告对 5 层×5 去噪步等权统计，包括早期高噪声步和未必执行局部路由的层；这是一个
+   严格的全程指标，会比事后只挑最佳 layer/step 更低，但避免了 cherry-picking。
+3. probe 只取四个字面 mask-token 位置。TE 已经做 contextualization，mask 信息可能分布到动词、
+   目标词和其他 text embedding，因此本 probe 可能低估整个 prompt 的定位信息。
+4. `routing margin` 要求当前 target 超过同图的 other target，而不是只要 target 有热度就算成功；
+   “A/B 均正”还要求两次反事实都选对，所以会比单图峰值观察严格很多。
+5. `top-area IoU` 将连续 attention 强制变成与 mask 等面积的二值区域。弥散但有方向性的
+   attention 可以有正 margin/switch，却仍得到低 IoU；这两类指标回答的问题不同。
+6. 低指标不只是 attention 可视化偏差：fish/turtle/giraffe 的 A/B 生成也几乎不区分，
+   chicken/monkey 也有过删。因此当前数值与行为失败是相互印证的，不应为了得到更高数值
+   而放宽定义。
+
+12 个类别、24 个 condition 和 1,200 张方向性 attention map 的总结为：mask→source
+有 14/24 个 condition 的 routing margin 为正，
+source→mask 为 15/24；但 A/B 两条件都正的 case 分别只有 2/12 和 3/12。
+top-area IoU 分别为 `0.0515/0.0719`，均高于 `0.0317` chance baseline，平均 lift
+为 `2.31×/3.12×`；反事实 switch score 在两个方向均为 8/12 个 case 为正。
+因此本实验的结论是：**DiT 对 mask token 存在高于随机的空间敏感性，部分
+case 能使编辑随 token 迁移，但尚不能稳定、精确地将四个 token 当作实例分割区域。**
+这一结论同时受生成随机性、codec 量化误差、TE contextualization 和 attention 只是描述性
+证据等限制，不应表述为普遍因果证明。
+
+完整汇总位于 `report.json`，逐 case 指标位于 `metrics.jsonl`，高清九列图位于
+`visualizations/`；可直接查看：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/interpretability/dit_mask_token_counterfactual_12case/visualizations/overview_12case.jpg
+```
+
 ## 当前结论和下一步
 
 - Stage 1 单卡和 8 卡 smoke 训练链路均已跑通，DDP、loss、GT 监督、梯度、精度和
@@ -2545,3 +2765,8 @@ with the current four USB ports.
 - 四机 32 卡训练权重已在同一 ScaleEdit 验证集完成 online CoT 和 `edit_umt` 评测；新增结果
   64/64、联合生成图 160/160 和两类可视化均通过审计；完整逐 case 图、分类 overview 和 manifest
   已纳入仓库，供直接查看。
+- DiT mask-token 反事实实验覆盖 12 个不重复语义类别，完成 24 次配对推理和
+  1,200 张双向 attention map。elephant、horse 和 rabbit 的部分条件提供了较明确的实例迁移
+  证据，但 cat、fish、giraffe 等仍不敏感，多个 remove case 存在多实例过删。量化 attention 重合高于 chance
+  baseline，但 A/B 都正确 routing 的比例仍低；现阶段应表述为“具有部分但不稳健的
+  mask-token 空间敏感性”，后续需要 token ablation/patching 才能形成更强因果结论。

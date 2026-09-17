@@ -1449,13 +1449,147 @@ pipeline 只允许该次 bootstrap 预先创建的 `logs/bootstrap.node*.log`、
 `git_commit.txt`，发现其他旧产物仍会拒绝复用目录。phase 自身的细分日志继续写入
 `$RUN_ROOT/logs/<stage>.node<N>.log`。
 
+### 4.15 DiT mask-token 反事实与注意力分析
+
+解释性入口由以下文件组成：
+
+- `scripts/eval/prepare_mask_token_interventions.py`：从统一 fine-grained benchmark 中选取
+  12 个类别互不重复的同类多实例 case；`--selection_set all` 表示完整 12-case 协议，
+  `core/additional` 仅用于复现两次已完成 GPU job 的调度分片，不表示不同实验版本。脚本保留 benchmark 原 mask A，
+  并调用 gres-ft codec 内已加载的 SAM2.1 Hiera-L，以另一个同类实例上的正点和
+  原目标点上的负点得到 mask B；A/B 均经过真实 SAMTok codec encode/decode；
+- `scripts/eval/run_mask_token_interpretability.py`：使用 refined 四机训练结束的 Stage 1 TE
+  LoRA 和 Stage 2 DiT LoRA 执行成对 `edit_umt` 推理，并以只读 forward pre-hook 捕获 DiT
+  joint attention；
+- `scripts/eval/summarize_mask_token_interpretability.py`：验证输出与注意力归一化，计算定位/迁移
+  指标并生成逐 case 与总览图；
+- `scripts/eval/visualize_mask_token_attention_clear.py`：在不改变原 attention 数值的前提下生成
+  标注完整 A/B conditioning prompt 的高对比度九列总览；
+- `scripts/eval/consolidate_mask_token_interpretability.py`：严格校验两个已完成 source job，
+  合并为唯一的 12-case manifest、metrics、report 和总览；逐 case 九列图使用 symlink，
+  不复制原始推理图或 attention NPZ；
+- `scripts/eval/run_mask_token_interpretability_3gpu.sh`：三卡完整编排，写入 prepare、inference、
+  summarize、clear visualization 日志和 `controller.status`；
+- `scripts/eval/run_mask_token_interpretability_additional_8gpu.sh`：第二调度分片的完整编排，
+  默认用 8 卡按 case 并行，卡数由 `CUDA_VISIBLE_DEVICES` 动态推导；该命名仅为已完成作业的
+  兼容入口，最终结果不按分片区分；
+- `tests/test_mask_token_interpretability.py`：覆盖固定选择、top-area mask、重合指标和双向注意力
+  抽取。
+
+实验使用 benchmark 的 `instruction.region_only` 模板。可读模板只含
+`Remove {region_1}.` 或 `Replace {region_1} with <object/background>.`；实际 prompt 将
+`{region_1}` 替换为 canonical 四原子 token
+span，绝不加入 left/right/序数等位置指代。A/B 共享 source、location-free 文本、seed、checkpoint
+与全部 diffusion 参数，唯一变化是 mask span。这里关闭 pass-1（`enable_samtok_cot=False`），
+因为待测因素是用户直接提供的 mask token；仍然走本方法的 Stage 1 TE + Stage 2 DiT
+`edit_umt` inference，而不是 stock pipeline。
+
+alternate mask 的构造不是手工涂抹：脚本复用 released gres-ft codec 中的 SAM2.1 Hiera-L，
+正点落在另一个同类实例、负点落在 benchmark 原目标点。构建门禁要求 case 标记为
+`same_class_multi_instance`，alternate mask 面积在合理范围，raw A/B IoU 小于 0.2，四 token
+必须变化，location-free 模板不能泄漏位置词，raw mask 与各自 token decode 的
+IoU 不得低于 0.5，decoded A/B IoU 也必须小于 0.2。manifest 同时保存 raw mask 和
+token decode；
+分析时以 decode mask 为主，因为它才是四个离散 token 实际表达的区域，raw mask 指标仅作为
+补充。
+
+注意力 probe 不修改 `DiffSynth-Studio` 的 forward，也不替换 flash-attention 输出。它在指定
+`QwenDoubleStreamAttention` 层的输入处，使用该层真实的 Q/K projection、RMSNorm、Qwen RoPE
+和 `1/sqrt(head_dim)` scale 重算所需概率，并只记录 CFG positive branch。输出/noisy latent token
+位于 image sequence 前部，source/edit-image latent token 紧随其后；probe 按实际 latent shape
+明确切出 source 范围，避免把生成 latent 当成输入图。mask token 位置由实际 Qwen2VL processor
+输入定位，并按 `EDIT_DROP_IDX` 转换为进入 DiT 的 text sequence 坐标。
+
+每个 condition 在 zero-based DiT layer `5,15,30,45,59` 与 denoising step
+`0,10,20,30,39` 的笛卡尔积上记录两种方向：
+
+1. `mask_query_to_source`：四个 mask-token query 对 source-image key 的 attention；
+2. `source_query_to_mask`：每个 source-image query 对四个 mask-token key 的 attention 总和。
+
+对每个被探测层，先用该层真实 `to_q/to_k/add_q_proj/add_k_proj`、Q/K RMSNorm 和
+Qwen RoPE 重算 `Q` 与 `K`，再计算
+`P = softmax(Q K^T / sqrt(head_dim) + attention_mask)`。softmax 的 key 轴是完整的
+`[text keys, output-image keys, source-image keys]`，不是只在 source 区域内先做 softmax。
+`mask_query_to_source` 从 `P` 中取四个 mask-token query 和 source key 子矩阵，跨
+batch、24 heads 和 4 tokens 平均；`source_query_to_mask` 则取 source query 对四个
+mask-token key 的概率之和，再跨 batch 和 head 平均。两者最后都只在 64×64 source
+grid 上归一化为和 1；每个 condition 有 25 张/方向，共 50 张图。
+
+指标默认使用 codec-decoded mask，因为这才是四个离散 token 实际表示的区域；raw
+mask 只作辅助审计。对每张已归一化 heatmap `H`：
+
+- `target_mass = sum(H[target])`，`other_mass = sum(H[other])`；25 张分别计算后取平均；
+- `routing_margin = mean(target_mass) - mean(other_mass)`，正值表示当前 condition 更偏向
+  它应该表示的实例，但会受 A/B 面积差异影响；
+- `attention_density = mean(target_mass) / target_area_fraction`，`density_margin` 是 target
+  与 other 的单位面积 density 之差；
+- `top-area IoU`：以 target 在 64×64 grid 上的格子数 `k` 取 heatmap 最高的 `k`
+  个格子，与 target 求 IoU，再对 25 张图取平均；它避免了人工设置 heatmap 阈值；
+- 如 target 面积比例为 `p`，同面积独立随机选择的 plug-in chance IoU 为
+  `p / (2 - p)`，`IoU lift = measured IoU / chance IoU`；
+- `peak-inside rate`：25 张 heatmap 的 argmax 落在 target 内的比例；
+- 显示/shift 使用 25 张图等权平均后再归一化的 aggregate heatmap。`shift cosine`
+  是 attention 质心从 A 到 B 的位移向量与 decoded-mask 质心位移向量的余弦；
+- `switch score = [H_B(B)-H_A(B)] + [H_A(A)-H_B(A)]`，即换成 B token 后 B 区域
+  获得的 attention 加上 A 区域失去的 attention。
+
+注意力只提供描述性证据，不能单独证明因果。更强的行为证据来自只替换 mask
+token 后编辑落点是否随之改变。另外，DiT 接收的是 TE contextualized embeddings，
+mask 信息可能已扩散到其他 text token，仅探测四个字面 token 位置可能低估模型的使用。
+
+清晰版可视化不改变 heatmap 数值，只改变显示方式。每个 case 的主图严格固定为九列：原图、
+raw mask A overlay、mask-token A decode overlay、SAM2 修改后的 raw mask B overlay、
+mask-token B decode overlay、mask-token A query→source attention、mask-token B query→source
+attention、A 编辑结果、B 编辑结果。两个 attention panel 不放任何
+mask fill、mask boundary 或 top-k 轮廓，只把原图压暗并叠加高对比度强度色；显示值为
+source-space attention probability 除以均匀注意力 `1/(H*W)` 后的 enrichment，因此均匀水平是
+`1×`。展示的是 `mask_query_to_source` 在 25 个 layer-step 上的等权平均，不是
+`source_query_to_mask`；后者只进入数值报告。A/B 共享一个上限，上限是两组原始
+25 张 enrichment 的 99.5 percentile 与 `2×` 中的较大值；色标下限固定为 `0.5×`，
+显示强度再做 `((E-0.5)/(high-0.5))^0.52` 的 gamma 增强。这只影响显示，不影响指标。
+黄色/白色表示高关注。图头逐字写出送入 TE 并编码为 DiT conditioning 的完整 A/B user
+prompt，包括 `<|mt_start|>`、两个离散 code token 和 `<|mt_end|>`，因此可以直接核对反事实
+条件具体替换了哪些 mask token。
+
+已完成的 source job 可分别用下列命令复现；二者只负责不同 case 的 GPU 调度，实验协议与
+最终分析完全相同：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+source .venv/bin/activate
+bash scripts/eval/run_mask_token_interpretability_3gpu.sh
+bash scripts/eval/run_mask_token_interpretability_additional_8gpu.sh
+```
+
+GPU 数量只用于 case 级并行，不执行 DDP collective。source job 分别保留
+`data/interventions.jsonl`、`runs/*/{original,alternate}_{output,attention,record}`、
+`analysis/{metrics.jsonl,report.json}` 和 `visualizations_clear/`，确保原始产物可追溯。
+最终结果不再按 source job 分开展示，而由以下命令建立唯一入口：
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit
+source .venv/bin/activate
+.venv/bin/python scripts/eval/consolidate_mask_token_interpretability.py
+```
+
+统一输出目录为：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/crispedit_refined/interpretability/dit_mask_token_counterfactual_12case
+```
+
+其中 `manifest.jsonl`、`metrics.jsonl`、`report.json` 和
+`visualizations/overview_12case.jpg` 是文档和人工检查使用的 canonical 入口；
+`report.json` 同时记录底层 source experiment root 与校验和。旧版临时 panel 和
+layer-step grid 不保留或引用。
+
 ---
 
 ## 代码回归入口
 
 ```bash
 cd /opt/tiger/tanyue/samtok_edit
-python -m unittest tests/test_samtok_edit.py
+python -m unittest tests/test_samtok_edit.py tests/test_mask_token_interpretability.py
 ```
 
 测试覆盖 canonical CoT、分层 parser、DDP schedule、非 canonical 拒绝、codec 空 mask 拒绝、
@@ -1464,4 +1598,6 @@ python -m unittest tests/test_samtok_edit.py
 S1–S8 分类汇总对 S4/S7 在线 CoT 完全一致性的强制校验、ScaleEdit 32 条选择平衡、
 Stage 2 三 setting 的 CoT/UMT 调用契约、CFG negative
 prompt 不覆盖正向 UMT span 审计和官方约 1MP 输出尺寸换算。
+解释性测试另行覆盖反事实 case 固定选择、双向 attention map 的 source-range 抽取与归一化、
+top-area IoU 和 routing metric。
 测试运行结果和训练/数据实验结果统一记录在 `SamtokEdit_实验记录.md`。
