@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -15,7 +16,12 @@ for path in [
     sys.path.insert(0, str(path))
 
 from diffsynth.models.qwen_image_dit import QwenDoubleStreamAttention  # noqa: E402
-from consolidate_mask_token_interpretability import summarize_metrics  # noqa: E402
+from consolidate_mask_token_interpretability import (  # noqa: E402
+    UNIFIED_BANNER_HEIGHT,
+    build_overview,
+    summarize_metrics,
+    unified_case_label,
+)
 from prepare_mask_token_interventions import (  # noqa: E402
     ADDITIONAL_SELECTIONS,
     CORE_SELECTIONS,
@@ -182,6 +188,29 @@ class MaskTokenInterventionTest(unittest.TestCase):
             )
             self.assertAlmostEqual(values["mean_decoded_target_top_area_iou"], 0.2)
             self.assertEqual(values["cases_with_positive_counterfactual_switch_score"], 1)
+
+    def test_unified_overview_adds_unique_case_banner_per_row(self):
+        rows = [
+            {"semantic_category": "zebra", "benchmark_id": "benchmark-a"},
+            {"semantic_category": "fish", "benchmark_id": "benchmark-b"},
+        ]
+        self.assertEqual(
+            unified_case_label(1, 2, rows[1]),
+            "UNIFIED CASE 01 / 01   |   FISH   |   benchmark-b",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            panels = [root / "first.jpg", root / "second.jpg"]
+            for index, path in enumerate(panels):
+                Image.new("RGB", (120, 40), (40 + index, 40, 40)).save(path)
+            output = root / "overview.jpg"
+            build_overview(panels, rows, output)
+            with Image.open(output) as overview:
+                self.assertEqual(
+                    overview.size,
+                    (120, 2 * (40 + UNIFIED_BANNER_HEIGHT)),
+                )
+                self.assertNotEqual(overview.getpixel((0, 0)), (255, 255, 255))
 
 
 if __name__ == "__main__":

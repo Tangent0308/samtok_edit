@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from statistics import fmean
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 
 DEFAULT_INTERPRETABILITY_ROOT = Path(
@@ -35,6 +35,7 @@ CURATED_CATEGORIES = {
     "cb_train-00005-of-00007_0348": "cat",
 }
 DIRECTIONS = ("mask_query_to_source", "source_query_to_mask")
+UNIFIED_BANNER_HEIGHT = 72
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -157,20 +158,65 @@ def validate_source(root: Path) -> tuple[list[dict], list[dict], dict, list[Path
     return manifest, metrics, report, panels
 
 
-def build_overview(panel_paths: list[Path], output_path: Path) -> None:
+def unified_case_label(case_index: int, total_cases: int, row: dict) -> str:
+    category = str(row["semantic_category"]).upper()
+    benchmark_id = row["benchmark_id"]
+    return (
+        f"UNIFIED CASE {case_index:02d} / {total_cases - 1:02d}"
+        f"   |   {category}   |   {benchmark_id}"
+    )
+
+
+def overview_font(size: int = 34):
+    try:
+        return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+    except OSError:
+        return ImageFont.load_default()
+
+
+def build_overview(panel_paths: list[Path], rows: list[dict], output_path: Path) -> None:
+    if len(panel_paths) != len(rows):
+        raise ValueError(
+            f"Overview panel/metadata mismatch: {len(panel_paths)} != {len(rows)}"
+        )
     images = []
     try:
         for path in panel_paths:
             images.append(Image.open(path).convert("RGB"))
         overview = Image.new(
             "RGB",
-            (max(image.width for image in images), sum(image.height for image in images)),
+            (
+                max(image.width for image in images),
+                sum(image.height + UNIFIED_BANNER_HEIGHT for image in images),
+            ),
             "white",
         )
+        draw = ImageDraw.Draw(overview)
+        font = overview_font()
         top = 0
-        for image in images:
-            overview.paste(image, (0, top))
-            top += image.height
+        for case_index, (image, row) in enumerate(zip(images, rows)):
+            draw.rectangle(
+                (0, top, overview.width, top + UNIFIED_BANNER_HEIGHT),
+                fill=(8, 24, 48),
+            )
+            draw.rectangle(
+                (
+                    0,
+                    top + UNIFIED_BANNER_HEIGHT - 6,
+                    overview.width,
+                    top + UNIFIED_BANNER_HEIGHT,
+                ),
+                fill=(0, 220, 255),
+            )
+            draw.text(
+                (26, top + 13),
+                unified_case_label(case_index, len(rows), row),
+                font=font,
+                fill=(255, 255, 255),
+            )
+            panel_top = top + UNIFIED_BANNER_HEIGHT
+            overview.paste(image, (0, panel_top))
+            top = panel_top + image.height
         temporary = output_path.with_suffix(".tmp.jpg")
         overview.save(temporary, quality=90, optimize=True)
         temporary.replace(output_path)
@@ -271,7 +317,7 @@ def main() -> None:
     report_path = output_root / "report.json"
     atomic_write_jsonl(manifest_path, combined_manifest)
     atomic_write_jsonl(metrics_path, combined_metrics)
-    build_overview(unified_panels, overview_path)
+    build_overview(unified_panels, combined_manifest, overview_path)
 
     num_attention_maps = sum(
         row[condition][direction]["num_layer_step_maps"]
@@ -298,6 +344,19 @@ def main() -> None:
         "summary": summarize_metrics(combined_metrics),
         "summary_panels": [str(path) for path in unified_panels],
         "overview": str(overview_path),
+        "overview_rendering": {
+            "rows": len(combined_manifest),
+            "banner_height_px": UNIFIED_BANNER_HEIGHT,
+            "banner_fields": [
+                "unified_case_index",
+                "semantic_category",
+                "benchmark_id",
+            ],
+            "note": (
+                "Every overview row has a canonical UNIFIED CASE 00-11 banner. "
+                "The source panel's internal case number is source-job provenance only."
+            ),
+        },
         "source_experiments": source_reports,
         "storage": (
             "The unified case panels are symlinks. Original inference records, generated "
@@ -312,7 +371,8 @@ def main() -> None:
         "# DiT mask-token counterfactual analysis: unified 12-case index\n\n"
         "This directory is the canonical result entry point. It combines all 12 reviewed "
         "same-class multi-instance cases without duplicating the original attention archives.\n\n"
-        "- `visualizations/overview_12case.jpg`: all 12 final nine-panel summaries.\n"
+        "- `visualizations/overview_12case.jpg`: all 12 final nine-panel summaries; every "
+        "row starts with a canonical `UNIFIED CASE 00-11` banner, category, and benchmark ID.\n"
         "- `visualizations/case_*.jpg`: symlinks to each final full-resolution summary.\n"
         "- `manifest.jsonl`: unified intervention and provenance index.\n"
         "- `metrics.jsonl`: unified per-case attention metrics.\n"

@@ -2620,7 +2620,9 @@ source .venv/bin/activate
 
 其中 `manifest.jsonl` 和 `metrics.jsonl` 分别是统一 case/指标索引，`report.json` 保存汇总值、
 校验和及两个 source experiment 的可复现路径；`visualizations/` 包含 12 张以类别命名的最终
-九列图和 `overview_12case.jpg`。逐 case 图使用 symlink 指向 source experiment，不重复存储；
+九列图和 `overview_12case.jpg`。总览中每行另加醒目的 `UNIFIED CASE 00--11`、类别与
+benchmark ID 横幅；source panel 内部编号仅表示原 GPU job 内的 provenance，不作为统一编号。
+逐 case 图使用 symlink 指向 source experiment，不重复存储；
 原始 mask、输出图、inference sidecar、attention NPZ 和日志仍由 `report.json` 中列出的 source
 root 持有。统一 manifest SHA256 为
 `c8803e481ec0de1c081a4c0ced27aff67b564973b23d3bd14b7099f1b87eaaef`。

@@ -1579,7 +1579,9 @@ source .venv/bin/activate
 ```
 
 其中 `manifest.jsonl`、`metrics.jsonl`、`report.json` 和
-`visualizations/overview_12case.jpg` 是文档和人工检查使用的 canonical 入口；
+`visualizations/overview_12case.jpg` 是文档和人工检查使用的 canonical 入口。总览每行顶部
+固定增加 `UNIFIED CASE 00--11`、类别和 benchmark ID 横幅，使两个 source job 内部均从 0
+开始的 provenance 编号不会被误解为统一编号；
 `report.json` 同时记录底层 source experiment root 与校验和。旧版临时 panel 和
 layer-step grid 不保留或引用。
 
