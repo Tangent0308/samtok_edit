@@ -52,37 +52,6 @@ image.save("image.jpg")
 
 ## 模型总览
 
-<details>
-
-<summary>模型血缘</summary>
-
-```mermaid
-graph LR;
-    FLUX.1-Series-->black-forest-labs/FLUX.1-dev;
-    FLUX.1-Series-->black-forest-labs/FLUX.1-Krea-dev;
-    FLUX.1-Series-->black-forest-labs/FLUX.1-Kontext-dev;
-    FLUX.1-Series-->black-forest-labs/FLUX.1-Fill-dev;
-    FLUX.1-Series-->black-forest-labs/FLUX.1-Redux-dev;
-    black-forest-labs/FLUX.1-Fill-dev-->HuanJue/Insert-Anything;
-    black-forest-labs/FLUX.1-Redux-dev-->HuanJue/Insert-Anything;
-    black-forest-labs/FLUX.1-dev-->FLUX.1-dev-ControlNet-Series;
-    FLUX.1-dev-ControlNet-Series-->alimama-creative/FLUX.1-dev-Controlnet-Inpainting-Beta;
-    FLUX.1-dev-ControlNet-Series-->InstantX/FLUX.1-dev-Controlnet-Union-alpha;
-    FLUX.1-dev-ControlNet-Series-->jasperai/Flux.1-dev-Controlnet-Upscaler;
-    black-forest-labs/FLUX.1-dev-->InstantX/FLUX.1-dev-IP-Adapter;
-    black-forest-labs/FLUX.1-dev-->ByteDance/InfiniteYou;
-    black-forest-labs/FLUX.1-dev-->DiffSynth-Studio/Eligen;
-    black-forest-labs/FLUX.1-dev-->DiffSynth-Studio/LoRA-Encoder-FLUX.1-Dev;
-    black-forest-labs/FLUX.1-dev-->DiffSynth-Studio/LoRAFusion-preview-FLUX.1-dev;
-    black-forest-labs/FLUX.1-dev-->ostris/Flex.2-preview;
-    black-forest-labs/FLUX.1-dev-->stepfun-ai/Step1X-Edit;
-    Qwen/Qwen2.5-VL-7B-Instruct-->stepfun-ai/Step1X-Edit;
-    black-forest-labs/FLUX.1-dev-->DiffSynth-Studio/Nexus-GenV2;
-    Qwen/Qwen2.5-VL-7B-Instruct-->DiffSynth-Studio/Nexus-GenV2;
-```
-
-</details>
-
 |模型 ID|额外参数|推理|低显存推理|全量训练|全量训练后验证|LoRA 训练|LoRA 训练后验证|
 |-|-|-|-|-|-|-|-|
 |[black-forest-labs/FLUX.1-dev](https://www.modelscope.cn/models/black-forest-labs/FLUX.1-dev)||[code](https://github.com/modelscope/DiffSynth-Studio/blob/main/examples/flux/model_inference/FLUX.1-dev.py)|[code](https://github.com/modelscope/DiffSynth-Studio/blob/main/examples/flux/model_inference_low_vram/FLUX.1-dev.py)|[code](https://github.com/modelscope/DiffSynth-Studio/blob/main/examples/flux/model_training/full/FLUX.1-dev.sh)|[code](https://github.com/modelscope/DiffSynth-Studio/blob/main/examples/flux/model_training/validate_full/FLUX.1-dev.py)|[code](https://github.com/modelscope/DiffSynth-Studio/blob/main/examples/flux/model_training/lora/FLUX.1-dev.sh)|[code](https://github.com/modelscope/DiffSynth-Studio/blob/main/examples/flux/model_training/validate_lora/FLUX.1-dev.py)|
@@ -175,6 +144,7 @@ FLUX 系列模型统一通过 [`examples/flux/model_training/train.py`](https://
         * `--model_id_with_origin_paths`: 带原始路径的模型 ID，例如 `"black-forest-labs/FLUX.1-dev:flux1-dev.safetensors"`。用逗号分隔。
         * `--extra_inputs`: 模型 Pipeline 所需的额外输入参数，例如训练 ControlNet 模型时需要额外参数 `controlnet_inputs`，以 `,` 分隔。
         * `--fp8_models`：以 FP8 格式加载的模型，格式与 `--model_paths` 或 `--model_id_with_origin_paths` 一致，目前仅支持参数不被梯度更新的模型（不需要梯度回传，或梯度仅更新其 LoRA）。
+        * `--quant_options`：对加载的模型进行动态量化。以 `;` 分隔多个条目，每个为 `<模型字符串>:<method>[/<exclude_modules>]`，`<模型字符串>` 需与 `--model_paths`/`--model_id_with_origin_paths` 中的一致，`method` 为已注册的量化方法（如 `bitsandbytes_nf4`），`exclude_modules` 为可选的保持全精度的层。
     * 训练基础配置
         * `--learning_rate`: 学习率。
         * `--num_epochs`: 轮数（Epoch）。

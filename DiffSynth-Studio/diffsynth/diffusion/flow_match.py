@@ -5,7 +5,7 @@ from typing_extensions import Literal
 
 class FlowMatchScheduler():
 
-    def __init__(self, template: Literal["FLUX.1", "Wan", "Qwen-Image", "FLUX.2", "Z-Image", "LTX-2", "Qwen-Image-Lightning", "ERNIE-Image", "ACE-Step", "Ideogram4", "Krea-2", "Boogu", "MiniMax-H3", "MiniMax-Music3", "LingBot-Video"] = "FLUX.1"):
+    def __init__(self, template: Literal["FLUX.1", "Wan", "Qwen-Image", "FLUX.2", "Z-Image", "LTX-2", "Qwen-Image-Lightning", "ERNIE-Image", "ACE-Step", "Ideogram4", "Krea-2", "Boogu", "MiniMax-H3", "MiniMax-Music3", "LingBot-Video", "SenseNova-U1", "YuE2"] = "FLUX.1"):
         self.set_timesteps_fn = {
             "FLUX.1": FlowMatchScheduler.set_timesteps_flux,
             "Wan": FlowMatchScheduler.set_timesteps_wan,
@@ -23,6 +23,8 @@ class FlowMatchScheduler():
             "MiniMax-H3": FlowMatchScheduler.set_timesteps_minimax_h3,
             "MiniMax-Music3": FlowMatchScheduler.set_timesteps_minimax_music3,
             "LingBot-Video": FlowMatchScheduler.set_timesteps_lingbot_video,
+            "SenseNova-U1": FlowMatchScheduler.set_timesteps_sensenova_u1,
+            "YuE2": FlowMatchScheduler.set_timesteps_yue2,
         }.get(template, FlowMatchScheduler.set_timesteps_flux)
         self.num_train_timesteps = 1000
 
@@ -174,6 +176,15 @@ class FlowMatchScheduler():
         return sigmas, timesteps
 
     @staticmethod
+    def set_timesteps_sensenova_u1(num_inference_steps=50, denoising_strength=1.0, shift=3.0):
+        num_train_timesteps = 1000
+        sigmas = torch.linspace(denoising_strength, 0.0, num_inference_steps + 1)[:-1]
+        if shift is not None and shift != 1.0:
+            sigmas = shift * sigmas / (1 + (shift - 1) * sigmas)
+        timesteps = sigmas * num_train_timesteps
+        return sigmas, timesteps
+
+    @staticmethod
     def set_timesteps_ace_step(num_inference_steps=8, denoising_strength=1.0, shift=3.0):
         num_train_timesteps = 1000
         sigma_start = denoising_strength
@@ -198,6 +209,7 @@ class FlowMatchScheduler():
             for timestep in target_timesteps:
                 timestep_id = torch.argmin((timesteps - timestep).abs())
                 timesteps[timestep_id] = timestep
+                sigmas[timestep_id] = timestep / num_train_timesteps
         return sigmas, timesteps
 
     @staticmethod
@@ -302,7 +314,7 @@ class FlowMatchScheduler():
         num_train_timesteps = 1000
         if special_case == "stage2":
             sigmas = torch.Tensor([0.909375, 0.725, 0.421875])
-        elif special_case == "ditilled_stage1":
+        elif special_case == "distilled_stage1":
             sigmas = torch.Tensor([1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875])
         else:
             dynamic_shift_len = dynamic_shift_len or 4096
@@ -337,6 +349,16 @@ class FlowMatchScheduler():
     def set_timesteps_minimax_music3(num_inference_steps=30, denoising_strength=1.0):
         num_train_timesteps = 1000
         sigmas = torch.linspace(denoising_strength, denoising_strength / num_inference_steps, num_inference_steps)
+        timesteps = sigmas * num_train_timesteps
+        return sigmas, timesteps
+
+    @staticmethod
+    def set_timesteps_yue2(num_inference_steps=100, denoising_strength=1.0):
+        # YuE2's NAR flow matching uses sigmoid-shifted time with timestep_shift=1,
+        # so the shifted time equals sigma directly; a linear sigma schedule matches
+        # the original 32-step midpoint solver (t goes from 1 to 0).
+        num_train_timesteps = 1000
+        sigmas = torch.linspace(denoising_strength, 0.0, num_inference_steps + 1, dtype=torch.float32)[:-1]
         timesteps = sigmas * num_train_timesteps
         return sigmas, timesteps
 
@@ -440,3 +462,28 @@ class HiDreamO1FlashScheduler(FlowMatchScheduler):
         noise = self.clip_noise(torch.randn(denoised.shape, device=denoised.device, dtype=denoised.dtype))
         sample = sigma_ * noise * self.noise_scale_schedule[timestep_id] + (1.0 - sigma_) * denoised
         return sample
+
+
+class AncestralFlowMatchScheduler(FlowMatchScheduler):
+
+    def __init__(self, template="LTX-2", eta=1.0, s_noise=1.0, noise_seed=0, rand_device="cpu"):
+        super().__init__(template)
+        self.eta = eta
+        self.s_noise = s_noise
+        self.generator = torch.Generator(device=rand_device).manual_seed(noise_seed)
+
+    def step(self, model_output, timestep, sample, **kwargs):
+        timestep_id = torch.argmin((self.timesteps - timestep).abs())
+        sigma = self.sigmas[timestep_id]
+        sigma_ = self.sigmas[timestep_id + 1] if timestep_id + 1 < len(self.timesteps) else torch.zeros_like(sigma)
+        denoised = sample.float() - model_output.float() * sigma.float()
+        if sigma_ == 0:
+            return denoised.to(sample.dtype)
+        sigma_down = sigma_ * (1.0 + (sigma_ / sigma - 1.0) * self.eta)
+        ratio = sigma_down / sigma
+        prev_sample = ratio * sample.float() + (1.0 - ratio) * denoised
+        alpha_next, alpha_down = 1.0 - sigma_, 1.0 - sigma_down
+        renoise_coeff = (sigma_ ** 2 - sigma_down ** 2 * alpha_next ** 2 / alpha_down ** 2).clamp(min=0).sqrt()
+        noise = torch.randn(sample.shape, generator=self.generator, dtype=sample.dtype, device=self.generator.device).to(sample.device)
+        prev_sample = alpha_next / alpha_down * prev_sample + noise.float() * self.s_noise * renoise_coeff
+        return prev_sample.to(sample.dtype)

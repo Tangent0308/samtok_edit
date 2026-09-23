@@ -30,6 +30,26 @@ def save_training_args(args):
         print(f"Warning: failed to save training arguments: {e}")
 
 
+def exclude_quantized_params_from_ddp_sync(accelerator: Accelerator, model: DiffusionTrainingModule):
+    """DDP broadcasts every parameter when it is constructed, but a quantized weight backed by a
+    tensor subclass cannot be flattened into a broadcast bucket. Such weights are frozen and every
+    rank loads them from the same checkpoint, so let DDP skip them."""
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+        quant_configs = [module.quantize_config for module in model.modules() if getattr(module, "quantize_config", None) is not None]
+        ignored = [
+            f"{name}.weight" for name, module in model.named_modules()
+            if any(quantize.is_quantized_linear(module) for quantize in quant_configs)
+            and not module.weight.requires_grad and is_traceable_wrapper_subclass(module.weight)
+        ]
+        if len(ignored) > 0:
+            model._ddp_params_and_buffers_to_ignore = ignored
+            if accelerator.is_main_process:
+                print(f"{len(ignored)} quantized weights are excluded from DDP state synchronization.")
+    except Exception as e:
+        print(f"Warning: failed to exclude quantized weights from DDP state synchronization: {e}")
+
+
 def launch_training_task(
     accelerator: Accelerator,
     dataset: torch.utils.data.Dataset,
@@ -40,6 +60,7 @@ def launch_training_task(
     num_workers: int = 1,
     save_steps: int = None,
     num_epochs: int = 1,
+    max_grad_norm: float = None,
     enable_model_cpu_offload: bool = False,
     enable_optimizer_cpu_offload: bool = False,
     cpu_offload_split_threshold: int = None,
@@ -64,7 +85,19 @@ def launch_training_task(
     optimizer_class = get_optimizer_class(customized_optimizer)
     optimizer = optimizer_class(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
-    dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
+    # Research datasets may provide a deterministic sampler.  This keeps the
+    # official optimizer/DDP/checkpoint path while allowing a project to encode
+    # a global sample schedule (for example NTP:ref:noref:plain).  Ordinary
+    # datasets retain the upstream shuffle=True behavior.
+    sampler = getattr(dataset, "official_sampler", None)
+    if sampler is None:
+        dataloader = torch.utils.data.DataLoader(
+            dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers
+        )
+    else:
+        dataloader = torch.utils.data.DataLoader(
+            dataset, sampler=sampler, shuffle=False, collate_fn=lambda x: x[0], num_workers=num_workers
+        )
 
     if enable_model_cpu_offload:
         optimizer, dataloader, scheduler = accelerator.prepare(optimizer, dataloader, scheduler)
@@ -72,6 +105,7 @@ def launch_training_task(
         offload_manager = OffloadTrainingManager(model, accelerator.device, enable_optimizer_cpu_offload, cpu_offload_split_threshold)
     else:
         model.to(device=accelerator.device)
+        exclude_quantized_params_from_ddp_sync(accelerator, model)
         model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
 
     initialize_deepspeed_gradient_checkpointing(accelerator)
@@ -85,6 +119,18 @@ def launch_training_task(
                 accelerator.backward(loss)
                 if enable_model_cpu_offload:
                     offload_manager.after_backward()
+                audit = getattr(accelerator.unwrap_model(model), "after_backward_audit", None)
+                if audit is not None:
+                    audit_result = audit()
+                    if accelerator.is_main_process:
+                        print(f"official_train_audit={audit_result}", flush=True)
+                # Accelerate accumulates gradients across micro-steps.  Clip
+                # only on the synchronized optimizer step so accumulation has
+                # the same semantics as the upstream runner.
+                if max_grad_norm is not None and accelerator.sync_gradients:
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), max_grad_norm, error_if_nonfinite=True
+                    )
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -104,6 +150,12 @@ def launch_data_process_task(
     args = None,
     **kwargs,
 ):
+    # Keep the public function usable without the argparse namespace used by
+    # the example scripts.  The SAMTok adapter passes explicit defaults and
+    # still uses this official entry point.
+    enable_model_cpu_offload = False
+    enable_optimizer_cpu_offload = False
+    cpu_offload_split_threshold = None
     if args is not None:
         num_workers = args.dataset_num_workers
         enable_model_cpu_offload = args.enable_model_cpu_offload
@@ -117,6 +169,7 @@ def launch_data_process_task(
         model.pipe.device = accelerator.device
     else:
         model.to(device=accelerator.device)
+        exclude_quantized_params_from_ddp_sync(accelerator, model)
         model, dataloader = accelerator.prepare(model, dataloader)
     
     for data_id, data in enumerate(tqdm(dataloader)):

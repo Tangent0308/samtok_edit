@@ -307,8 +307,8 @@ class LoadAudioWithTorchaudio(DataProcessingOperator, FrameSamplerByRateMixin):
                 padding = target_samples - current_samples
                 waveform = torch.nn.functional.pad(waveform, (0, padding))
             return waveform, sample_rate
-        except:
-            warnings.warn(f"Cannot load audio in {data}. The audio will be `None`.")
+        except Exception as e:
+            warnings.warn(f"Cannot load audio in {data} due to {e}. The audio will be `None`.")
             return None
 
 
@@ -339,3 +339,50 @@ class LoadPureAudioWithTorchaudio(DataProcessingOperator):
         except Exception as e:
             print(f"Cannot load audio in {data} due to {e}. The audio will be `None`.")
             return None
+
+
+class LoadMultiTrackAudio(DataProcessingOperator):
+    def __init__(self, target_sample_rate=48000, max_audio_duration=None, division_factor=1):
+        self.target_sample_rate = target_sample_rate
+        self.max_audio_duration = max_audio_duration
+        self.division_factor = division_factor
+        import torchaudio
+        self.audio_loader = torchaudio.load
+        self.audio_resampler = torchaudio.functional.resample
+
+    def load_audio(self, path):
+        waveform, sample_rate = self.audio_loader(path)
+        if len(waveform.shape) == 2 and waveform.shape[0] == 1:
+            waveform = repeat(waveform, "c l -> (n c) l", n=2)
+        if self.target_sample_rate is not None and sample_rate != self.target_sample_rate:
+            waveform = self.audio_resampler(waveform, sample_rate, self.target_sample_rate)
+            sample_rate = self.target_sample_rate
+        if self.max_audio_duration is not None and waveform.shape[1] > sample_rate * self.max_audio_duration:
+            waveform = waveform[:, :int(sample_rate * self.max_audio_duration)]
+        if self.division_factor is not None:
+            waveform = waveform[:, :waveform.shape[1] // self.division_factor * self.division_factor]
+        return waveform
+
+    def load_latents(self, path):
+        latents = torch.load(path, weights_only=True, map_location="cpu")
+        return latents
+
+    def load_single_data(self, path):
+        if path is None:
+            return None
+        elif path.endswith(".pth"):
+            return self.load_latents(path)
+        else:
+            return self.load_audio(path)
+
+    def __call__(self, data):
+        if isinstance(data, str):
+            return self.load_single_data(data)
+        else:
+            audio = {}
+            for name, path in data.items():
+                audio[name] = self.load_single_data(path)
+            min_length = min([audio[name].shape[1] for name in audio if audio[name] is not None])
+            min_length = min_length // self.division_factor * self.division_factor
+            audio = {name: audio[name][:, :min_length] for name in audio}
+        return audio
