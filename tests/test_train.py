@@ -9,7 +9,7 @@ from diffsynth.diffusion.logger import ModelLogger
 from diffsynth.diffusion.runner import launch_data_process_task, launch_training_task
 from diffsynth.diffusion.training_module import DiffusionTrainingModule
 from samtok_edit21.data import make_schedule, row_kind
-from samtok_edit21.official_api import ScheduledMetadata, verify_official_cache
+from samtok_edit21.train import ScheduledMetadata, verify_cache
 from samtok_edit21.data import file_hash, row_hash
 
 
@@ -64,7 +64,7 @@ class _TinyDataset(Dataset):
 
     def __init__(self):
         self.x = list(range(4))
-        self.official_sampler = SequentialSampler(self)
+        self.schedule_sampler = SequentialSampler(self)
 
     def __len__(self):
         return len(self.x)
@@ -85,7 +85,7 @@ class _TinyModel(DiffusionTrainingModule):
         return state_dict
 
 
-def test_official_runner_accepts_project_sampler_and_checkpoint(tmp_path):
+def test_runner_accepts_project_sampler_and_checkpoint(tmp_path):
     accelerator = Accelerator(
         cpu=True,
         gradient_accumulation_steps=2,
@@ -108,7 +108,7 @@ def test_official_runner_accepts_project_sampler_and_checkpoint(tmp_path):
     assert (output / "step-4.safetensors").exists()
 
 
-def test_official_data_process_runner_accepts_explicit_defaults(tmp_path):
+def test_data_process_runner_accepts_explicit_defaults(tmp_path):
     accelerator = Accelerator(cpu=True, dataloader_config=DataLoaderConfiguration(even_batches=False))
     output = tmp_path / "cache"
     launch_data_process_task(
@@ -122,7 +122,7 @@ def test_official_data_process_runner_accepts_explicit_defaults(tmp_path):
     assert (output / "0" / "0.pth").exists()
 
 
-def test_official_cache_manifest_checks_geometry_and_checksum(tmp_path):
+def test_cache_manifest_checks_geometry_and_checksum(tmp_path):
     row = {
         "sample_type": "edit",
         "edit_type": "attribute",
@@ -141,7 +141,7 @@ def test_official_cache_manifest_checks_geometry_and_checksum(tmp_path):
     }
     torch.save(inputs, shard)
     manifest = {
-        "format": "samtok21-official-cache-v1",
+        "format": "samtok21-cache-v1",
         "rows": [{**row, "_cache_file": "0/0.pth"}],
     }
     side = {
@@ -149,10 +149,10 @@ def test_official_cache_manifest_checks_geometry_and_checksum(tmp_path):
         "sha256": file_hash(shard),
     }
     (shard.with_suffix(".json")).write_text(json.dumps(side))
-    assert verify_official_cache(tmp_path, manifest)
+    assert verify_cache(tmp_path, manifest)
     shard.write_bytes(b"corrupt")
     try:
-        verify_official_cache(tmp_path, manifest)
+        verify_cache(tmp_path, manifest)
     except ValueError as error:
         assert "checksum" in str(error)
     else:

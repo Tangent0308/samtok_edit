@@ -1,18 +1,65 @@
-# SAMTokEdit with the official Qwen-Image-2.1 training interfaces
+# SAMTokEdit for Qwen-Image-2.1
 
-This branch starts from `samtok_edit/main`, vendors DiffSynth 2.1.8, and adapts the SAMTok localization-then-edit method to the official Qwen-Image-2.1 pipeline.
+This repository adapts the SAMTok region-localization method to Qwen-Image-2.1. It combines a Qwen3-VL-8B-SAMTok text encoder with the Qwen-Image-2.1 VAE/DiT, and provides strict data validation, two-stage LoRA training, deterministic multi-GPU sample mixing, TE conditioning cache, localization, and image editing inference.
 
-The main entry point is `samtok_edit21.official_api`. It uses DiffSynth's official `launch_data_process_task` and `launch_training_task`, with a SAMTok text encoder, NTP/FM Stage 1 loss, deterministic type-ratio schedules, and cache integrity checks.
+The implementation is based on the DiffSynth version vendored in `DiffSynth-Studio/` and the SAMTok code under `samtok/`. Source datasets are read-only; generated debug data and experiment outputs belong under the experiment directory configured by the user.
+
+## Environment
 
 ```bash
+python -m venv /opt/tiger/tanyue/samtok_edit_qwen_image_2_1/.venv
 source /opt/tiger/tanyue/samtok_edit_qwen_image_2_1/.venv/bin/activate
-PYTHONPATH=.:DiffSynth-Studio python -m pytest -q
-PYTHONPATH=.:DiffSynth-Studio python -m samtok_edit21.official_api --help
+pip install -r requirements.txt
+export PYTHONPATH=$PWD:DiffSynth-Studio
 ```
 
-The detailed implementation and experiment records are in:
+Set local model paths with `--qwen` and `--samtok`, or use the defaults in `samtok_edit21/model.py`.
 
-- [SAMTokEdit_Qwen21_官方接口扩展实现.md](SAMTokEdit_Qwen21_官方接口扩展实现.md)
-- [SAMTokEdit_Qwen21_官方接口实验记录.md](SAMTokEdit_Qwen21_官方接口实验记录.md)
+## Data validation
 
-The source dataset and model directories are read-only inputs. Smoke metadata is under `smoke_data/` and only references the supplied source images.
+```bash
+python -m samtok_edit21.cli validate \
+  --metadata /path/stage1.jsonl --base-path /path/data
+```
+
+The protocol supports `edit`, `edit_ntp`, and `edit_umt` rows. Mask spans and localization JSON are validated strictly.
+
+## Training
+
+Stage 1 trains the Qwen3-VL LoRA with NTP plus flow matching:
+
+```bash
+accelerate launch --num_processes 8 --mixed_precision bf16 \
+  -m samtok_edit21.train train --stage stage1 \
+  --metadata /path/stage1.jsonl --base-path /path/data \
+  --output /path/stage1 --steps 1000 --accumulation 8
+```
+
+Build TE/VAE cache with the Stage 1 adapter:
+
+```bash
+accelerate launch --num_processes 8 --mixed_precision bf16 \
+  -m samtok_edit21.train cache --metadata /path/stage2.jsonl \
+  --base-path /path/data --te-adapter /path/stage1/adapter \
+  --output /path/cache
+```
+
+Stage 2 trains the Qwen-Image-2.1 DiT LoRA from that cache:
+
+```bash
+accelerate launch --num_processes 8 --mixed_precision bf16 \
+  -m samtok_edit21.train train --stage stage2 \
+  --cache /path/cache --output /path/stage2 --steps 1000 --accumulation 4
+```
+
+## Inference
+
+```bash
+python -m samtok_edit21.cli localize --image /path/source.png \
+  --te-adapter /path/stage1/adapter --output /path/localize.json
+python -m samtok_edit21.cli infer --image /path/source.png \
+  --prompt "..." --te-adapter /path/stage1/adapter \
+  --dit-adapter /path/stage2/adapter --output /path/result.png
+```
+
+For the complete implementation notes and code references, read [`SAMTokEdit_Qwen21_代码实现与使用.md`](SAMTokEdit_Qwen21_代码实现与使用.md). Smoke commands and results are recorded in [`SAMTokEdit_Qwen21_实验记录.md`](SAMTokEdit_Qwen21_实验记录.md).

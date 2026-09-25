@@ -89,7 +89,11 @@ def launch_training_task(
     # official optimizer/DDP/checkpoint path while allowing a project to encode
     # a global sample schedule (for example NTP:ref:noref:plain).  Ordinary
     # datasets retain the upstream shuffle=True behavior.
-    sampler = getattr(dataset, "official_sampler", None)
+    sampler = getattr(dataset, "schedule_sampler", None)
+    if sampler is None:
+        # Compatibility for older project datasets that used the temporary
+        # attribute name before the schedule API was made neutral.
+        sampler = getattr(dataset, "official_sampler", None)
     if sampler is None:
         dataloader = torch.utils.data.DataLoader(
             dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers

@@ -8,7 +8,7 @@ from .model import DEFAULT_QWEN, DEFAULT_SAMTOK
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SAMTok + official Qwen-Image-2.1")
+    parser = argparse.ArgumentParser(description="SAMTok + Qwen-Image-2.1")
     subs = parser.add_subparsers(dest="command", required=True)
     build = subs.add_parser("build-debug")
     build.add_argument("--output", default=EXPERIMENT_ROOT + "/data")
@@ -228,7 +228,13 @@ def inference(args):
         from .training import adapter_identity
 
         config = load_adapter(pipe.dit, args.dit_adapter)
-        expected = config.get("conditioning_identity", {}).get("te_adapter")
+        conditioning_identity = config.get("conditioning_identity", {})
+        # Cache manifests store the adapter identity as a nested record.  Older
+        # checkpoints may contain only its path; normalize both forms before
+        # comparing hashes.
+        expected = conditioning_identity.get("te_adapter_identity")
+        if expected is None and conditioning_identity.get("te_adapter"):
+            expected = adapter_identity(conditioning_identity["te_adapter"])
         actual = adapter_identity(args.te_adapter)
         if (expected or {}).get("sha256") != (actual or {}).get("sha256"):
             raise ValueError(

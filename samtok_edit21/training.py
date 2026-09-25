@@ -13,6 +13,30 @@ from accelerate import Accelerator, DistributedDataParallelKwargs
 from peft import LoraConfig, inject_adapter_in_model
 from safetensors.torch import load_file, save_file
 
+
+def _disable_broken_bnb_backend():
+    """Keep PEFT on its dense LoRA path when an unrelated bnb install is broken.
+
+    The training recipe never quantizes the base models.  Some shared
+    environments nevertheless expose a user-site bitsandbytes package that
+    cannot import against the installed Triton/CUDA version.  PEFT detects the
+    package by spec alone and then imports it while replacing every Linear,
+    which would abort otherwise.  Disable only the optional dispatchers when
+    that import fails; dense LoRA remains unchanged.
+    """
+
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception as exc:  # pragma: no cover - depends on host packages
+        import peft.tuners.lora.model as lora_model
+
+        lora_model.is_bnb_available = lambda: False
+        lora_model.is_bnb_4bit_available = lambda: False
+        print(f"[SAMTokEdit] disabling unusable bitsandbytes backend: {exc}")
+
+
+_disable_broken_bnb_backend()
+
 from .data import (
     file_hash,
     load_images,

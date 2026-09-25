@@ -1,0 +1,2 @@
+-e ./DiffSynth-Studio
+mmengine==0.10.7
