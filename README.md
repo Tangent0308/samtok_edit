@@ -23,6 +23,11 @@ python -m samtok_edit21.cli validate \
 ```
 
 The protocol supports `edit`, `edit_ntp`, and `edit_umt` rows. Mask spans and localization JSON are validated strictly.
+Localization uses the Qwen3-VL-8B-SAMTok chat template without a system message,
+with a fixed empty thinking prefix excluded from NTP supervision. Metadata has
+an exact field whitelist; annotation/provenance stays in a separate manifest.
+The `convert` command accepts annotated units and stored sample rows, and requires
+the input encoder's `--mask-tokenizer-sha256` to match the supplied SAMTok codec.
 
 ## Training
 
@@ -59,6 +64,10 @@ accelerate launch --num_processes 8 --mixed_precision bf16 \
 ```
 
 ## Inference
+
+Pure-text localization/editing defaults to `--variant ref`. A `noref` ablation
+requires reviewed per-unit types via `--units-file`; use `--strict-noref` to
+reject fallback. Interactive masks bypass localization and bind to region phrases.
 
 ```bash
 python -m samtok_edit21.cli localize --image /path/source.png \

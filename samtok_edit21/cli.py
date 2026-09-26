@@ -4,7 +4,7 @@ import json
 import sys
 from pathlib import Path
 
-from .data import EXPERIMENT_ROOT, read_rows, write_json, write_rows
+from .data import EXPERIMENT_ROOT, read_rows, write_json, write_rows, row_hash, file_hash
 from .model import DEFAULT_QWEN, DEFAULT_SAMTOK
 
 
@@ -22,9 +22,8 @@ def main(argv=None):
     base = "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/"
     build.add_argument("--crisp", default=base + "CrispEdit-2M")
     build.add_argument("--masks", default=base + "CrispEdit-2M-mask")
-    build.add_argument(
-        "--gres", default=base + "SAMTok_Training_Data/mask_generation_gres209k.json"
-    )
+    build.add_argument("--gres", help="Qwen3-VL-SAMTok GRES/GRefCOCO conversation JSON")
+    build.add_argument("--gres-mask-tokenizer-sha256", help="Encoder checksum recorded by the GRES source builder")
     build.add_argument(
         "--gres-images",
         default="/mnt/bn/strategy-mllm-train/intern/common_datasets/Sa2VA-Training/osprey-724k",
@@ -38,6 +37,9 @@ def main(argv=None):
         "--input", required=True, help="JSONL common records with units/mask_codes"
     )
     convert.add_argument("--output", required=True)
+    convert.add_argument("--samtok", default=DEFAULT_SAMTOK)
+    convert.add_argument("--mask-tokenizer-sha256", required=True,
+                         help="Checksum recorded by the input mask encoder; must match the supplied SAMTok codec")
     validate = subs.add_parser("validate")
     validate.add_argument("--metadata", required=True)
     validate.add_argument("--base-path", default=".")
@@ -73,7 +75,7 @@ def main(argv=None):
             p.add_argument("--device", default="cuda")
             p.add_argument("--max-new-tokens", type=int, default=256)
             p.add_argument("--seed", type=int, default=0)
-            p.add_argument("--variant", choices=("ref", "noref"), default="noref")
+            p.add_argument("--variant", choices=("ref", "noref"), default="ref")
             p.add_argument("--strict-noref", action="store_true")
             p.add_argument("--units-file", help="Reviewed atomic units JSON list, in localization group order")
             if name == "infer":
@@ -127,10 +129,32 @@ def main(argv=None):
     elif args.command == "convert":
         from .prepare import convert_record
 
-        rows, reports = [], []
+        checksum = file_hash(Path(args.samtok) / "mask_tokenizer_256x2.pth")
+        if args.mask_tokenizer_sha256 != checksum:
+            raise ValueError("Input mask tokenizer checksum mismatch: re-encode raw masks with the supplied codec")
+        for path in (args.output, args.output + ".report.json", args.output + ".provenance.json"):
+            if Path(path).exists():
+                raise ValueError("Conversion outputs must be fresh paths")
+        rows, reports, manifest = [], [], []
         for i, line in enumerate(Path(args.input).read_text().splitlines()):
-            derived, errors = convert_record(json.loads(line))
+            if not line.strip():
+                continue
+            record = line
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict):
+                    raise ValueError("Each source record must be a JSON object")
+                derived, errors = convert_record(record)
+            except (ValueError, TypeError, KeyError, OSError) as exc:
+                derived, errors = [], {"record": str(exc)}
             rows.extend(derived)
+            metadata = record if isinstance(record, dict) else {}
+            manifest.append({"source_dataset": metadata.get("source_dataset", str(Path(args.input).resolve())),
+                             "source_index": i, "record": record,
+                             "derived_row_hashes": [row_hash(r) for r in derived],
+                             "rewrite_errors": errors,
+                             "geometry_qc": "checked" if derived and metadata.get("units") and all("mask_paths" in u for u in metadata["units"]) else "upstream_required",
+                             **{k: metadata[k] for k in ("codec_iou", "qc_flag", "mask_path", "decoded_path") if k in metadata}})
             reports.append(
                 {
                     "source_index": i,
@@ -139,7 +163,9 @@ def main(argv=None):
                 }
             )
         write_rows(args.output, rows)
-        write_json(args.output + ".report.json", reports)
+        write_json(args.output + ".provenance.json", manifest)
+        write_json(args.output + ".report.json", {"mask_tokenizer_sha256": checksum,
+                   "input_sha256": file_hash(args.input), "rows": len(rows), "records": reports})
     elif args.command == "validate":
         from PIL import Image
 

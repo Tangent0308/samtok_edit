@@ -1,4 +1,4 @@
-"""Version 2 data contract: native localization and inline region editing.
+"""Data contract: native localization and inline region editing.
 
 Model inputs contain only the documented fields. Builders keep provenance in a
 separate manifest: an image path is not a unique editing instruction identity.
@@ -25,6 +25,7 @@ EDIT_TYPES = (
     "composite",
 )
 LOC_REQUEST = "Please identify and segment the region to be edited in this image."
+EMPTY_THINK = "<think>\n\n</think>\n\n"
 GLOBAL_REFS = (
     "this image",
     "the entire image",
@@ -88,7 +89,7 @@ def to_cot(items):
     for span, label in items:
         if not is_valid_span(span) or not isinstance(label, str) or not label.strip():
             raise ValueError("Each item needs a valid mask span and nonempty label")
-        if "<|" in label or any(ord(c) < 32 for c in label):
+        if "<|" in label or "<think>" in label or "</think>" in label or any(ord(c) < 32 for c in label):
             raise ValueError("Control tokens/characters are not allowed in a label")
         rows.append({"mask_2d": span, "label": label.strip()})
     return (
@@ -100,6 +101,8 @@ def to_cot(items):
 
 def parse_cot(text, *, nonempty=False):
     """Strict parse; never fabricate labels/codes or drop one composite unit."""
+    if not isinstance(text, str):
+        raise ValueError("Localization JSON must be stored as text")
     text = text.strip()
     if text.endswith("<|im_end|>"):
         text = text[: -len("<|im_end|>")].rstrip()
@@ -124,7 +127,11 @@ def parse_generated_cot(text):
     # The released Qwen3 SAMTok can emit a well-formed thinking preamble even
     # though localization supervision is canonical JSON only. It is never
     # diffusion conditioning. Reject arbitrary prose and truncated preambles.
-    text = re.sub(r"^\s*<think>[\s\S]*?</think>\s*", "", text, count=1)
+    if not isinstance(text, str):
+        raise ValueError("Generated localization must be text")
+    text = re.sub(r"^\s*<think>\s*</think>\s*", "", text, count=1)
+    if text.removesuffix("<|im_end|>").strip() == "No target.":
+        raise ValueError("Localization returned No target.")
     return parse_cot(text, nonempty=True)
 
 
@@ -139,9 +146,11 @@ def phrase_span(text, phrase):
 
 def grouped_units(instruction, items):
     groups = OrderedDict()
+    plural_groups = {}
+    previous = None
     for code, label in items:
-        plural = bool(re.match(r"^one of ", label, re.I))
-        phrase = re.sub(r"^one of ", "", label, flags=re.I)
+        plural = bool(re.match(r"^one of the ", label, re.I))
+        phrase = re.sub(r"^one of the ", "", label, flags=re.I)
         if phrase != label:
             try:
                 phrase_span(instruction, phrase)
@@ -151,11 +160,16 @@ def grouped_units(instruction, items):
                 without_article = re.sub(r"^(?:the|a|an)\s+", "", phrase, flags=re.I)
                 phrase_span(instruction, without_article)
                 phrase = without_article
-        if phrase in groups and not plural:
+        phrase = next((p for p in groups if p.lower() == phrase.lower()), phrase)
+        if phrase in groups and phrase != previous:
+            raise ValueError("Masks for one phrase must be contiguous in the JSON list")
+        if phrase in groups and (not plural or not plural_groups[phrase]):
             raise ValueError("Repeated label requires explicit 'one of' multi-instance semantics")
         if phrase.lower() != "this image":
             phrase_span(instruction, phrase)
         groups.setdefault(phrase, []).append(code)
+        plural_groups[phrase] = plural
+        previous = phrase
     return [Unit(phrase, tuple(codes)) for phrase, codes in groups.items()]
 
 
@@ -168,11 +182,7 @@ class Unit:
 
 
 def bind_edit_units(instruction, items, reviewed=None):
-    """Resolve localization first; use reviewed semantics or a deliberately small grammar.
-
-    This is not a general natural-language parser. Never infer add/text/composite
-    semantics from the old default Unit.edit_type='attribute'.
-    """
+    """Noref needs reviewed semantics; localization JSON has no edit types."""
     units = grouped_units(instruction, items)
     if reviewed is not None:
         if len(reviewed) != len(units):
@@ -186,39 +196,14 @@ def bind_edit_units(instruction, items, reviewed=None):
                 raise ValueError("Reviewed edit_type must be atomic")
             result.append(Unit(unit.ref_phrase, unit.codes, typ, spec.get("anchor_phrase")))
         return result
-    if len(units) != 1:
-        raise ValueError("Composite noref requires reviewed units")
-    if re.search(r";|\b(?:and|then|while|also)\b", instruction, re.I):
-        raise ValueError("Multi-clause/compound noref requires reviewed units")
-    unit = units[0]
-    if unit.ref_phrase.lower() == "this image":
-        return [Unit(unit.ref_phrase, unit.codes, "global")]
-    # Only match the whole instruction, including the entire uniquely bound phrase.
-    ref = re.escape(unit.ref_phrase)
-    noun = r"(?:(?:the|a|an)\s+)?" + ref
-    tail = r"[.!?]?"
-    rules = [
-        ("remove", r"(?:Remove|Delete|Erase)\s+" + noun + tail),
-        ("replace", r"(?:Replace|Swap)\s+" + noun + r"\s+(?:with|for)\s+.+"),
-        ("text", r"(?:Change|Replace)\s+(?:(?:the )?text\s+)?" + noun + r'\s+(?:to|with)\s+["“].+["”]' + tail),
-        ("attribute", r"(?:Make|Paint|Color|Turn)\s+" + noun + r"\s+(?:red|blue|green|yellow|black|white|purple|orange|pink|brown)" + tail),
-        ("action", r"(?:Make|Have)\s+" + noun + r"\s+(?:stand|sit|walk|run|jump|smile)" + tail),
-    ]
-    # Text must take priority over generic replacement.
-    rules.insert(0, rules.pop(2))
-    for typ, pattern in rules:
-        if re.fullmatch(pattern, instruction.strip(), re.I):
-            return [Unit(unit.ref_phrase, unit.codes, typ)]
-    # Add is only safe without spatial language or with a reviewed terminal anchor.
-    if re.fullmatch(r"(?:Add|Insert|Draw)\s+" + ref + tail, instruction.strip(), re.I):
-        if not re.search(r"\b(?:near|next|beside|behind|front|on|in|under|above|at|to)\b", unit.ref_phrase, re.I):
-            return [Unit(unit.ref_phrase, unit.codes, "add")]
-    raise ValueError("No reliable atomic noref grammar; provide reviewed units")
+    raise ValueError("Noref ablation requires reviewed edit_type for every unit")
 
 
-def condition_localization(instruction, items, *, variant="noref", reviewed=None, strict=False):
+def condition_localization(instruction, items, *, variant="ref", reviewed=None, strict=False):
     if variant not in {"ref", "noref"}:
         raise ValueError("Expected requested variant ref/noref")
+    if strict and variant != "noref":
+        raise ValueError("Strict noref requires variant=noref")
     groups = grouped_units(instruction, items)
     ref = render_units(instruction, groups, variant="ref")
     if variant == "ref":
@@ -251,7 +236,7 @@ def render_units(instruction, units, *, variant="ref"):
     if variant not in {"ref", "noref"} or not units:
         raise ValueError("Expected ref/noref and at least one unit")
     spans_in(instruction)
-    if "<|" in instruction:
+    if "<|" in instruction or "<think>" in instruction or "</think>" in instruction:
         raise ValueError(
             "Input instruction must not already contain control/mask tokens"
         )
@@ -259,12 +244,10 @@ def render_units(instruction, units, *, variant="ref"):
     for unit in units:
         phrase = unit.ref_phrase
         if phrase.lower() == "this image" or unit.edit_type == "global":
-            found = []
-            for ref in GLOBAL_REFS:
-                try:
-                    found.append(phrase_span(instruction, ref))
-                except ValueError:
-                    pass
+            pattern = r"(?<!\w)(?:" + "|".join(map(re.escape, GLOBAL_REFS)) + r")(?!\w)"
+            found = [m.span() for m in re.finditer(pattern, instruction, re.I)]
+            if len(found) > 1:
+                raise ValueError("Ambiguous whole-image references")
             if found:
                 start, end = min(found, key=lambda p: (p[0], -p[1]))
                 replacement = (
@@ -275,10 +258,14 @@ def render_units(instruction, units, *, variant="ref"):
                     raise ValueError("Unanchored global unit in composite instruction")
                 end = len(instruction.rstrip(".!? "))
                 start, replacement = end, " to this image"
+                if re.fullmatch(r"(?:colorize|restore|enhance|sharpen|unblur)", instruction[:end], re.I):
+                    replacement = " this image"
         else:
             start, end = phrase_span(instruction, phrase)
             replacement = instruction[start:end]
             if variant == "noref":
+                if unit.edit_type == "background" and re.match(r"(?:extract|cut out)\b", instruction, re.I):
+                    raise ValueError("Extraction background needs a reviewed noref rewrite")
                 if unit.edit_type == "add":
                     if unit.anchor_phrase:
                         a, b = phrase_span(replacement, unit.anchor_phrase)
@@ -323,8 +310,11 @@ def render_units(instruction, units, *, variant="ref"):
 
 def interactive_prompt(instruction, code_groups, *, whole_image=False):
     """Bind selected regions to explicit deictic phrases, in text order."""
-    if not code_groups or "<|" in instruction:
+    instruction = instruction.strip()
+    if not code_groups or not instruction or "<|" in instruction or "<think>" in instruction or "</think>" in instruction:
         raise ValueError("Supply clean instruction text and at least one region")
+    for codes in code_groups:
+        _with_codes("", codes)
     pattern = r"(?<!\w)(?:" + "|".join(map(re.escape, REGION_REFS)) + r")(?!\w)"
     refs = list(re.finditer(pattern, instruction, re.I))
     if refs:
@@ -334,38 +324,74 @@ def interactive_prompt(instruction, code_groups, *, whole_image=False):
             )
         result = instruction
         for ref, codes in reversed(list(zip(refs, code_groups))):
-            result = result[: ref.end()] + " " + "".join(codes) + result[ref.end() :]
+            phrase = "this image" if whole_image and ref.group().lower() == "this region" else ref.group()
+            result = result[:ref.start()] + _with_codes(phrase, codes) + result[ref.end():]
         spans_in(result)
         return result
     if len(code_groups) != 1:
         raise ValueError("Multiple regions need explicit referring phrases")
     region = "this image" if whole_image else "this region"
     tokens = _with_codes(region, code_groups[0])
-    # Conservative grammar: do not inject an object in front of an existing object.
+    punctuation = instruction[len(instruction.rstrip(".!? ")):]
+    body = instruction.rstrip(".!? ")
+    text = re.match(r"^(\w+)\s+(?:the\s+)?text\b\s*(.*)$", body, re.I)
+    if text:
+        return f"{text[1]} the text in {tokens}" + (" " + text[2] if text[2] else "") + punctuation
+    quoted = re.match(r"^(change|replace|swap|paint|color|write)\s+(.+)$", body, re.I)
+    if quoted and re.search(r"[\"'“‘]", quoted[2]):
+        # If a source string is supplied, replace it rather than duplicate it.
+        tail = re.sub(r"^([\"'“‘]).*?[\"'”’]\s+(?=to\b|with\b|for\b)", "", quoted[2])
+        return f"{quoted[1]} the text in {tokens} {tail}" + punctuation
     if re.match(r"^(?:add|insert|place|put|draw)\b", instruction, re.I):
-        return instruction.rstrip(".!? ") + " in " + tokens
+        return body + " in " + tokens + punctuation
     if re.match(r"^(?:apply)\b", instruction, re.I):
-        return instruction.rstrip(".!? ") + " to " + tokens
-    m = re.match(r"^(replace|swap)\s+(with\b.*)$", instruction, re.I)
+        return body + " to " + tokens + punctuation
+    m = re.match(r"^(remove|delete|erase|get rid of|replace|swap)\b\s*(.*)$", instruction, re.I)
     if m:
-        return f"{m[1]} the object in {tokens} {m[2]}"
-    m = re.match(r"^(turn|change)\s+(into\b.*|to\b.*)$", instruction, re.I)
+        return f"{m[1]} the object in {tokens}" + (" " + m[2] if m[2] else "")
+    m = re.match(r"^(make|turn|change|paint|color|transform|restore|enhance|sharpen|unblur)\b\s*(.*)$", instruction, re.I)
     if m:
-        return f"{m[1]} {tokens} {m[2]}"
-    m = re.match(r"^(make|paint|color)\s+(.+)$", instruction, re.I)
-    if m:
-        return f"{m[1]} {tokens} {m[2]}"
-    if re.fullmatch(r"remove|delete|erase|get rid of", instruction, re.I):
-        return instruction + " the object in " + tokens
-    raise ValueError(
-        "Use an explicit 'this region' phrase for this interactive instruction"
-    )
+        return f"{m[1]} {tokens}" + (" " + m[2] if m[2] else "")
+    return tokens + " " + instruction
+
+
+def validate_inline(prompt, variant, edit_type):
+    """Check observable binding syntax; semantic/mask QC belongs to annotation."""
+    groups = list(re.finditer(r"(?:" + SPAN_RE.pattern + r")+", prompt))
+    if (edit_type == "composite" and len(groups) < 2) or (edit_type != "composite" and len(groups) != 1):
+        raise ValueError("Mask group count must match atomic/composite edit semantics")
+    if edit_type in {"background", "global"} and len(spans_in(prompt)) != 1:
+        raise ValueError("Background/global require exactly one mask")
+    for group in groups:
+        before, after = prompt[:group.start()], prompt[group.end():]
+        if not before.endswith(" ") or before.endswith("  "):
+            raise ValueError("Mask group must follow a complete phrase and one space")
+        if before.endswith("<|mt_end|> "):
+            raise ValueError("Masks for one phrase must be directly concatenated")
+        if re.search(r"(?:^|\s)(?:the|a|an|to|of|on|in|at|with|from|near|under|over|behind|beside) $", before, re.I):
+            raise ValueError("Mask group cannot directly follow an article/preposition")
+        if after and (after.startswith("  ") or (after[0].isalnum()) or re.match(r"\s+[.,;:!?]", after)):
+            raise ValueError("Invalid spacing after mask group")
+        if variant == "noref":
+            choices = list(NOREF.values()) + ["in this region"] if edit_type == "composite" else ["in this region" if edit_type == "add" else NOREF[edit_type]]
+            phrases = sorted(set(NOREF.values()) | {"in this region"}, key=len, reverse=True)
+            matched = next((p for p in phrases if re.search(r"(?<!\w)" + re.escape(p) + r" $", before, re.I)), None)
+            if matched not in choices:
+                raise ValueError("Noref mask must follow the type-specific region phrase")
 
 
 def validate_row(row):
+    if not isinstance(row, dict):
+        raise ValueError("Each metadata row must be a JSON object")
     kind = row.get("sample_type")
     if kind not in {"edit", "edit_ntp", "edit_umt"}:
         raise ValueError("Use edit/edit_ntp/edit_umt; legacy edit_mt must be converted")
+    allowed = {"sample_type", "edit_type", "edit_image", "prompt"}
+    allowed |= {"mt_cot"} if kind == "edit_ntp" else {"image"}
+    if kind == "edit_umt":
+        allowed.add("instr_variant")
+    if set(row) != allowed:
+        raise ValueError(f"Unexpected/missing metadata fields: {set(row) ^ allowed}")
     if row.get("edit_type") not in EDIT_TYPES:
         raise ValueError("Missing or invalid edit_type")
     if not isinstance(row.get("prompt"), str) or not row["prompt"].strip():
@@ -383,7 +409,7 @@ def validate_row(row):
             "Mask-conditioned rows require one source image; multi-image mask binding is unspecified"
         )
     spans = spans_in(row["prompt"])
-    if "<|" in SPAN_RE.sub("", row["prompt"]):
+    if "<|" in SPAN_RE.sub("", row["prompt"]) or "<think>" in row["prompt"] or "</think>" in row["prompt"]:
         raise ValueError("Chat/vision control tokens may not occur in the instruction")
     if kind == "edit_ntp":
         if "image" in row or spans or "instr_variant" in row:
@@ -395,6 +421,24 @@ def validate_row(row):
             raise ValueError(
                 "mt_cot must be canonical; canonicalize during data preparation"
             )
+        for _, label in pairs:
+            phrase = re.sub(r"^one of the ", "", label, flags=re.I)
+            if re.match(r"^(?:the|a|an)\s+", phrase, re.I):
+                raise ValueError("Localization label must omit its leading article")
+        units = grouped_units(row["prompt"], pairs)
+        positions = [phrase_span(row["prompt"], u.ref_phrase)[0] for u in units if u.ref_phrase.lower() != "this image"]
+        if positions != sorted(positions):
+            raise ValueError("Localization units must follow instruction phrase order")
+        if row["edit_type"] == "composite":
+            if len(units) < 2:
+                raise ValueError("Composite requires multiple distinct units")
+        elif len(units) != 1:
+            raise ValueError("Atomic edit requires one label group")
+        if row["edit_type"] in {"background", "global"} and len(pairs) != 1:
+            raise ValueError("Background/global require one mask")
+        if row["edit_type"] == "global" and pairs[0][1] != "this image":
+            raise ValueError("Global label must be this image")
+        render_units(row["prompt"], units)
     else:
         if not isinstance(row.get("image"), str) or not row["image"] or "mt_cot" in row:
             raise ValueError("FM row needs target image and must omit mt_cot")
@@ -403,6 +447,7 @@ def validate_row(row):
                 raise ValueError(
                     "edit_umt needs inline masks and ref/noref instr_variant"
                 )
+            validate_inline(row["prompt"], row["instr_variant"], row["edit_type"])
         elif spans or "instr_variant" in row:
             raise ValueError("Plain edit must omit masks/instr_variant")
     return row

@@ -12,7 +12,7 @@
 | SAMTok TE 适配 | `samtok_edit21/model.py`：原生 Qwen3-VL 包装、processor/tokenizer、两种模板、pre/post norm 分流、在线两步推理 |
 | 两阶段训练入口 | `samtok_edit21/train.py`：模型 forward、采样、实际配置、分布式身份校验；两个 CLI 入口均委托这里 |
 | 共享训练工具 | `training.py`：add/load/save LoRA、几何检查、prepare_fm、flow_loss；旧的独立训练/cache 循环已移除 |
-| 数据与绑定 | `protocol.py / prepare.py / data.py`：严格 v2 行协议、标签 round-trip、ref/noref 改写、采样 |
+| 数据与绑定 | `protocol.py / prepare.py / data.py`：字段白名单、标签 round-trip、ref/noref 改写、采样；定位序列对齐 Qwen3-VL-8B-SAMTok |
 | 产物来源校验 | 新 `provenance.py`：内容指纹、cache-v2 验证、历史 identity 解析与只读审计 |
 | mask codec | `codec.py` + `samtok/` 的发布 VQ-SAM2；没有在 DiT 内解码空间 mask |
 
@@ -20,13 +20,13 @@
 
 ## 2. 方法如何落到代码
 
-1. Pass 1：无 system 的 SAMTok 原生 chat template，源图 + 编辑指令 + `Please identify and segment the region to be edited in this image.`，输出严格 fenced JSON list，每项仅有 `mask_2d/label`。
+1. Pass 1：无 system 的 Qwen3-VL-8B-SAMTok 原生 chat template；视觉段后直接接去掉首尾空白的编辑指令，再接换行与 `Please identify and segment the region to be edited in this image.`。assistant 行后固定 prefill `<think>\n\n</think>\n\n`，从 JSON 开始生成，每项仅有 `mask_2d/label`。
 2. Pass 2：使用官方 2.1 的 `Comprehend and analyze the provided prompt.` system 与 image template，将 mask span 内联到 user 指令；JSON 本身不送给 DiT。
 3. FM 读取末层 RMSNorm **之前**的 4096 维特征；NTP 读取 RMSNorm **之后**的特征再经过冻结 lm_head。scoped pre-hook 在前向结束后移除。
-4. NTP 从 `prefix-1` 位置预测第一个 assistant token，监督包含末尾 im_end，前缀不参与 CE。FM 使用官方 timestep/noise-clean target/fp32 MSE/scheduler weighting，不通过离散定位采样反传。
+4. NTP 从包含空思考块的 `prefix-1` 位置预测第一个 JSON token，监督仅为 `mt_cot + <|im_end|>`，空思考块及 user 前缀不参与 CE；训练/生成调用同一 `localization_inputs`。FM 使用官方 timestep/noise-clean target/fp32 MSE/scheduler weighting，不通过离散定位采样反传。
 5. target/source VAE latent 为 `[1,64,H/16,W/16]`；一个 TE image-pad placeholder 展开 4 个 DiT latent tokens。两侧必须使用同一套 resize 结果，不能独立缩图。
 
-SAMTok span：`<|mt_start|><|mt_0000|><|mt_0256|><|mt_end|>`，两层有序码本分别取 [0,255]、[256,511]，共 4 个原子 tokens；额外特殊 tokens 总数 514。
+SAMTok span：`<|mt_start|><|mt_0000|><|mt_0256|><|mt_end|>`，两层有序码本分别取 [0,255]、[256,511]，共 4 个原子 tokens；514 个新增词表项是普通 added tokens，不是 chat special tokens，不按其他模型的 token ID 换算。
 
 ## 3. 数据协议与标签契约
 
@@ -36,20 +36,63 @@ SAMTok span：`<|mt_start|><|mt_0000|><|mt_0256|><|mt_end|>`，两层有序码�
 | `edit_umt` | source/target、含 mask 的 prompt、ref/noref instr_variant | mt_cot |
 | `edit` | source/target、普通 prompt | mask、mt_cot、instr_variant |
 
-mask 行只能有一个 source；普通 edit 支持多图。截断 span、错码本、控制字符、歧义/重叠引用均拒绝，不默认取第一处匹配。
+每行只允许表中字段加 `sample_type/edit_type/edit_image/prompt`：NTP 另有 `mt_cot`，FM 另有 `image`，UMT 再有 `instr_variant`。来源、id、units、质量信息只存 manifest。mask 行只能有一个 source；普通 edit 支持多图。截断 span、错码本、控制 token、歧义/重叠引用均拒绝，不默认取第一处匹配。基础 `validate_row` 已执行标签唯一绑定，不必依靠额外开关才能发现此类问题。
 
-`convert_record` 接收人工审核的 `units=[{ref_phrase, edit_type, mask_codes, anchor_phrase?}]`。现在保留精确引用，不无条件去掉 the/a/an：`the cat` 与 `a cat` 不能都变成 `cat`。多实例必须用显式 `one of ...` label 语义分组。转换总会执行：
+### 3.1 定位与编辑序列
 
-`GT JSON → parse → grouped_units → ref render`
+定位前缀（图像占位由 processor 展开）：
 
-核对 unit 数量、代码顺序和引用位置；NTP-only 也必须通过。不同 atomic unit 不可因为 label 相同而静默合并。无法唯一绑定的数据应修订为新数据集或拒绝，不覆盖源数据。
+```text
+<|im_start|>user
+<|vision_start|><|image_pad|>…<|vision_end|>{instruction.strip()}
+Please identify and segment the region to be edited in this image.<|im_end|>
+<|im_start|>assistant
+<think>
 
-```bash
-python -m samtok_edit21.cli convert --input /path/reviewed_records.jsonl --output /path/new_rows.jsonl
-python -m samtok_edit21.cli validate --metadata /path/new_rows.jsonl --base-path /path/data --check-bindings
+</think>
+
 ```
 
-`--check-bindings` 只读扫描全部 NTP 并列出失败行。默认 validate 保留历史接口协议检查，因此历史 smoke 行可能通过基础检查但不通过绑定检查；正式数据必须增加此项。既有 `tests/eight_gpu_smoke/prepare_refedit.py` 仍是 smoke-only：其 ref/noref 不是可靠的正式 noref 对照，不能据此声称方法有效。
+后接 `mt_cot + <|im_end|>`；`mt_cot` 本身不含思考块。canonical JSON 为 `` ```json\n[{"mask_2d": "…", "label": "…"},\n…]\n``` ``，键序固定，键值之间冒号加空格，每项一个 mask。NTP 不接受空列表或 `No target.`。生成解析只允许移除空思考块，不接受非空推理文字。
+
+编辑序列保持 DiffSynth 官方模板：system=`Comprehend and analyze the provided prompt.`；user 图像以 `<image1>` 开头；序列止于 `<|im_start|>assistant\n`，没有思考块/JSON/assistant 内容。两条序列使用同一图像 processor、32 对齐 resize 和透明区域白底合成。每组 mask 跟在完整短语后一个空格，同组多个 mask 直接相连，后接单词有一个空格、后接标点无空格；不能直接接在冠词或介词后。
+
+### 3.2 类型、引用和 mask 的合同
+
+| edit_type | mask 的标注语义（全部在源图坐标） | label / ref 挂靠 | noref |
+|---|---|---|---|
+| add | 目标新增内容分割 ∩ diff，再映射源图 | 新增内容短语，包含放置锚点 | 只把 anchor 换成 `in this region`；无 anchor 则补在内容短语后 |
+| remove | 源对象/部件 | 被删对象，含仅起定位作用的 `from …` | `the object in this region` |
+| replace | 源对象 ∪ 目标新对象 | 源对象 | `the object in this region`，保留 with/to 后的新对象 |
+| attribute | 源对象/部件，不取目标侧 | 对象/部件 | `this region`，保留 color/material/texture 等属性名词 |
+| action | 源对象 ∪ 目标同一对象；移动含起止位置 | 对象 | `the object in this region`，保留动作 |
+| text | 源文字 ∪ 目标文字 | 原文字连同引号；否则文字载体 | `the text in this region`，保留新文字 |
+| background | 膨胀后的稳定前景之补集 | background/scene/backdrop 或新底短语 | `this region`；抠图换底需上游审核改写 |
+| global | 全图 | 固定 label=`this image`；ref 挂靠实际整图短语 | `this image`；无整图短语补 `to this image`；独立 `Colorize` 等补宾语 |
+
+单 unit 用原子类型；≥2 units 用 `composite`，各 unit 类型仍为原子类型。global/background 仅一个 mask。label 去掉句首 the/a/an，必须是原文唯一连续片段；去冠词后出现歧义（如同句 the cat/a cat）不产生 NTP/ref，不保留冠词来绕过协议。同短语多实例写 `one of the {ref_phrase}`；unit 按指令顺序，同组 mask 按外接框中心先 x 后 y 排序。已有 code-only 输入须由上游保证空间排序；codec.encode 或携带 `mask_paths` 的转换会执行排序。
+
+局部六类原始 mask 面积限定 0.05%–60%，background 限定 20%–97% 且等于膨胀稳定前景的补集，global 必须全图。`validate_mask_geometry` 检查这些像素条件；`convert_record` 的 unit 可带与 `mask_codes` 一一配对的 `mask_paths`，background 再带 `stable_foreground_path`，路径使用绝对路径，转换会检查原图尺寸、面积和空间顺序。纯 token 行不含几何信息，不能仅靠 `validate` 证明面积、目标语义、SAM3/diff 的标注正确性；这些必须由上游打标 QC 保证并写入 manifest。`build-debug` 没有稳定前景证据时会跳过 background，而非默认通过。SAM3 打标/跨图映射、语义复核不由训练 dataloader 重新执行。
+
+### 3.3 转换、改写与来源
+
+`convert_record` 接收 `instruction/edit_image/image?/units`，unit 字段为 `ref_phrase/edit_type/mask_codes/anchor_phrase?`，输出 NTP/ref/noref/plain（无 target 时仅 NTP）。检查 `GT JSON → parse → grouped_units → ref render` 的 unit 数、code 顺序及绑定位置。绑定失败只去掉 NTP/ref；noref 失败只去掉 noref；合法 plain 保留。ref/noref 文本相同只保留 noref。
+
+规则无法覆盖的句式由上游 Qwen3-VL-8B 改写并审核，可在打标 record 中传 `noref_instruction`。其中用 `{mask_0}`、`{mask_1}` 指向原始 units 存储顺序，每个占位必须出现一次、紧跟该 unit 对应的 noref 短语；转换器使用真实 codes 替换，不允许改写器生成 codes。例如背景抠图记录可给 `Turn this region {mask_0} into a plain white background, product photography style`。该字段仅留在 provenance，不写训练行。未提供审核改写且规则失败时记录 `rewrite_errors`，不自动运行未审核的语言模型改写。
+
+同一入口也接受存量训练行：`edit_mt` 非空 JSON 拆 NTP/ref/noref，空 JSON 只转 plain、不伪造全图 code；直接用 mask 替换名词的 `edit_umt` 补类型对应的 noref 短语（去冠词，add 去介词）；`edit` 补类型，已有合法行严格复核。CrispEdit 路径 color/motion/style/add/remove/replace/background 前缀可补类型；无法确定类型或 composite 缺审核 atomic units 时报告错误。GRES 的空思考块剥除后套编辑动词模板，原 codes/labels 保留，`No target.` 跳过。
+
+`type/raw_type/final_task` 中已知 CrispEdit/ScaleEdit 原生类别由 `native_edit_type` 映射（含编号前缀、四类 `*_text_editing`、part_extraction、tone_adjustment 等），不能被 unit 的人工类型静默覆盖；冲突报错。RefEdit modify、reasoning/compositional 等需要已审核 units，不根据编辑文本猜类型。text unit 的 ref_phrase 若包含一个带引号原文，归一为该原文连同引号。
+
+```bash
+python -m samtok_edit21.cli convert --input /path/reviewed_records.jsonl --output /path/rows.jsonl \
+  --mask-tokenizer-sha256 ENCODER_CHECKSUM_FROM_SOURCE_BUILD_REPORT
+python -m samtok_edit21.cli validate --metadata /path/rows.jsonl --base-path /path/data --check-bindings
+```
+
+必须提供源编码报告中的 `--mask-tokenizer-sha256`，与 `--samtok` 下实际 `mask_tokenizer_256x2.pth` 完整 SHA256 一致才转换；不能把当前权重 hash 冒充未知 codes 的历史来源。来源不明/不一致的 codes 先从原始 mask 重编码。输出必须使用不存在的路径，产物为 metadata、`.provenance.json`、`.report.json`；manifest 存 source_dataset、完整原始 record、source_index、derived_row_hashes、rewrite_errors 及输入自带的质量字段，报告存输入文件和 tokenizer 校验和。以派生行 hash 关联，不用图片路径作为记录 id。语义/格式失败按源记录报告，不影响其他源记录。既有 `tests/eight_gpu_smoke/prepare_refedit.py` 是历史 smoke-only，不可作为正式打标器；不合规范的输出会被严格校验拒绝。
+
+`build-debug` 不再隐式选择 standalone GRES 文件；需要显式给 `--gres`（Qwen3-VL-SAMTok 的 GRES/GRefCOCO conversations JSON）及来自其编码记录的 `--gres-mask-tokenizer-sha256`。不做 GRES replay 时传 `--gres-count 0`。未提供可核实的编码身份时，在加载 codec、写输出前拒绝启动。通用 convert manifest 的 `geometry_qc=checked` 表示实际检查了输入 raw mask；`upstream_required` 表示 token-only 导入，仍需上游 QC 证据，不等于面积检查通过。
 
 ## 4. 训练、保存与可复现性
 
@@ -137,7 +180,7 @@ DiffSynth 对照 [官方 Qwen-Image-2.1 pipeline](https://github.com/modelscope/
 
 | 参数 | DiffSynth 2.1 原生编辑 | SAMTok Qwen3-VL-8B 原生定位 / mask 解码 | 当前项目默认 online 推理 |
 |---|---|---|---|
-| 输入 / 前向 | prompt + `edit_image`，一次扩散编辑 | 单次 Qwen3-VL image+question chat；需要可视化时再用 VQ-SAM2 解码 mask | Pass 1 原生 SAMTok chat 定位；Pass 2 将 mask tokens 内联指令后交给 Qwen 2.1 编辑 |
+| 输入 / 前向 | prompt + `edit_image`，一次扩散编辑 | 单次 Qwen3-VL image+question chat；需要可视化时再用 VQ-SAM2 解码 mask | Pass 1 无 system、prefill 空思考块的 SAMTok chat；Pass 2 将 mask tokens 内联指令后交给 Qwen 2.1 编辑 |
 | VLM 生成 | 不适用 | demo/8B Quickstart：`max_new_tokens=512`、`do_sample=False`、`top_p=1.0` | 定位 `max_new_tokens=256`、`do_sample=False`、`use_cache=True`、默认 `candidates=1`；遇到 im_end 特殊 token 停止 |
 | 采样温度 | 不适用 | 贪心生成，无生效温度 | 默认贪心，无生效温度；仅 `localize --candidates >1` 采样时传 `temperature=0.8` |
 | mask codec | 不适用 | 两级、每级 256 code；`DirectResize(1024)`；解码后的 raw mask logits `>0.5` 二值化 | 同一 256×2 codebook、`DirectResize(1024)` 和 raw logits `>0.5`；定位阶段通常只传 mask token，不执行空间 mask 解码 |
@@ -145,7 +188,7 @@ DiffSynth 对照 [官方 Qwen-Image-2.1 pipeline](https://github.com/modelscope/
 | CFG / negative prompt | `cfg_scale=1.0` / 单空格 `" "` | 不适用 | `--cfg=1.0`；未覆盖 pipeline 的单空格 negative prompt |
 | seed / 随机数设备 | pipeline `seed=None`、`rand_device="cpu"`；官方编辑示例显式 `seed=1` | demo 未显式设 seed | `--seed=0`；沿用 pipeline 的 CPU 随机数设备 |
 | KV cache / VAE tiling | KV cache 开；VAE tiling 关，若开启则 tile 256、stride 192 | VLM `generate` 常规 cache；无扩散 VAE tiling | KV cache 开（可用 `--no-kv-cache` 关闭）；VAE tiling 沿用关闭 |
-| 模式 / 输出 | 原生 `pipe(...)` 生成 RGBA 图 | 文本及可选解码 mask | `--mode=online`、`--variant=noref`，失败时可按协议回退 ref/plain；RGBA PNG；`--benchmark-output` 另作白底/原尺寸 RGB 后处理 |
+| 模式 / 输出 | 原生 `pipe(...)` 生成 RGBA 图 | 文本及可选解码 mask | `--mode=online`、`--variant=ref`，定位失败回退 plain；noref 仅用于已知单元类型的消融；RGBA PNG；`--benchmark-output` 另作白底/原尺寸 RGB 后处理 |
 
 ## 6. cache-v2 与迁移
 
@@ -221,25 +264,27 @@ python -m samtok_edit21.cli localize --image /path/source.png \
   --te-adapter /path/new-stage1/adapter --output /path/localize.json
 
 python -m samtok_edit21.cli infer --image /path/source.png \
-  --prompt 'Make the leftmost bird blue.' --variant noref \
+  --prompt 'Make the leftmost bird blue.' --variant ref \
   --te-adapter /path/new-stage1/adapter --dit-adapter /path/new-stage2-constant/adapter \
   --height 1024 --width 1024 --output /path/result.png
 ```
 
-online/oracle 默认 requested_variant=noref；两者使用同一 `condition_localization`。报告 `requested_variant/actual_variant/fallback_reason`：
+online/oracle 默认 requested_variant=ref；两者使用同一 `condition_localization`。报告 `requested_variant/actual_variant/fallback_reason`：
 
 - 已审核 `--units-file` 提供每个定位分组的 `ref_phrase/edit_type/anchor_phrase?`，顺序与分组一致，ref_phrase 必须精确对应绑定后的 label；mask codes 来自定位结果而非这个文件。
-- 没有审核信息时，只对少量明确的英文全句语法推断 remove/replace/text、颜色属性、简单动作和无空间 anchor 的 add；global 使用 this image。不是通用语义解析器。
-- add 必须保留新增物体；复杂 add 需要审核的末尾 anchor。text 必须保留目标文字。composite 需要逐 unit 的审核语义。审核 ref_phrase 应覆盖完整 where；不要把 what/how 包入待删除的引用范围。未标注的其他补语保留，不再任意删除整段 from ...；未审核的 and/then/while 等复合语句会拒绝自动推断。
+- 纯文本 pass-1 JSON 没有 edit_type，默认只按 label 绑定原指令，不推断类型。`--variant noref` 必须提供已审核 `--units-file` 才能实际走 noref；缺失时返回 ref 并记录原因，`--strict-noref` 则报错。
+- add 必须保留新增物体；复杂 add 需要审核的末尾 anchor。text 必须保留目标文字。composite 需要逐 unit 的审核语义。审核 ref_phrase 应覆盖完整 where；不要把 what/how 包入待删除的引用范围。未标注的其他补语保留，不任意删除整段 from ...。
 - noref 改写不可靠时回退 ref；定位解析/绑定失败时 online 回退 plain。严格实验加 `--strict-noref`，无法正确生成 noref 就报错，不能把 fallback 混进 noref 得分；该标志只用于 online/oracle。
 - localize 输出是候选报告列表；oracle 的 `--cot-file` 需要其中的 raw canonical mask JSON 内容（或另行提供的 canonical JSON），不是整份候选报告列表。
 
 审核 units 示例：
 ```json
-[{"ref_phrase":"a red ball next to the chair","edit_type":"add","anchor_phrase":"next to the chair"}]
+[{"ref_phrase":"red ball next to the chair","edit_type":"add","anchor_phrase":"next to the chair"}]
 ```
 
 `direct/stock` 定义为无 mask 普通编辑；`inline` 必须已有合法 mask span；`interactive` 使用一张源图和所选 mask，按选区顺序调用 codec 后插入指代短语。所有 masked 模式统一要求单 source，CLI 在加载模型前拒绝 masked 多图；普通 direct/stock 仍可多图。
+
+交互绑定识别 this region/area/object/image、the selected region/area/object、here/this/it，按文本顺序与选区一一对应，数量不匹配报错。没有指代词时只允许单选区：add/insert/place/put/draw 句尾补 `in this region`；remove/delete/erase/get rid of/replace/swap 动词后补 `the object in this region`；文字编辑补 `the text in this region`；apply 补 `to this region`；make/turn/change/paint/color 等动词后补 `this region`；非动词开头在句首补。全图选区使用 `this image`。多候选定位每次都 prefill 相同空思考块；一次 JSON 的多个项目默认同时编辑，并非候选替代项。
 
 原生输出保持 RGBA PNG。评测时显式传 `--benchmark-output`：保留 `result.raw.png`，白底 alpha composite 后转 RGB，并 resize 至参考源图原始尺寸，JSON 记录 raw/final 尺寸。多图必须指定 `--reference-image-index`（0-based），不能猜参考图；所有基线必须使用相同后处理。
 
@@ -247,7 +292,7 @@ online/oracle 默认 requested_variant=noref；两者使用同一 `condition_loc
 
 两个 code 能被 codec 解码，不意味着 DiT 已有硬性空间约束或背景保护；本项目未加入 attention supervision、regional FM、inference attention bias。现有规划见 [mask 区域约束实现规划](SAMTokEdit_Qwen21_mask区域约束实现规划.md)，不混入本轮修 bug。
 
-noref 不保证所有空间信息只来自 mask；what/how 与图像仍可能泄露目标。正式评测应分开统计格式成功率、绑定成功率、noref 覆盖率、定位 IoU、区域内编辑与区域外保真，并做正确/交换/随机/无 code 对照。当前 JSON 不携带 atomic edit_type，因此任意自然语言自动 noref 仍需独立决定协议升级或语义解析步骤，本轮采用“可审核输入 + 保守子集 + 显式回退/strict”的有界实现。
+noref 不保证所有空间信息只来自 mask；what/how 与图像仍可能泄露目标。正式评测应分开统计格式成功率、绑定成功率、noref 覆盖率、定位 IoU、区域内编辑与区域外保真，并做正确/交换/随机/无 code 对照。当前 JSON 不携带 atomic edit_type，因此默认纯文本走 ref，noref 消融使用已审核单元类型，不做在线语法猜测。
 
 codec 保持发布实现的 raw logits > 0.5 阈值；这不等于 sigmoid > 0.5，也不是 2.1 迁移 bug。以后改变阈值需作为独立实验记录。
 
@@ -260,5 +305,6 @@ A5/A6：实测依赖约束、可执行环境/命令说明及 localize prompt。
 Stage 2 target 修正：新建 DiT LoRA 改为官方 224-target 自动检测，保留旧 232-target adapter 的显式配方兼容；数值和真实模型验收见实验记录第 8 节。
 LR 调度更新：Stage 1 默认 cosine/4% warmup，Stage 2 默认 constant/2.5% warmup，cosine 组用同一 cache 和 2.5% warmup 对照；显式步数可覆盖比例。验收与历史影响见实验记录第 9 节。
 训练计划更新：正式训练要求显式 `--steps`；step checkpoint 默认每 2000 microsteps 且对齐 accumulation；加入只读 `--plan-only` 和按池/子类型的实际曝光报告。验收、兼容性和磁盘预算见实验记录第 10 节。
+数据合同实现：Qwen3-VL-8B-SAMTok 定位固定空思考前缀、纯文本默认 ref、字段/绑定严格验证、确定性样本转换、审核改写入口、mask QC 与 codec 校验和/manifest。验收见实验记录第 11 节。定位前缀变化不会修改 pass-2 的官方 embedding 模板，因此不因该项单独更改 FM cache schema；但本次 Stage 1 重新训练出的 adapter 身份不同，其 Stage 2 cache 必须重建。历史 adapter 可加载不代表已按此定位前缀训练，应独立标记实验，不能混称本次训练产物。
 
 后续任何代码/数据协议更新必须同步维护本文当前行为，在实验记录追加日期、代码版本、来源归属、兼容性影响、命令、产物、实测结果与未覆盖项。影响 TE 条件或 resize 的改动必须升级 preprocessing 标识并重建缓存；不要覆盖历史失败记录，也不要把计划中的功能写成已验收。

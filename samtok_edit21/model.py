@@ -16,6 +16,7 @@ from diffsynth.pipelines.qwen_image_21 import (
 
 from .protocol import (
     LOC_REQUEST,
+    EMPTY_THINK,
     condition_localization,
     grouped_units,
     parse_cot,
@@ -148,11 +149,13 @@ def resize_sources(pipe, images, height, width):
 def localization_inputs(pipe, instruction, images, *, cot=None):
     if len(images) != 1:
         raise ValueError("Localization binds regions to exactly one source image")
+    if not instruction.strip() or any(t in instruction for t in ("<|", "<think>", "</think>")):
+        raise ValueError("Localization needs clean, nonempty instruction text")
     content = [
         {"type": "image"},
         # Qwen3 SAMTok _build_messages strips whitespace around the segment
         # following <image>; retain the internal instruction/request newline.
-        {"type": "text", "text": instruction + "\n" + LOC_REQUEST},
+        {"type": "text", "text": instruction.strip() + "\n" + LOC_REQUEST},
     ]
     # Official SAMTok Qwen3 dataset passes only user/assistant messages. Its
     # released native template does not synthesize a helpful-assistant system.
@@ -161,6 +164,7 @@ def localization_inputs(pipe, instruction, images, *, cot=None):
         tokenize=False,
         add_generation_prompt=True,
     )
+    text += EMPTY_THINK
     inputs = pipe.processor(
         text=[text],
         images=[
@@ -213,7 +217,7 @@ def encode_edit(pipe, prompt, images):
     unit = QwenImage21Unit_PromptEmbedder()
     result = unit.process(pipe, prompt, images)
     if spans:
-        # Added SAMTok tokens are atomic special tokens, so the official
+        # Added SAMTok tokens are ordinary atomic vocabulary tokens, so the official
         # processor retains boundaries without a second manual BPE encoding.
         for span in spans:
             if (
@@ -235,7 +239,7 @@ def localize(
     max_new_tokens=256,
     do_sample=False,
     temperature=0.8,
-    variant="noref",
+    variant="ref",
     reviewed_units=None,
     strict_noref=False,
 ):
@@ -272,7 +276,7 @@ def localize(
 @torch.no_grad()
 def edit(
     pipe, instruction, images, *, mode="online", cot=None, max_new_tokens=256,
-    variant="noref", reviewed_units=None, strict_noref=False, **kwargs
+    variant="ref", reviewed_units=None, strict_noref=False, **kwargs
 ):
     """Direct, inline, explicit oracle, or online two-pass inference."""
     masks = spans_in(instruction)

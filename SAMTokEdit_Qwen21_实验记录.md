@@ -478,3 +478,80 @@ CUDA_VISIBLE_DEVICES=2,3 NCCL_DEBUG=WARN $PY -m torch.distributed.run --standalo
 ```
 
 最终仓库及临时回归 `73 passed`、实现文档/README/实验记录中的 47 条具体 CLI 命令解析通过、`git diff --check` 无格式错误。正式训练前仍须先用**真正最终的数据和 GPU 数量**执行 `--plan-only`，审核各池与子类型的平均曝光、未见行数、单行最大抽取次数，再根据验证集和算力确定 `--steps`；4000 只是预算示例，不是默认或经过质量验证的最优训练长度。若需要中断后精确继续，还需另行设计完整训练状态保存，不能把本轮的 step 文件当作 resume checkpoint。
+
+## 11. 2026-09-26：Qwen3-VL-SAMTok 数据合同实现与验收
+
+基于用户提供的 `/opt/tiger/tanyue/SAMTok_data_protocol_chapter.md`，在 `4fa1276` 上修改；此处记录实际结果，当前使用规则见实现文档第 3、8 节。本轮只改项目数据/模型适配层，没有改 DiffSynth 的 DiT、VAE、FM scheduler 或官方编辑模板。调试脚本、数据、模型输出全部位于 `/tmp/samtok-data-contract-zmsuwi`，源数据与基座权重只读。
+
+### 11.1 检查发现与处理
+
+| 检查项 | 检查时的实现 | 实际处理 |
+|---|---|---|
+| 定位模板 | 已无 system、图后无额外换行，但 assistant 缺少固定空思考块 | `localization_inputs` 统一添加 `<think>\n\n</think>\n\n`；指令 strip；NTP 仅监督 JSON 与 im_end；生成从 JSON 开始 |
+| 纯文本推理 | 默认 noref，少量语法自动推断 atomic type | CLI/localize/edit/condition_localization 统一默认 ref；noref 只接受审核单位类型，缺失回退并报告，strict 报错 |
+| 行校验与 labels | 允许额外字段；基础检查不保证 label 唯一绑定；保留前导冠词 | 字段白名单、canonical JSON、单图、unit 数/顺序、唯一引用、global/background 单 mask、UMT 挂靠和空格检查；去冠词导致歧义时拒绝 masked 派生，不擅取第一处 |
+| 转换 | 仅 units 行，绑定失败可使整条记录中断 | 支持 edit_mt、直接替换名词的 UMT、plain、NTP；空列表只转 plain；绑定和 noref 失败分别报告，保留其他合法派生行；相同 ref/noref 去重 |
+| 类型与复杂句式 | 无完整存量转换/审核改写接入 | 原生类型映射与冲突检查；text 引号引用；global 无对象短语补宾语；上游审核 `noref_instruction` 的逐 unit 占位编译。未实现自动无人审核的 MLLM 改写 |
+| 交互输入 | 部分省略指代词、文字编辑和非动词输入不支持 | 补齐 text/remove/replace/add/apply/其他动词/非动词的合成指代规则，全图用 this image，多选区按顺序严格对应 |
+| QC/来源 | 通用 convert 无完整 manifest；debug GRES 隐式读取 standalone 文件 | 分离 manifest、派生行 hash、源记录、错误报告、编码权重 checksum；GRES 显式输入并核对来源 checksum；可选 raw mask 检查尺寸/面积/背景补集并排序，token-only 明示需上游 QC |
+
+这些是项目对方法/数据合同的适配，不是 DiffSynth 官方训练实现的缺陷。pass-2 embedding 模板未变，FM cache 格式未变；本次 Stage 1 adapter 重训后 hash 改变，已用它重新构建 cache，并基于该 cache 训练 Stage 2。没有将历史 adapter 当成本次定位前缀训练的产物。
+
+### 11.2 CPU 与 processor 检查
+
+临时 `test_contract.py` 覆盖：八类 ref/noref、add 保留新增内容、text 保留新文字、composite/同短语多实例、单元与空间顺序、global 去重/歧义、无效标签的部分保留、四种存量行转换、审核复杂改写、raw mask QC、原生类型映射、codec checksum 拒绝、manifest 双向 hash 关联、非法输入不写输出、交互补指代、纯文本 ref/noref 边界。真实发布 tokenizer/processor 检查无 system、视觉后直接接指令、空思考块的 token 前缀、训练/生成前缀完全一致、span 四个原子 token，以及透明源图和白底图的 pixel_values 相等。
+
+仓库现有测试和训练计划测试一并重跑。历史临时回归中关于“默认 noref、自动猜类型、保留冠词以消歧”的 11 项断言已不适用，本轮由对应合同用例覆盖；其余 cache/identity/LoRA/梯度等 29 项仍通过，不改历史脚本来制造全通过记录。
+
+最终验收：仓库 23 项 + 合同 81 项 + 训练计划 10 项 = **114 passed**；另有上述 **29 passed**，合计 143 项通过。processor 测试产生 3 条 NumPy `__array__(copy=...)` 弃用警告，无测试失败。README/实现文档/实验记录共 51 条具体 CLI 命令解析通过；`git diff --check` 通过。
+
+### 11.3 真实模型小批量训练与推理
+
+环境沿用已验证的 Python 3.11 / torch 2.8.0+cu128 / transformers 5.12.1 / H100。训练样本为已经人工核对的 RefEdit 鸟类样本：Stage 1 四行（NTP/plain/ref/noref），Stage 2 三条 FM 行。仅 smoke 使用 rank=2、max_pixels=65536、2 updates，正式默认 rank/尺寸未修改。
+
+| 验收 | 实测结果 |
+|---|---|
+| Stage 1 | 16 microsteps / 2 updates，比例 3:2:2:1；504 个 LoRA 参数张量有梯度，冻结参数梯度数 0；最终累积 grad norm=0.0236539841 |
+| cache | 使用本次 Stage 1 adapter 重建三条，manifest/checksum/identity 校验通过 |
+| Stage 2 | 8 microsteps / 2 updates，224 个官方 DiT LoRA 模块、448 个参数张量；冻结参数梯度数 0；最终累积 grad norm=0.0039336290 |
+| NTP 监督 | prefix=103 tokens，labels=29，hidden_start=102，最后监督 token=151645（im_end）；空思考块属于 prefix |
+| NTP 数值对照 | 当前切片 CE 与独立同形状重算均为 0.5805937648；FP32 full-label/-100 CE 与对应切片 CE 均为 0.5846220851 |
+| 在线条件/cache | 三行的 prompt_embeds、image pad mask、target/source latents 逐 tensor 完全相等，最大差值 0 |
+| oracle | ref、审核 noref 均无回退，分别挂靠原短语/this region；各完成 2-step、256×256 RGBA 输出 |
+| online | 真实 greedy 生成 fenced JSON 后进入 ref；完成 2-step、256×256 RGBA 输出 |
+| interactive | 真实 Qwen3 SAMTok codec decode→encode，`turn into gold` 补 this region 后进入 inline，完成出图 |
+| 异常回退 | 注入 No target./空列表/坏 JSON/找不到 label 四类生成文本，真实 processor 路径均回退原始 plain 指令且记录原因；这是故障注入，不是生成质量测量 |
+
+失败尝试保留在 `integration.log`：最初把 BF16 不同 GEMM 形状的 full-logits CE 与 supervised-slice CE 以 1e-6 要求相等，断言失败（0.5890545249 对 0.5805937648）。后续 `integration_retry.log` 使用相同形状投影复核切片 loss，并用 FP32 验证完整 labels 与切片的等价性，结果如表；确认是 BF16 投影形状引起的数值差异，不是 label 偏移。未因此修改生产 NTP loss。
+
+重要限制：真实 online 的生成 label 本次覆盖了整句指令，虽能唯一绑定并运行，但不是理想的对象名词短语。2 updates 只能验证软件路径，不能证明定位语义、编辑效果或收敛质量。纯 tokens 无法验证原始 mask 的面积/语义，token-only 数据仍须上游打标 QC；未运行全量 SAM3 数据标注、全量训练或 benchmark。复杂改写由上游 Qwen3-VL-8B/人工审核供给，本轮测试的是输入编译和拒绝机制，不声称测过自动语义改写模型。
+
+### 11.4 复现命令与产物
+
+```bash
+export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
+export CHECK=/tmp/samtok21-fixes-dUnbt5
+export OUT=/tmp/samtok-data-contract-zmsuwi
+export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=$PWD:DiffSynth-Studio
+$PY -m pytest -p no:cacheprovider -q tests $OUT/test_contract.py $CHECK/test_training_plan.py
+$PY -m pytest -p no:cacheprovider -q $CHECK/test_regressions.py \
+  -k 'cache or identity or stage2 or zero_branch or each_image or input_guard or benchmark or scheduler'
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+  --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA --max-pixels 65536 \
+  --output $OUT/stage1 --steps 2 --rank 2 --save-steps 8 --seed 926
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train cache \
+  --metadata $CHECK/reviewed_stage2.jsonl --base-path $DATA --max-pixels 65536 \
+  --te-adapter $OUT/stage1/adapter --output $OUT/cache
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+  --cache $OUT/cache --output $OUT/stage2 --steps 2 --rank 2 --save-steps 4 --seed 926
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.cli localize \
+  --image $DATA/images/refedit_00_source.png \
+  --prompt 'Change the leftmost bird feathers to soft down feathers' \
+  --te-adapter $OUT/stage1/adapter --height 256 --width 256 --output $OUT/localize.json
+CUDA_VISIBLE_DEVICES=0 $PY $OUT/integration.py
+$PY $CHECK/check_doc_cli.py
+```
+
+重跑须替换为新的 OUT，不能覆盖现有训练/cache 输出；integration.py 内的 ROOT 也应对应新目录。关键证据：`acceptance.log`、`regressions.log`、`stage1.log`、`cache.log`、`stage2.log`、两阶段 `optimizer_steps.jsonl`、`integration.json`、`integration_retry.log`、`localize.json`、`oracle_ref.png`、`oracle_noref.png`、`online.png`、`interactive.png`。临时目录不作为长期产物存储保证，测试覆盖、命令与数值保留在本文。
