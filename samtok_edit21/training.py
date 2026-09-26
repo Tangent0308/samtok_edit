@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import torch
+from diffsynth.diffusion.training_module import DiffusionTrainingModule
 from peft import LoraConfig, inject_adapter_in_model
 from safetensors.torch import load_file, save_file
 
@@ -44,21 +45,22 @@ from .model import encode_edit, resize_sources
 TE_TARGETS = r"model\.model\.language_model\.layers\.\d+\.(?:self_attn\.(?:q_proj|k_proj|v_proj|o_proj)|mlp\.(?:gate_proj|up_proj|down_proj))"
 
 
+def stage2_target_modules(model):
+    """Match DiffSynth's empty ``lora_target_modules`` auto-detection."""
+    targets = DiffusionTrainingModule().auto_detect_lora_target_modules(model)
+    if not targets:
+        raise ValueError("DiffSynth found no Stage 2 DiT LoRA target modules")
+    return targets
+
+
 def add_adapter(model, stage, rank, dropout=0.0, *, alpha=None, targets=None):
     if stage not in {"stage1", "stage2"} or rank < 1 or not 0 <= dropout < 1:
         raise ValueError("Invalid adapter recipe")
-    supplied_targets = targets
-    if stage == "stage1":
-        targets = TE_TARGETS
-    else:
-        # Mirrors upstream empty target_modules: every nn.Linear in 2.1 DiT.
-        # 2511's add_q_proj/txt_mlp/txt_mod branches do not exist here.
-        targets = [
-            name for name, m in model.named_modules() if isinstance(m, torch.nn.Linear)
-        ]
+    if targets is None:
+        targets = TE_TARGETS if stage == "stage1" else stage2_target_modules(model)
     config = LoraConfig(
         r=rank, lora_alpha=rank if alpha is None else alpha, lora_dropout=dropout,
-        target_modules=targets if supplied_targets is None else supplied_targets
+        target_modules=targets,
     )
     inject_adapter_in_model(config, model)
     for name, p in model.named_parameters():

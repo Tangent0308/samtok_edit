@@ -28,6 +28,12 @@ The protocol supports `edit`, `edit_ntp`, and `edit_umt` rows. Mask spans and lo
 
 Stage 1 trains the Qwen3-VL LoRA with NTP plus flow matching:
 
+Choose `--steps` explicitly. To inspect the exact sampling exposure before loading
+the training model, run the same command with `--plan-only`; it does not write to
+`--output`. Training saves weight snapshots every 2000 per-rank microsteps by
+default, aligned to gradient accumulation, plus a final adapter. Snapshots are
+not full optimizer-state resumes.
+
 ```bash
 accelerate launch --num_processes 8 --mixed_precision bf16 \
   -m samtok_edit21.train train --stage stage1 \

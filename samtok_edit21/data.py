@@ -157,13 +157,40 @@ def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0):
             kinds = [k for k, n in per_step.items() for _ in range(n)]
             rng.shuffle(kinds)
         schedule.extend(draw(k) for k in kinds)
+    draw_counts = Counter(schedule)
+
+    def exposure(indices):
+        counts = [draw_counts[i] for i in indices]
+        draws = sum(counts)
+        unique = sum(count > 0 for count in counts)
+        return {
+            "source_rows": len(indices),
+            "draws": draws,
+            "mean_draws_per_row": draws / len(indices),
+            "unique_rows": unique,
+            "unseen_rows": len(indices) - unique,
+            "min_draws_per_row": min(counts),
+            "max_draws_per_row": max(counts),
+        }
+
+    pool_exposure = {}
+    for kind, by_type in pools.items():
+        indices = [i for group in by_type.values() for i in group]
+        pool_exposure[kind] = {
+            **exposure(indices),
+            "by_edit_type": {
+                edit_type: exposure(group)
+                for edit_type, group in sorted(by_type.items())
+            },
+        }
     report = {
         "steps": steps,
         "global_batch": global_batch,
         "per_step": per_step,
         "realized": dict(Counter(row_kind(rows[i]) for i in schedule)),
         "edit_types": dict(Counter(rows[i]["edit_type"] for i in schedule)),
-        "unique_rows": len(set(schedule)),
+        "unique_rows": len(draw_counts),
+        "pool_exposure": pool_exposure,
         "draws": len(schedule),
         "absent_edit_types": {
             k: sorted(set(TYPE_WEIGHTS) - set(pools[k])) for k in ratio

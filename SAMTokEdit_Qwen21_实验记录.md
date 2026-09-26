@@ -349,4 +349,132 @@ CUDA_VISIBLE_DEVICES=4 $PY -m samtok_edit21.cli infer --mode oracle \
 
 真实 TE/VAE 双图非方形路径在最终逐图校验下再次通过：320×224 / 224×320，source latents 为 [1,64,14,20] / [1,64,20,14]，140 pads，总计 560 latent tokens。证据 `multi_geometry_final.json`。最终产物汇总脚本再次校验七套 adapter、三份缓存及所有推理 PNG，输出 `final_artifact_checks.json` / `final_artifact_checks_v2.log`；源码 `git diff --check` 无错误。
 
-文档交付前还对 README、实现文档、实验记录中的 32 条具体 CLI 命令做了 argparse 解析检查，全部通过（略过仅用于说明入口等价性的 `...` 伪命令）。证据 `check_doc_cli.py / check_doc_cli.log`。最终训练、缓存、推理、产物汇总进程均已确认 exit code=0；代码未 git commit。
+文档交付前还对 README、实现文档、实验记录中的 32 条具体 CLI 命令做了 argparse 解析检查，全部通过（略过仅用于说明入口等价性的 `...` 伪命令）。证据 `check_doc_cli.py / check_doc_cli.log`。最终训练、缓存、推理、产物汇总进程均已确认 exit code=0；当时尚未 git commit，后已在 `1227b48` 提交。
+
+## 8. 2026-09-26：Stage 2 DiT LoRA target 与官方对齐
+
+前述第 4/7 节的 Stage 2 运行均为**历史 232-target 配方**，其 464 个 LoRA 梯度张量/232 个非零 LoRA-B 张量记录保持不变。此次发现默认全 `nn.Linear` 与固定 DiffSynth `7686e54d` 的 `--lora_target_modules ""` 不一致：官方只自动检测重复 `ModuleList` 中符合尺寸条件的模块。对当前 32-block DiT，官方为 224 个 block 内 Linear，旧项目多挂 8 个 block 外 Linear。
+
+处理：新建 Stage 2 adapter 直接调用官方 `DiffusionTrainingModule.auto_detect_lora_target_modules`；加载或 warm-start 既有 adapter 时仍使用其 `adapter.json` 中实际保存的 target 配方。Stage 1、cache-v2 条件、DiT 基座及推理模板未修改。遵守调试代码放临时目录的约束，在 `/tmp/samtok21-fixes-dUnbt5/test_regressions.py` 新增回归用例：检验 224 个目标与官方返回值逐项相同，并以玩具模型验证默认注入及旧全 Linear 配方保存/重载；没有向 repo 新增测试代码。
+
+| 验收项 | 本次结果 |
+|---|---|
+| 无权重真实 DiT 结构枚举 | 官方 224，项目 224，逐项相同；全部 Linear 为 232，多出 8 个名称逐项核对 |
+| 仓库单测 + 临时回归 | **63 passed**（仓库原有 23 项 + 临时回归 40 项）；旧临时 2×2 玩具模型不符合官方尺寸筛选，已仅在临时夹具中显式指定 target 后重跑 |
+| 完整发布 DiT 默认 Stage 2 训练 | `cache_final/` 的 3 行审核数据，单卡 H100，默认 rank/alpha=32/32、dropout=0、accumulation=4、LR=1e-4；`--steps 1`，4 microsteps，进程 exit code=0 |
+| loss / 梯度审计 | 4 个 loss 为 0.3666898012、0.4675752521、0.2778003812、0.0050666030；每个 backward 均有 448 个 LoRA 梯度张量、224 个非零张量，冻结参数梯度 0；更新实际 LR=1e-4 |
+| 最终 adapter | state 有 448 个 tensor，全部 FP32 且有限；解析 tensor key 为**恰好 224 个官方目标模块**，没有额外 8 个；PEFT `adapter.json` 将完整目标压缩为 7 个匹配后缀，这是配方表示形式，不是只挂了 7 层 |
+| 新 adapter 重载推理 | `reviewed_stage1/adapter` + 新 Stage 2 adapter，严格 oracle noref、2-step 256² 推理 exit code=0；actual=noref、fallback=null，输出可读 RGBA 256×256 PNG |
+
+真实模型输出位于 `/tmp/samtok21-stage2-official-45yHZt/`：`stage2/{run.json,schedule.json,loss.csv,optimizer_steps.jsonl,adapter/}`、`oracle.png/json`。该目录是临时 smoke 产物，不能充当长训练或 1024² 正式质量验证。最初对产物的临时检查误把 PEFT 配方的 7 个后缀要求为 224 个完整名称，断言失败；改为检查 448 个 state tensor key 对应的 224 个实际模块后通过，训练与加载本身未失败。
+
+本次真实模型命令记录（在 repo 根目录；重跑时把已有输出路径换为全新目录，不覆盖原产物）：
+
+```bash
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=.:DiffSynth-Studio
+export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
+export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
+$PY -m pytest -p no:cacheprovider -q tests /tmp/samtok21-fixes-dUnbt5/test_regressions.py
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+  --cache /tmp/samtok21-fixes-dUnbt5/cache_final \
+  --output /tmp/samtok21-stage2-official-45yHZt/stage2 --steps 1
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.cli infer --mode oracle \
+  --image $DATA/images/refedit_00_source.png \
+  --prompt "Change the leftmost bird's feathers to soft down feathers" \
+  --cot-file /tmp/samtok21-fixes-dUnbt5/reviewed_cot.txt \
+  --units-file /tmp/samtok21-fixes-dUnbt5/reviewed_units.json --strict-noref \
+  --te-adapter /tmp/samtok21-fixes-dUnbt5/reviewed_stage1/adapter \
+  --dit-adapter /tmp/samtok21-stage2-official-45yHZt/stage2/adapter \
+  --height 256 --width 256 --steps 2 \
+  --output /tmp/samtok21-stage2-official-45yHZt/oracle.png
+```
+
+## 9. 2026-09-26：Stage 1/2 学习率调度与 warmup
+
+### 9.1 实现与来源
+
+此前项目虽已有 `constant|cosine` 与显式 `--warmup-steps`，两阶段默认仍为 constant/0 warmup；这是本项目旧配方，不是 DiffSynth 或 SAMTok 的硬性要求。此次只改项目训练入口 `samtok_edit21/train.py`，不改 DiffSynth runner：Stage 1 默认 cosine + `--warmup-ratio 0.04`，Stage 2 默认 constant + `--warmup-ratio 0.025`；Stage 2 可显式选 cosine，使用**同一份 cache 和相同 2.5% warmup**做后续 ablation。`--warmup-ratio` 与 `--warmup-steps` 互斥，后者可覆盖默认比例或设 0；有效 warmup update 数为 `ceil(ratio × optimizer_updates)`，写入 `run.json`。原有 `--init-adapter` 仍只 warm-start 权重，不恢复 optimizer/scheduler。历史运行的默认 LR 轨迹不因代码更新而改变，不能将历史记录解释为新配方结果。
+
+### 9.2 本次测试与短程验收
+
+仓库 23 项 + 先前临时回归 40 项：`63 passed`。另用临时 CPU 玩具模型经真实 DiffSynth runner 测试 100 次 update、每次 2 个 microstep：Stage 1 warmup=4，LR 首次 `1e-5`、第 4 次 `4e-5`、最后一次约 `1.0708e-8`；Stage 2 warmup=3，constant 首次 `3.3333e-5`、第 3 次及最后一次 `1e-4`，cosine 前 3 次与之相同、最后一次约 `2.6222e-8`。三组均只有 100 条 optimizer 日志，没有按 200 个 microstep 错误推进。`nan`、负数、超过 1 的比例以及超过训练总 update 的显式步数被拒绝；`--warmup-steps 0` 可关闭默认 warmup。
+
+真实模型验收在 `/tmp/samtok21-lr-schedule-M3nCRA/`，复用已审核 `cache_final/`，两个 Stage 2 分支使用同一份 cache、rank=2、seed=926、3 updates、accumulation=4，仅 LR schedule 不同；Stage 1 使用审核 `reviewed_stage1.jsonl`、rank=2、1 update、accumulation=8。三次单卡训练 exit code 均为 0，`run.json` / `optimizer_steps.jsonl` / adapter 均生成。Stage 1 的 1 update 有效 warmup=1，实际 LR=`4e-5`；仅证明训练路径，不可能观察 cosine 衰减。Stage 2 的 3 updates 有效 warmup=1，实际 LR 分别为 constant `[1e-4, 1e-4, 1e-4]`、cosine `[1e-4, 1e-4, 5e-5]`。两组 base identity、cache 路径、schedule 文件、前两次 update 记录逐项相同；第三次 update 后 448/448 个 adapter tensor 出现差异，最大绝对差约 `5.016e-5`。三份 adapter tensor 均为有限值，Stage 1 有 504 个 tensor，Stage 2 各 448 个。再以 2 卡 DDP 重跑 Stage 2 cosine、3 updates、每 rank accumulation=4：exit code=0，仅有 3 条 optimizer 记录，实际 LR 同为 `[1e-4, 1e-4, 5e-5]`，adapter 有 448 个有限 tensor，进程组正常销毁。最终 `63 passed`、38 条文档 CLI 命令解析通过、`git diff --check` 通过。以上只是小批量软件验收，不是正式 ablation 或质量结论。
+
+复现命令（repo 根目录；输出目录必须是新的，不要覆盖已生成产物）：
+
+```bash
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=.:DiffSynth-Studio
+export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
+export CHECK=/tmp/samtok21-fixes-dUnbt5
+export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
+export OUT=/tmp/samtok21-lr-schedule-M3nCRA
+$PY -m pytest -p no:cacheprovider -q tests $CHECK/test_regressions.py
+CUDA_VISIBLE_DEVICES=2 $PY -m samtok_edit21.train train --stage stage1 \
+  --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA --max-pixels 65536 \
+  --output $OUT/stage1_cosine --steps 1 --rank 2 --seed 926
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+  --cache $CHECK/cache_final --output $OUT/stage2_constant --steps 3 --rank 2 \
+  --seed 926 --lr-schedule constant
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.train train --stage stage2 \
+  --cache $CHECK/cache_final --output $OUT/stage2_cosine --steps 3 --rank 2 \
+  --seed 926 --lr-schedule cosine
+CUDA_VISIBLE_DEVICES=3,4 $PY -m torch.distributed.run --standalone --nproc_per_node=2 \
+  -m samtok_edit21.train train --stage stage2 --cache $CHECK/cache_final \
+  --output $OUT/stage2_cosine_ddp --steps 3 --rank 2 --seed 926 --lr-schedule cosine
+```
+
+### 9.3 后续正式 ablation 提醒（未执行）
+
+在固定基座、Stage 1 adapter、审核 Stage 2 数据和 cache-v2 后，确定一个足够长、可观察 warmup 后曲线的 update 数；复用**同一份 cache**，分别训练 constant 与 cosine，各自使用独立输出目录，但固定 `warmup-ratio=0.025`（若有方案需要也可在 0.02–0.03 内另定同一个比例）、LR、seed、rank/dropout、accumulation、world size、样本 schedule 与其余超参数。先核对两组 `run.json` 的有效 update/warmup 数、`schedule.json`、optimizer LR 轨迹，再用相同验证集、推理参数/随机种子比较结果。不要把本节 3-update smoke 的 loss 或输出当成调度策略优劣结论。
+
+## 10. 2026-09-26：显式训练长度、保存间隔和采样曝光预检
+
+### 10.1 问题、归属与处理
+
+DiffSynth `ModelLogger` 每个 microstep 调用一次 `on_step_end`，保存文件名 `step-N` 的 N 也是 microstep。项目旧默认 `--save-steps=100`：Stage 1 默认 accumulation=8，保存点有一半落在未完成的梯度累积中；Stage 2 默认 accumulation=4，100 可整除 4，但默认间隔仍会产生大量文件。此计数方式来自固定的官方 logger，**100 是项目自设值，不是 Qwen-Image-2.1 官方编辑示例的保存设置**。`make_schedule` 原先在未指定 `--steps` 时取各类池 `ceil(池大小/每 update 抽取数)` 的最大值；对于大小悬殊的正式数据，训练长度可能远超预期，且小池反复循环。
+
+本次项目改动：训练 CLI/Python 入口现在必须显式给出正数 `--steps`，cache 入口不受影响；`--save-steps`/`--save-every` 默认从 100 改为 2000，要求正数且整除当前 `--accumulation`，确保定期 checkpoint 位于完成 update 之后。新增 `--plan-only`：复用来源校验与真实 schedule 生成，打印 `training_plan`，不实例化训练模型、不创建/写入指定的 `--output`；正常训练在模型加载前输出相同计划，并在 `schedule.json` 新增每个样本池及 `edit_type` 的源行数、实际抽取数、平均抽取次数、已见/未见行数与单行最小/最大抽取次数；`run.json` 另记每 rank microstep 数与预计 step 权重文件数。`make_schedule` 的内部自动推导分支仍保留供历史工具调用，但正式训练入口不再使用。cache-v2/adapter 权重格式未改，历史产物无需因该变更重建。
+
+4,000 updates、8 卡、默认 accumulation 下的规划数字：Stage 1 global batch=64，NTP/ref/noref/plain 抽取 96k/64k/64k/32k；Stage 2 global batch=32，ref/noref/plain 为 32k/64k/32k。每池 `draws/source_rows` 是**平均曝光**，不是所有行都走过相同次数；内部按 `edit_type` 加权并循环队列，因此需审阅更细的子类型覆盖。默认 2000 microstep 保存意味着 Stage 1 32k microsteps → 16 个中间文件、Stage 2 16k → 8 个，另各有最终 adapter。基于 rank=2 实际 tensor 数推算默认 Stage 1 rank=64 的 FP32 tensor payload 约 698.35 MB；已实测默认 Stage 2 rank=32 adapter 文件约 335.60 MB。因此 4000 updates 的中间文件量约 11.2 GB / 2.7 GB（不含最终 adapter、文件系统开销），远低于旧 100 microstep 的约 223 GB / 54 GB。这只是容量估算，**本次未执行 4000-update 长训练**；当前不自动清理旧 step 文件，step 权重也不包含 optimizer/scheduler/采样状态，不是完整 resume。
+
+### 10.2 回归与真实模型 smoke
+
+旧仓库 23 项、此前临时回归 40 项、本次临时新增 10 项，共 **73 passed**。新增用例核验两阶段 4000-update 的 microstep/文件数量与各池实际抽取量、缺失 `--steps` 在创建输出目录之前被拒绝、零/负/未对齐的保存间隔被拒绝，以及实际 schedule 的池/子类型报告与逐行计数完全一致；新增测试文件位于 `/tmp/samtok21-fixes-dUnbt5/test_training_plan.py`，未加入 repo。临时检查脚本第一次按文件名的字典序比较 `step-12` 与 `step-4`，仅测试断言失败；改用数值排序后通过，训练及文件内容未受影响。
+
+在 `/tmp/samtok21-training-plan-VdqG2K/` 用已审核的小数据验收：Stage 1 与 Stage 2 的 `--plan-only --steps 3` 均 exit code=0，分别输出 24/12 个每 rank microstep 的计划，池抽取数精确符合 3:2:2:1 和 1:2:1；`no-stage1-output` 与 `no-stage2-output` 均未创建。两卡 Stage 2 `--plan-only --steps 3` 也 exit code=0，报告 world_size=2、global_batch=8，ref/noref/plain 全局抽取 6/12/6；`no-stage2-ddp-output` 未创建。真实单卡 Stage 1 `--steps 2 --save-steps 8` 生成 `step-8`、`step-16` 和最终 adapter；真实单卡 Stage 2 `--steps 3 --save-steps 4` 生成 `step-4`、`step-8`、`step-12` 和最终 adapter，均与 `run.json.planned_step_checkpoints` 一致。两阶段 adapter 分别有 504/448 个有限值 tensor；Stage 2 的 `schedule.json.pool_exposure` 对 ref/noref/plain 的实际抽取数为 3/6/3。再用两卡 DDP 对 Stage 2 做 `--steps 2 --save-steps 4` 验收：进程 exit code=0，每 rank 8 microsteps，只有 `step-4`、`step-8` 两个中间文件；全局 ref/noref/plain 抽取为 4/8/4，最终 448 个 adapter tensor 均有限。短程测试缩短保存间隔只是为了触发定期保存代码，不改变正式默认 2000。
+
+复现命令（repo 根目录；重跑真实训练请替换已存在的输出目录）：
+
+```bash
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=.:DiffSynth-Studio
+export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
+export CHECK=/tmp/samtok21-fixes-dUnbt5
+export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
+export OUT=/tmp/samtok21-training-plan-VdqG2K
+$PY -m pytest -p no:cacheprovider -q tests $CHECK/test_regressions.py $CHECK/test_training_plan.py
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+  --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA \
+  --output $OUT/no-stage1-output --steps 3 --plan-only
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.train train --stage stage2 \
+  --cache $CHECK/cache_final --output $OUT/no-stage2-output --steps 3 --plan-only
+CUDA_VISIBLE_DEVICES=4,5 NCCL_DEBUG=WARN $PY -m torch.distributed.run --standalone \
+  --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --cache $CHECK/cache_final --output $OUT/no-stage2-ddp-output \
+  --steps 3 --rank 2 --seed 926 --plan-only
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+  --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA --max-pixels 65536 \
+  --output $OUT/stage1_smoke --steps 2 --rank 2 --seed 926 --save-steps 8
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.train train --stage stage2 \
+  --cache $CHECK/cache_final --output $OUT/stage2_smoke \
+  --steps 3 --rank 2 --seed 926 --save-steps 4
+CUDA_VISIBLE_DEVICES=2,3 NCCL_DEBUG=WARN $PY -m torch.distributed.run --standalone \
+  --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --cache $CHECK/cache_final --output $OUT/stage2_ddp_smoke \
+  --steps 2 --rank 2 --seed 926 --save-steps 4
+```
+
+最终仓库及临时回归 `73 passed`、实现文档/README/实验记录中的 47 条具体 CLI 命令解析通过、`git diff --check` 无格式错误。正式训练前仍须先用**真正最终的数据和 GPU 数量**执行 `--plan-only`，审核各池与子类型的平均曝光、未见行数、单行最大抽取次数，再根据验证集和算力确定 `--steps`；4000 只是预算示例，不是默认或经过质量验证的最优训练长度。若需要中断后精确继续，还需另行设计完整训练状态保存，不能把本轮的 step 文件当作 resume checkpoint。

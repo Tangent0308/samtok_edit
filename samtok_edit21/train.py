@@ -276,23 +276,52 @@ def _fresh_output(args, accelerator):
     _main_rank_result(accelerator, create)
 
 
-def scheduler_factory(args, updates):
-    if args.warmup_steps < 0 or args.warmup_steps > updates:
+def resolve_warmup_steps(args, updates):
+    """Turn a requested ratio into optimizer updates, never microsteps."""
+    if updates < 1:
+        raise ValueError("optimizer updates must be positive")
+    if args.warmup_steps is not None:
+        warmup_steps = args.warmup_steps
+    else:
+        warmup_steps = math.ceil(updates * args.warmup_ratio)
+    if not 0 <= warmup_steps <= updates:
         raise ValueError("warmup-steps must lie in [0, optimizer updates]")
+    return warmup_steps
+
+
+def scheduler_factory(args, updates, warmup_steps=None):
+    if warmup_steps is None:
+        warmup_steps = resolve_warmup_steps(args, updates)
     def factor(step):
-        if step < args.warmup_steps:
-            return (step + 1) / args.warmup_steps
+        if step < warmup_steps:
+            return (step + 1) / warmup_steps
         if args.lr_schedule == "constant":
             return 1.0
-        progress = (step - args.warmup_steps) / max(1, updates - args.warmup_steps)
+        progress = (step - warmup_steps) / max(1, updates - warmup_steps)
         return 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
     return lambda optimizer: torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
 
 
+def validate_training_length_and_saves(args):
+    if args.steps is None:
+        raise ValueError("Training requires explicit --steps (optimizer updates)")
+    if not isinstance(args.steps, int) or args.steps < 1:
+        raise ValueError("--steps must be positive")
+    if not isinstance(args.save_steps, int) or args.save_steps < 1:
+        raise ValueError("--save-steps must be positive")
+    if args.save_steps % args.accumulation:
+        raise ValueError(
+            f"--save-steps={args.save_steps} must be divisible by "
+            f"--accumulation={args.accumulation} to save after complete optimizer updates"
+        )
+
+
 def run_train(args):
+    validate_training_length_and_saves(args)
     accelerator = _accelerator(args.accumulation)
     args.device = str(accelerator.device)
-    _fresh_output(args, accelerator)
+    if not args.plan_only:
+        _fresh_output(args, accelerator)
     set_seed(args.seed)  # same adapter initialization on every rank
     if args.stage == "stage2":
         manifest = json.loads((Path(args.cache) / "manifest.json").read_text())
@@ -318,17 +347,41 @@ def run_train(args):
         if args.stage == "stage2" and init_config.get("conditioning_identity") != manifest["identity"]:
             raise ValueError("Warm-start Stage 2 conditioning identity differs from cache")
     updates = len(schedule) // (accelerator.num_processes * args.accumulation)
-    factory = scheduler_factory(args, updates)
+    warmup_steps = resolve_warmup_steps(args, updates)
+    factory = scheduler_factory(args, updates, warmup_steps)
+    microsteps_per_rank = updates * args.accumulation
+    planned_step_checkpoints = math.ceil(microsteps_per_rank / args.save_steps)
+    plan = {
+        "stage": args.stage,
+        "optimizer_updates": updates,
+        "world_size": accelerator.num_processes,
+        "accumulation": args.accumulation,
+        "global_batch": report["global_batch"],
+        "effective_warmup_steps": warmup_steps,
+        "microsteps_per_rank": microsteps_per_rank,
+        "save_steps_microsteps": args.save_steps,
+        "planned_step_checkpoints": planned_step_checkpoints,
+        "pool_exposure": report["pool_exposure"],
+    }
+    if accelerator.is_main_process:
+        if not args.plan_only:
+            write_json(Path(args.output) / "schedule.json", report)
+            write_json(Path(args.output) / "run.json", {
+                "args": vars(args), "base_identity": base_identity, "optimizer_updates": updates,
+                "effective_warmup_steps": warmup_steps,
+                "microsteps_per_rank": microsteps_per_rank,
+                "planned_step_checkpoints": planned_step_checkpoints,
+                "seed_policy": "shared initialization, seed+rank after prepare",
+                "init_adapter_semantics": "weights only; fresh optimizer/scheduler",
+            })
+        print(json.dumps({"training_plan": plan}, ensure_ascii=False), flush=True)
+    accelerator.wait_for_everyone()
+    if args.plan_only:
+        accelerator.end_training()
+        return
     model = SamtokTrainingModule(args, "sft:train")
     logger = ModelLogger(args.output, remove_prefix_in_ckpt="pipe.text_encoder."
                         if args.stage == "stage1" else "pipe.dit.", enable_csv_log=True)
-    if accelerator.is_main_process:
-        write_json(Path(args.output) / "schedule.json", report)
-        write_json(Path(args.output) / "run.json", {
-            "args": vars(args), "base_identity": base_identity, "optimizer_updates": updates,
-            "seed_policy": "shared initialization, seed+rank after prepare",
-            "init_adapter_semantics": "weights only; fresh optimizer/scheduler",
-        })
     launch_training_task(
         accelerator, dataset, model, logger, learning_rate=args.lr,
         weight_decay=args.weight_decay, num_workers=args.num_workers,
@@ -422,10 +475,19 @@ def _parser():
         p.add_argument("--fm-weight", type=float, default=1.0)
         p.add_argument("--max-grad-norm", type=float, default=1.0)
         p.add_argument("--seed", type=int, default=20260920)
-        p.add_argument("--save-steps", "--save-every", type=int, default=100)
-        p.add_argument("--lr-schedule", choices=("constant", "cosine"), default="constant")
-        p.add_argument("--warmup-steps", type=int, default=0)
+        p.add_argument("--save-steps", "--save-every", type=int, default=2000,
+                       help="Checkpoint interval in per-rank microsteps; must divide accumulation")
+        p.add_argument("--lr-schedule", choices=("constant", "cosine"),
+                       help="Stage 1 defaults to cosine; Stage 2 defaults to constant")
+        warmup = p.add_mutually_exclusive_group()
+        warmup.add_argument("--warmup-ratio", type=float,
+                            help="Fraction of optimizer updates; defaults to 0.04/0.025 for Stage 1/2")
+        warmup.add_argument("--warmup-steps", type=int,
+                            help="Explicit optimizer updates, overriding the stage default ratio")
         p.add_argument("--init-adapter")
+        if command == "train":
+            p.add_argument("--plan-only", action="store_true",
+                           help="Validate provenance and print exposure plan without loading models or writing output")
     return parser
 
 
@@ -433,15 +495,12 @@ def normalize_args(args):
     if hasattr(args, 'resume_adapter') and not hasattr(args, 'init_adapter'):
         args.init_adapter = args.resume_adapter
     if not hasattr(args, 'save_steps'):
-        args.save_steps = getattr(args, 'save_every', 100)
+        args.save_steps = getattr(args, 'save_every', 2000)
     # Fill missing fields for the legacy Python wrappers, using the same parser
     # defaults as the public CLI instead of maintaining another recipe.
     parser_defaults = _parser().parse_args([getattr(args, "command", "train"),
                                            "--output", args.output])
     for key, value in vars(parser_defaults).items():
-        if not hasattr(args, key):
-            setattr(args, key, value)
-    for key, value in {'num_workers': 0, 'lr_schedule': 'constant', 'warmup_steps': 0}.items():
         if not hasattr(args, key):
             setattr(args, key, value)
     if getattr(args, 'init_adapter', None):
@@ -456,6 +515,18 @@ def normalize_args(args):
         "stage1": {"accumulation": 8, "rank": 64, "dropout": 0.05, "lr": 4e-5, "weight_decay": 0.05},
         "stage2": {"accumulation": 4, "rank": 32, "dropout": 0.0, "lr": 1e-4, "weight_decay": 0.01},
     }[args.stage]
+    if args.lr_schedule is None:
+        args.lr_schedule = "cosine" if args.stage == "stage1" else "constant"
+    if args.lr_schedule not in {"constant", "cosine"}:
+        raise ValueError("lr-schedule must be constant or cosine")
+    if args.warmup_steps is not None and args.warmup_ratio is not None:
+        raise ValueError("Choose either warmup-steps or warmup-ratio")
+    if args.warmup_ratio is None and args.warmup_steps is None:
+        args.warmup_ratio = 0.04 if args.stage == "stage1" else 0.025
+    if args.warmup_ratio is not None and (not math.isfinite(args.warmup_ratio) or not 0 <= args.warmup_ratio <= 1):
+        raise ValueError("warmup-ratio must be finite and lie in [0, 1]")
+    if args.warmup_steps is not None and args.warmup_steps < 0:
+        raise ValueError("warmup-steps must be nonnegative")
     for key, value in defaults.items():
         if getattr(args, key) is None:
             setattr(args, key, value)
@@ -475,6 +546,10 @@ def main(argv=None):
             raise SystemExit("stage1 train requires --metadata")
         if args.stage == "stage2" and not args.cache:
             raise SystemExit("stage2 train requires --cache")
+        try:
+            validate_training_length_and_saves(args)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         run_train(args)
 
 

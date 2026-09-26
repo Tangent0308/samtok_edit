@@ -371,7 +371,7 @@ flow_loss
 | `mu` | 0.5 为初始候选，并有 0 的辅助项消融 |
 | `lambda_a` | 校准同一噪声/时间步下 A 与基础 FM 的梯度范数比，候选 0.1–0.3；另记录相对 FM+C 的比例 |
 | warmup | 按 optimizer update 线性增长；正式训练以 500 updates 为候选，短实验另配 |
-| LoRA | 当前所有 DiT Linear 已包含 to_q/to_k；检查真实梯度，不只检查模块名称 |
+| LoRA | 当前 Stage 2 默认采用官方自动检测的 224 个 block 内 Linear，包含 to_q/to_k；检查真实梯度，不只检查模块名称 |
 
 梯度校准在独立诊断运行中进行，使用同一组参数计算范数和夹角，不把额外 backward 混入正常 accumulation。LoRA 初始化可能使部分 A/B 矩阵初始梯度为零，不能要求每个 LoRA tensor 第一刻都非零；要检查应有的参数组信号和实际参数更新。
 

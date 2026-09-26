@@ -55,9 +55,10 @@ python -m samtok_edit21.cli validate --metadata /path/new_rows.jsonl --base-path
 
 | 配置 | Stage 1 | Stage 2 |
 |---|---|---|
-| 可训练部分 | Qwen3 language_model attention/MLP LoRA | DiT 全部 nn.Linear LoRA |
+| 可训练部分 | Qwen3 language_model attention/MLP LoRA | DiT 官方空 target 配置的自动检测结果：32 个 block × 7 个 Linear = 224 个模块 |
 | 默认 rank / alpha / dropout | 64 / 64 / 0.05 | 32 / 32 / 0 |
 | 默认 LR / weight decay | 4e-5 / 0.05 | 1e-4 / 0.01 |
+| 默认 LR 调度 / warmup | cosine / 总 optimizer updates 的 4% | constant / 总 optimizer updates 的 2.5%；可切 cosine 作同 cache 对照 |
 | 默认 accumulation | 8 | 4 |
 | 每步采样比例 | NTP:ref:noref:plain = 3:2:2:1 | ref:noref:plain = 1:2:1 |
 | loss | NTP × 0.05；FM × 1.0，各样本独立分支 | FM × 1.0 |
@@ -66,18 +67,22 @@ LoRA 参数与优化器更新为 fp32，基座冻结。Stage 1 的 VAE 在 no_gr
 
 `--init-adapter` 仅 warm-start 权重，**不是完整 resume**：optimizer、scheduler、采样进度重新开始。未显式传 rank/dropout 时继承 adapter；显式冲突在训练前报错。保存从实际 PEFT 导出 rank/alpha/dropout/target_modules，写 schema_version=2、recipe_sha256、base_identity，并验证 tensor key/shape/有限值。Stage 2 另存 conditioning_identity；不再依赖可能过期的 CLI 默认值。已有 rank 写错的 adapter 不自动修复：rank 可从 A/B shape 查证，dropout 不能从 tensor 推断，必须结合原配置另存修复目录。
 
+Stage 2 **新建** adapter 的 target 直接调用 DiffSynth `DiffusionTrainingModule.auto_detect_lora_target_modules`，与官方 `--lora_target_modules ""` 同一规则。Qwen-Image-2.1 当前结构下是 224 个 block 内 Linear；旧代码枚举全部 232 个 Linear，多出的 8 个为 `img_in`、`modulation.1`、`norm_out.linear`、`proj_out`、两个 `time_text_embed.timestep_embedder.linear_*` 和两个 `txt_in.*_layer`。旧 232-target adapter 的 `target_modules` 已写入 `adapter.json`，`load_adapter` / `--init-adapter` 仍按保存的配方加载，不会静默转成 224-target；需要官方范围时使用新建 adapter。PEFT 保存时可把 224 个完整名称压缩为 7 个匹配后缀，实际注入模块数应以 adapter tensor key 核验。此变更只影响新建 Stage 2 LoRA，不改变 Stage 1、cache 内容或基座权重。
+
 两个命令等价：
 ```bash
 python -m samtok_edit21.train train ...
 python -m samtok_edit21.cli train ...
 ```
-cache 也相同；`--save-every` 是 `--save-steps` 的别名。checkpoint 间隔沿用官方 **microstep** 计数；`--steps` 是 **optimizer update** 数，两者不能混用。
+cache 也相同；`--save-every` 是 `--save-steps` 的别名。正式训练必须显式提供 `--steps`（**optimizer update** 数），不再按最大归一化采样池自动推导训练长度；cache 命令不需要该参数。checkpoint 间隔沿用 DiffSynth **每 rank microstep** 计数，但本项目默认改为 `--save-steps=2000`，并要求正数且可被 `--accumulation` 整除，保证定期保存落在完整 update 后。Stage 1 默认累积 8，对应每 250 updates 保存；Stage 2 默认累积 4，对应每 500 updates 保存。训练结束仍另存最终 `adapter/`；step 权重和最终 adapter 均不含 optimizer、scheduler、采样进度，不能精确 resume。旧默认 100 microsteps 的 Stage 1 checkpoint 可能位于累积中途，不应把历史 `step-100` 解释为 100 次参数更新。
+
+训练前可在相同数据和参数下加 `--plan-only`：完成 metadata/cache 来源校验并构造真实 schedule，输出 `training_plan` JSON，**不加载训练模型，也不创建/修改 `--output` 目录**。正常训练会在加载模型前打印同一计划，并把详细统计写入 `schedule.json`；`run.json` 另记每 rank microstep 数和预计 step 权重文件数。`pool_exposure` 对每类及其 `edit_type` 给出源行数、实际抽取数、平均抽取次数、已见/未见行数、单行最小/最大抽取次数。平均抽取次数只是池级暴露指标，不等于每条样本都均匀遍历；抽取子类型使用既定权重与循环队列，正式训练应结合覆盖情况审核。
 
 ### LR 与随机数
 
-项目默认显式选择 constant=1，即第一步就是传入 LR。官方未扩展调用仍保留其原始 ConstantLR 默认行为（factor=1/3），不改变其他项目 recipe。
+项目通过 DiffSynth runner 的 `scheduler_factory` 显式选择调度器；不修改官方未扩展调用的 `ConstantLR` 默认行为（初始 factor=1/3）。Stage 1 默认 `--lr-schedule cosine --warmup-ratio 0.04`；Stage 2 默认 `--lr-schedule constant --warmup-ratio 0.025`。两阶段均可选 `constant|cosine`，因此 Stage 2 两组可共享同一份 cache、warmup、初始化 seed 和其他训练参数，仅改变 warmup 后的 LR 曲线。历史实验使用旧默认 constant/0 warmup，不能与新默认混称。
 
-支持 `--lr-schedule constant|cosine --warmup-steps N`。调度器只在实际、未跳过的 optimizer update 后推进一次，不随 world size 额外推进。warmup 的第 k 次更新使用 LR × k/N（k 从 1 起）；cosine 在 warmup 后下降。记录实际用于更新的 LR 于 `optimizer_steps.jsonl`，其中 loss 字段明确是最后一个 microstep，而非全局平均。
+`--warmup-ratio R` 按实际总 optimizer update 数计算 `ceil(R × updates)`；`--warmup-steps N` 是互斥的显式覆盖，允许 `N=0` 关闭 warmup。比例需在 `[0,1]` 且有限，步数不得超过总 update 数。解析后的 `effective_warmup_steps` 和 `optimizer_updates` 写入 `run.json`。调度器只在实际、未跳过的 optimizer update 后推进一次，不随 world size 或梯度累积的 microstep 额外推进。warmup 第 k 次更新使用 LR × k/N（k 从 1 起），之后 constant 保持 LR，cosine 从峰值逐步下降；记录实际用于更新的 LR 于 `optimizer_steps.jsonl`，其中 loss 字段是最后一个 microstep 而非全局平均。极短 smoke 若 `ceil(R × updates)=updates`，没有实际衰减区间，不能用来比较两种曲线。
 
 adapter 初始化前所有 rank 使用共同 seed；DDP prepare 后使用 seed+rank 控制 Python/NumPy/torch/CUDA 随机流；schedule 用独立共享 seed。固定设备数、版本和 seed 的短运行可复验，不保证跨硬件 bitwise deterministic。
 
@@ -95,17 +100,17 @@ adapter 初始化前所有 rank 使用共同 seed；DDP prepare 后使用 seed+r
 |---|---|---|
 | 训练对象 | Qwen-Image-2.1 DiT LoRA；`lora_base_model=dit` | 同一基座的 DiT LoRA；TE/VAE 冻结，使用 Stage 1 adapter 产生的条件 cache |
 | 数据入口 | `data_file_keys=image,edit_image`，`extra_inputs=edit_image`；示例数据为 Qwen-Image-Edit-2511 | `edit_umt:ref`、`edit_umt:noref`、`edit` 的 cache-v2；不读取 NTP 行 |
-| LoRA target / rank / alpha / dropout | `lora_target_modules=""` → 自动检测重复 `ModuleList` 内、`min(in_features,out_features)≥512` 的 Linear，**不等于全部 Linear**；32 / 32 / 0（alpha=rank 和 dropout=0 来自注入实现/PEFT 默认） | DiT 全部 `nn.Linear`；32 / 32 / 0 |
+| LoRA target / rank / alpha / dropout | `lora_target_modules=""` → 自动检测重复 `ModuleList` 内、`min(in_features,out_features)≥512` 的 Linear；当前 DiT 为 224 个；32 / 32 / 0（alpha=rank 和 dropout=0 来自注入实现/PEFT 默认） | 直接调用同一自动检测方法，默认 224 个；32 / 32 / 0。旧 232-target adapter 按已保存配方加载 |
 | 优化器 / LR / weight decay | AdamW / `1e-4` / `0.01`（weight decay 为公共默认） | AdamW / `1e-4` / `0.01`；AdamW 默认 `betas=(0.9,0.999)`、`eps=1e-8` |
 | 单卡 microbatch / 累积 | 1 / 1（示例未传累积参数，公共默认 1）；全局 batch = GPU 数 | 1 / 4；全局 batch = `4 × GPU 数`，8 卡时为 32 |
-| 训练长度 / 数据重复 | `num_epochs=5`、`dataset_repeat=100` | `num_epochs=1` 遍历生成的 schedule；`--steps` 未给时按各采样池容量计算 update 数，池耗尽可循环抽取；无固定 repeat=100 |
+| 训练长度 / 数据重复 | `num_epochs=5`、`dataset_repeat=100` | 必须显式传 `--steps`（optimizer updates）；`num_epochs=1` 遍历固定长度 schedule；池耗尽可循环抽取，无固定 repeat=100 |
 | 图像尺寸 | 动态尺寸，`max_pixels=1048576`，宽高按 32 对齐 | `max_pixels=1048576`，宽高按 32 对齐；Stage 2 实际采用 cache manifest 的尺寸上限 |
 | 精度 | pipeline BF16；官方 LoRA 注入将可训练参数转换到 pipeline dtype（BF16） | 冻结基座 BF16；LoRA 可训练参数与优化器状态 FP32 |
 | 样本混合 / loss | 无 SAMTok mask 或 NTP 分支；正条件 FM，训练 `cfg_scale=1` | `ref:noref:plain=1:2:1`；FM × 1.0 |
 | FM 时间步 / 目标 | 1000 个训练时间步均匀抽样；`noise−clean` target，FP32 MSE 乘 scheduler weight | 相同的 1000 步抽样、target、MSE 和 scheduler weight |
-| LR 调度 / warmup | runner 未扩展调用使用 PyTorch `ConstantLR` 默认配置，初始 factor=1/3，`total_iters=5`；示例未指定 warmup | 默认 `constant`、warmup 0，从首个 optimizer update 使用设定 LR；可选 `cosine` 与 `--warmup-steps` |
+| LR 调度 / warmup | runner 未扩展调用使用 PyTorch `ConstantLR` 默认配置，初始 factor=1/3，`total_iters=5`；示例未指定 warmup | 默认 `constant`，warmup 为总 update 数的 2.5%（向上取整）；可选 `cosine`，同 warmup 对照；可用 `--warmup-steps` 覆盖 |
 | 梯度检查点 / 裁剪 | 启用 DiT gradient checkpointing；公共 runner 不传 `max_grad_norm`，默认不裁剪 | 启用 DiT gradient checkpointing；同步 optimizer update 前裁剪 norm=1.0 |
-| seed / 保存 | 训练 seed 未在官方命令中指定；`save_steps=None` 时按 epoch 保存 | seed=`20260920`；`--save-steps=100` 按 microstep 计数；最终另存带配方和身份信息的 adapter |
+| seed / 保存 | 训练 seed 未在官方命令中指定；`save_steps=None` 时按 epoch 保存 | seed=`20260920`；`--save-steps=2000` 按每 rank microstep 计数且必须对齐 accumulation；最终另存带配方和身份信息的 adapter |
 
 项目 Stage 1 的冻结 DiT FM 路径也使用同一 DiffSynth 2.1 scheduler/loss 定义，但其 NTP/FM 联合目标和 TE LoRA 并非上述官方编辑示例的一部分。当前项目参数解析、分支 loss、采样与 scheduler 分别见 [train.py](samtok_edit21/train.py)、[training.py](samtok_edit21/training.py)、[data.py](samtok_edit21/data.py)。
 
@@ -119,11 +124,11 @@ adapter 初始化前所有 rank 使用共同 seed；DDP prepare 后使用 seed+r
 | LoRA rank / alpha / dropout | 论文未列 | 128 / 256 / 0.05 | 64 / 128 / 脚本未显式传 dropout | 64 / 64 / 0.05 |
 | 优化器 / LR / weight decay | AdamW / `2e-5` / 未列 | AdamW / `2e-5` / `0.05`；`betas=(0.9,0.999)` | LR `2e-5`；其余未在脚本中显式传入 | AdamW / `4e-5` / `0.05`；`betas=(0.9,0.999)`、`eps=1e-8` |
 | batch / 累积 | global batch 256 | per-device 4 / 累积 1；global batch 取决于实际 GPU 数 | 8 GPU × per-device 4 × 累积 2 = global batch 64 | per-device microbatch 1 / 累积 8；global batch = `8 × GPU 数`，8 卡时为 64 |
-| 长度 / 图像输入 | 论文未列 VLM SFT epoch、最大文本长度 | 1 epoch；`model_max_length=8192` | 1 epoch；`max_length=8192`，`IMAGE_MAX_TOKEN_NUM=2048` | `--steps` 未给时由 schedule 推导，runner 遍历 1 次 schedule；无 CLI 文本长度上限；训练图像 `max_pixels=1048576` |
+| 长度 / 图像输入 | 论文未列 VLM SFT epoch、最大文本长度 | 1 epoch；`model_max_length=8192` | 1 epoch；`max_length=8192`，`IMAGE_MAX_TOKEN_NUM=2048` | 必须显式给 `--steps`，runner 遍历 1 次固定长度 schedule；无 CLI 文本长度上限；训练图像 `max_pixels=1048576` |
 | 精度 | 论文未列 | BF16 AMP | `torch_dtype=bfloat16` | 冻结基座 BF16；LoRA/优化器状态 FP32 |
-| 调度 / warmup | cosine；warmup 比例未列 | 前 5% warmup，随后 cosine | `warmup_ratio=0.05`；脚本未显式列调度器类型 | 默认 constant、warmup 0；可选 cosine 和指定 warmup update 数 |
+| 调度 / warmup | cosine；warmup 比例未列 | 前 5% warmup，随后 cosine | `warmup_ratio=0.05`；脚本未显式列调度器类型 | 默认 cosine，warmup 为总 update 数的 4%（向上取整）；可用 `--warmup-steps` 覆盖 |
 | gradient checkpoint / clip | 论文未列 | 配置中 gradient clip norm=1 | 启用 gradient checkpoint；脚本未显式列 clip | LM/DiT gradient checkpoint；同步 update 前 clip norm=1.0 |
-| seed / data workers / 保存 | 论文未列 | seed 未列 / 4 / 每 1000 step | seed 未列 / 4 / 每 1000 step | `20260920` / 0 / 每 100 microstep；最终另存 adapter |
+| seed / data workers / 保存 | 论文未列 | seed 未列 / 4 / 每 1000 step | seed 未列 / 4 / 每 1000 step | `20260920` / 0 / 每 2000 microstep；最终另存 adapter |
 | mask 及任务比例 | NTP 的 mask-token 生成/理解；无 FM | 示例为 mask generation 数据 | 示例为 `mask_generation_gres` | 预训练 8B SAMTok mask token 保持不变；`NTP:ref:noref:plain=3:2:2:1`；NTP × 0.05、FM × 1.0 |
 
 ### 5.3 推理：DiffSynth 编辑、SAMTok 定位与当前两次前向
@@ -174,19 +179,39 @@ export PYTHONDONTWRITEBYTECODE=1
 以下 `/path/...` 均需替换为实际路径；单卡用普通 python，多卡建议 torchrun 显式指定数量，不依赖外部 accelerate 配置：
 
 ```bash
+# 先只读预览 Stage 1；--output 不会被创建，可与正式训练复用。
 torchrun --standalone --nproc_per_node=2 -m samtok_edit21.train train --stage stage1 \
   --metadata /path/stage1.jsonl --base-path /path/data \
-  --output /path/new-stage1 --steps 1000 --accumulation 8 --seed 20260926
+  --output /path/new-stage1 --steps 1000 --accumulation 8 --plan-only
+
+torchrun --standalone --nproc_per_node=2 -m samtok_edit21.train train --stage stage1 \
+  --metadata /path/stage1.jsonl --base-path /path/data \
+  --output /path/new-stage1 --steps 1000 --accumulation 8 --seed 20260926 \
+  --lr-schedule cosine --warmup-ratio 0.04
 
 torchrun --standalone --nproc_per_node=2 -m samtok_edit21.train cache \
   --metadata /path/stage2.jsonl --base-path /path/data \
   --te-adapter /path/new-stage1/adapter --output /path/new-cache
 
+# Stage 2 两组共用同一份 cache；先预览任意一组的采样计划。
 torchrun --standalone --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
-  --cache /path/new-cache --output /path/new-stage2 --steps 1000 --accumulation 4 --seed 20260926
+  --cache /path/new-cache --output /path/new-stage2-constant --steps 1000 \
+  --accumulation 4 --seed 20260926 --plan-only
+
+torchrun --standalone --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --cache /path/new-cache --output /path/new-stage2-constant --steps 1000 \
+  --accumulation 4 --seed 20260926 --lr-schedule constant --warmup-ratio 0.025
+
+torchrun --standalone --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --cache /path/new-cache --output /path/new-stage2-cosine --steps 1000 \
+  --accumulation 4 --seed 20260926 --lr-schedule cosine --warmup-ratio 0.025
 ```
 
 多卡 Stage 1 accumulation 必须为 8 的倍数，Stage 2 为 4 的倍数，保证每 rank 的比例一致。两阶段最终可消费产物均为 `adapter/{adapter.json,adapter.safetensors}`；官方 step checkpoint 只含训练权重，不是独立完整 resume/adapter 包。
+
+给定池大小 `N_k`、global batch `world_size × accumulation` 和该池比例份额 `r_k/Σr`，池级平均抽取次数为 `steps × global_batch × r_k/(Σr × N_k)`。例如 8 卡、4000 updates 时，Stage 1 的 global batch=64，NTP/ref/noref/plain 分别抽取 96k/64k/64k/32k 次；Stage 2 的 global batch=32，ref/noref/plain 为 32k/64k/32k 次。使用默认 `--save-steps=2000`，Stage 1 共 32k microsteps → 16 个 step 权重文件，Stage 2 共 16k → 8 个；另有最终 adapter。当前不自动删除旧 step 文件，需在开跑前预算磁盘。是否训练 4000 updates 应由实际池覆盖、验证表现和计算预算决定，不是默认长度。
+
+后续 Stage 2 ablation 提醒：以上两个命令必须使用**同一份已验收 cache**和相同的 base/Stage 1 条件、schedule seed、训练 update 数、rank/dropout、LR、batch/accumulation 等设置，仅改变 `--lr-schedule`；输出目录必须不同。保存两组 `run.json`、`schedule.json`、`optimizer_steps.jsonl` 和 adapter，先核对有效 warmup/update 数与 LR 轨迹，再在同一验证集、相同推理参数和随机种子下比较。短程 smoke 只验证软件路径，不代替正式质量/收敛结论。
 
 ## 8. 推理、noref 边界与评测
 
@@ -197,7 +222,7 @@ python -m samtok_edit21.cli localize --image /path/source.png \
 
 python -m samtok_edit21.cli infer --image /path/source.png \
   --prompt 'Make the leftmost bird blue.' --variant noref \
-  --te-adapter /path/new-stage1/adapter --dit-adapter /path/new-stage2/adapter \
+  --te-adapter /path/new-stage1/adapter --dit-adapter /path/new-stage2-constant/adapter \
   --height 1024 --width 1024 --output /path/result.png
 ```
 
@@ -232,5 +257,8 @@ F1/F2/F4：统一入口、真实 adapter 配置、cache-v2 内容身份、旧产
 F6：同步官方 #1697。A1/A2/A3：显式 LR、全 RNG seed、当前 backward 梯度审计。
 F5/F3：唯一标签 round-trip、可审核 noref。A4/A7：单图绑定、独立 benchmark 后处理。
 A5/A6：实测依赖约束、可执行环境/命令说明及 localize prompt。
+Stage 2 target 修正：新建 DiT LoRA 改为官方 224-target 自动检测，保留旧 232-target adapter 的显式配方兼容；数值和真实模型验收见实验记录第 8 节。
+LR 调度更新：Stage 1 默认 cosine/4% warmup，Stage 2 默认 constant/2.5% warmup，cosine 组用同一 cache 和 2.5% warmup 对照；显式步数可覆盖比例。验收与历史影响见实验记录第 9 节。
+训练计划更新：正式训练要求显式 `--steps`；step checkpoint 默认每 2000 microsteps 且对齐 accumulation；加入只读 `--plan-only` 和按池/子类型的实际曝光报告。验收、兼容性和磁盘预算见实验记录第 10 节。
 
 后续任何代码/数据协议更新必须同步维护本文当前行为，在实验记录追加日期、代码版本、来源归属、兼容性影响、命令、产物、实测结果与未覆盖项。影响 TE 条件或 resize 的改动必须升级 preprocessing 标识并重建缓存；不要覆盖历史失败记录，也不要把计划中的功能写成已验收。
