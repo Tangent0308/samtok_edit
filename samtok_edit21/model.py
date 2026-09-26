@@ -16,6 +16,7 @@ from diffsynth.pipelines.qwen_image_21 import (
 
 from .protocol import (
     LOC_REQUEST,
+    condition_localization,
     grouped_units,
     parse_cot,
     parse_generated_cot,
@@ -234,7 +235,14 @@ def localize(
     max_new_tokens=256,
     do_sample=False,
     temperature=0.8,
+    variant="noref",
+    reviewed_units=None,
+    strict_noref=False,
 ):
+    if strict_noref and variant != "noref":
+        raise ValueError("strict_noref requires variant=noref")
+    if len(images) != 1:
+        raise ValueError("Localization requires exactly one source image")
     prepared = resize_sources(pipe, images, height, width)
     inputs, prefix, _ = localization_inputs(pipe, instruction, prepared)
     kwargs = {
@@ -250,24 +258,35 @@ def localize(
     raw = pipe.processor.tokenizer.decode(ids[0, prefix:], skip_special_tokens=False)
     try:
         items = parse_generated_cot(raw)
-        conditioned = render_units(instruction, grouped_units(instruction, items))
-        reason = None
+        result = condition_localization(instruction, items, variant=variant,
+                                        reviewed=reviewed_units, strict=strict_noref)
     except (ValueError, TypeError, KeyError) as exc:
-        items, conditioned, reason = [], instruction, str(exc)
-    return {
-        "raw": raw,
-        "items": items,
-        "conditioning_prompt": conditioned,
-        "fallback_reason": reason,
-    }
+        if strict_noref:
+            raise ValueError(f"Strict localization failed: {exc}") from exc
+        items = []
+        result = {"conditioning_prompt": instruction, "requested_variant": variant,
+                  "actual_variant": "plain", "fallback_reason": str(exc)}
+    return {"raw": raw, "items": items, **result}
 
 
 @torch.no_grad()
 def edit(
-    pipe, instruction, images, *, mode="online", cot=None, max_new_tokens=256, **kwargs
+    pipe, instruction, images, *, mode="online", cot=None, max_new_tokens=256,
+    variant="noref", reviewed_units=None, strict_noref=False, **kwargs
 ):
     """Direct, inline, explicit oracle, or online two-pass inference."""
+    masks = spans_in(instruction)
+    if (masks or mode in {"online", "oracle"}) and len(images) != 1:
+        raise ValueError("Mask-conditioned editing requires exactly one source image")
+    if mode == "direct" and masks:
+        raise ValueError("direct is plain editing; use inline for mask tokens")
+    if mode == "inline" and not masks:
+        raise ValueError("inline requires mask spans")
+    if strict_noref and (variant != "noref" or mode not in {"online", "oracle"}):
+        raise ValueError("strict_noref requires online/oracle with variant=noref")
     result = {
+        "requested_variant": variant if mode in {"online", "oracle"} else None,
+        "actual_variant": "inline" if masks else "plain",
         "raw": None,
         "items": [],
         "conditioning_prompt": instruction,
@@ -281,15 +300,12 @@ def edit(
             height=kwargs.get("height", 1024),
             width=kwargs.get("width", 1024),
             max_new_tokens=max_new_tokens,
+            variant=variant, reviewed_units=reviewed_units, strict_noref=strict_noref,
         )
     elif mode == "oracle":
         items = parse_generated_cot(cot)
-        result.update(
-            items=items,
-            conditioning_prompt=render_units(
-                instruction, grouped_units(instruction, items)
-            ),
-        )
+        result.update(items=items, **condition_localization(
+            instruction, items, variant=variant, reviewed=reviewed_units, strict=strict_noref))
     elif mode not in {"direct", "inline"}:
         raise ValueError(f"Unknown mode: {mode}")
     spans_in(result["conditioning_prompt"])

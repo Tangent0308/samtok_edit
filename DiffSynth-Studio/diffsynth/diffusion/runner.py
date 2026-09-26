@@ -65,6 +65,8 @@ def launch_training_task(
     enable_optimizer_cpu_offload: bool = False,
     cpu_offload_split_threshold: int = None,
     customized_optimizer: str = None,
+    scheduler_factory = None,
+    training_seed: int = None,
     args = None,
     **kwargs,
 ):
@@ -84,7 +86,9 @@ def launch_training_task(
 
     optimizer_class = get_optimizer_class(customized_optimizer)
     optimizer = optimizer_class(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
+    scheduler = (torch.optim.lr_scheduler.ConstantLR(optimizer) if scheduler_factory is None
+                 else scheduler_factory(optimizer))
+    manual_scheduler = scheduler_factory is not None
     # Research datasets may provide a deterministic sampler.  This keeps the
     # official optimizer/DDP/checkpoint path while allowing a project to encode
     # a global sample schedule (for example NTP:ref:noref:plain).  Ordinary
@@ -104,15 +108,25 @@ def launch_training_task(
         )
 
     if enable_model_cpu_offload:
-        optimizer, dataloader, scheduler = accelerator.prepare(optimizer, dataloader, scheduler)
+        if manual_scheduler:
+            optimizer, dataloader = accelerator.prepare(optimizer, dataloader)
+        else:
+            optimizer, dataloader, scheduler = accelerator.prepare(optimizer, dataloader, scheduler)
         model.pipe.device = accelerator.device
         offload_manager = OffloadTrainingManager(model, accelerator.device, enable_optimizer_cpu_offload, cpu_offload_split_threshold)
     else:
         model.to(device=accelerator.device)
         exclude_quantized_params_from_ddp_sync(accelerator, model)
-        model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
+        if manual_scheduler:
+            model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+        else:
+            model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
 
     initialize_deepspeed_gradient_checkpointing(accelerator)
+    if training_seed is not None:
+        from accelerate.utils import set_seed
+        set_seed(training_seed + accelerator.process_index)
+    optimizer_step = 0
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
             with accelerator.accumulate(model):
@@ -135,8 +149,17 @@ def launch_training_task(
                     torch.nn.utils.clip_grad_norm_(
                         model.parameters(), max_grad_norm, error_if_nonfinite=True
                     )
+                effective_lr = optimizer.param_groups[0]["lr"]
                 optimizer.step()
-                scheduler.step()
+                if not manual_scheduler or (accelerator.sync_gradients and not accelerator.optimizer_step_was_skipped):
+                    scheduler.step()
+                if accelerator.sync_gradients and not accelerator.optimizer_step_was_skipped:
+                    optimizer_step += 1
+                    if manual_scheduler and accelerator.is_main_process:
+                        record = {"optimizer_step": optimizer_step, "lr": effective_lr,
+                                  "loss_last_microstep": float(loss.detach())}
+                        with open(os.path.join(model_logger.output_path, "optimizer_steps.jsonl"), "a") as f:
+                            f.write(json.dumps(record) + "\n")
                 optimizer.zero_grad()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
         if save_steps is None:

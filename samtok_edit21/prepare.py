@@ -20,6 +20,7 @@ from .protocol import (
     phrase_span,
     is_valid_span,
     parse_cot,
+    grouped_units,
     render_units,
     to_cot,
     validate_row,
@@ -74,12 +75,21 @@ def convert_record(record):
     edit_type = "composite" if len(units) > 1 else units[0].edit_type
     items = []
     for unit in units:
-        label = re.sub(r"^(?:the|a|an)\s+", "", unit.ref_phrase, flags=re.I)
+        # Preserve the exact reviewed phrase: stripping articles can turn
+        # "the cat" / "a cat" into two ambiguous identical labels.
+        label = unit.ref_phrase
         if unit.edit_type == "global":
             label = "this image"
         if len(unit.codes) > 1:
-            label = "one of the " + label
+            label = ("one of " if re.match(r"^(?:the|a|an)\s+", label, re.I)
+                     else "one of the ") + label
         items.extend((s, label) for s in unit.codes)
+    # NTP-only examples must also be consumable by pass 2.
+    rebound = grouped_units(instruction, parse_cot(to_cot(items), nonempty=True))
+    if len(rebound) != len(units) or [u.codes for u in rebound] != [u.codes for u in units]:
+        raise ValueError("Localization round-trip changed unit grouping/order")
+    if render_units(instruction, rebound) != render_units(instruction, units):
+        raise ValueError("Localization round-trip changed reference placement")
     common = {"edit_image": record["edit_image"], "edit_type": edit_type}
     ntp = {
         **common,

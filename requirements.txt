@@ -1,2 +1,9 @@
+-c constraints-tested.txt
 -e ./DiffSynth-Studio
 mmengine==0.10.7
+ijson
+pyarrow
+hydra-core
+opencv-python
+scipy
+pytest

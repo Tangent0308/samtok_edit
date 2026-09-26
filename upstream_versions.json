@@ -1,7 +1,7 @@
 {
   "base_main": "633d343",
   "reference_dev": "56b8717",
-  "diffsynth": {"repository": "https://github.com/modelscope/DiffSynth-Studio", "commit": "d2d684ad", "version": "2.1.8"},
+  "diffsynth": {"repository": "https://github.com/modelscope/DiffSynth-Studio", "commit": "7686e54d41d25c0e8ed5f1318acc23b6bb832654", "previous_commit": "d2d684ad1f912949eae08453b9411ae40c5ec0ab", "local_extensions": ["runner: schedule sampler, gradient audit/clip, optional per-update scheduler and rank seed, explicit data_process defaults"], "version": "2.1.8"},
   "Qwen/Qwen-Image-2.1": "b3179ad355be050328e483a9dfdd9e60cd62adfa",
   "zhouyik/Qwen3-VL-8B-SAMTok": "b78aef1105d6a94049a2ba109f814dfcf21bec8e"
 }

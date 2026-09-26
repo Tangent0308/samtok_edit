@@ -140,6 +140,7 @@ def phrase_span(text, phrase):
 def grouped_units(instruction, items):
     groups = OrderedDict()
     for code, label in items:
+        plural = bool(re.match(r"^one of ", label, re.I))
         phrase = re.sub(r"^one of ", "", label, flags=re.I)
         if phrase != label:
             try:
@@ -150,6 +151,10 @@ def grouped_units(instruction, items):
                 without_article = re.sub(r"^(?:the|a|an)\s+", "", phrase, flags=re.I)
                 phrase_span(instruction, without_article)
                 phrase = without_article
+        if phrase in groups and not plural:
+            raise ValueError("Repeated label requires explicit 'one of' multi-instance semantics")
+        if phrase.lower() != "this image":
+            phrase_span(instruction, phrase)
         groups.setdefault(phrase, []).append(code)
     return [Unit(phrase, tuple(codes)) for phrase, codes in groups.items()]
 
@@ -160,6 +165,75 @@ class Unit:
     codes: tuple[str, ...]
     edit_type: str = "attribute"
     anchor_phrase: str | None = None
+
+
+def bind_edit_units(instruction, items, reviewed=None):
+    """Resolve localization first; use reviewed semantics or a deliberately small grammar.
+
+    This is not a general natural-language parser. Never infer add/text/composite
+    semantics from the old default Unit.edit_type='attribute'.
+    """
+    units = grouped_units(instruction, items)
+    if reviewed is not None:
+        if len(reviewed) != len(units):
+            raise ValueError("Reviewed units must match localization groups in order")
+        result = []
+        for unit, spec in zip(units, reviewed):
+            if spec["ref_phrase"] != unit.ref_phrase:
+                raise ValueError("Reviewed ref_phrase must exactly match bound localization label")
+            typ = spec["edit_type"]
+            if typ not in NOREF and typ != "add":
+                raise ValueError("Reviewed edit_type must be atomic")
+            result.append(Unit(unit.ref_phrase, unit.codes, typ, spec.get("anchor_phrase")))
+        return result
+    if len(units) != 1:
+        raise ValueError("Composite noref requires reviewed units")
+    if re.search(r";|\b(?:and|then|while|also)\b", instruction, re.I):
+        raise ValueError("Multi-clause/compound noref requires reviewed units")
+    unit = units[0]
+    if unit.ref_phrase.lower() == "this image":
+        return [Unit(unit.ref_phrase, unit.codes, "global")]
+    # Only match the whole instruction, including the entire uniquely bound phrase.
+    ref = re.escape(unit.ref_phrase)
+    noun = r"(?:(?:the|a|an)\s+)?" + ref
+    tail = r"[.!?]?"
+    rules = [
+        ("remove", r"(?:Remove|Delete|Erase)\s+" + noun + tail),
+        ("replace", r"(?:Replace|Swap)\s+" + noun + r"\s+(?:with|for)\s+.+"),
+        ("text", r"(?:Change|Replace)\s+(?:(?:the )?text\s+)?" + noun + r'\s+(?:to|with)\s+["“].+["”]' + tail),
+        ("attribute", r"(?:Make|Paint|Color|Turn)\s+" + noun + r"\s+(?:red|blue|green|yellow|black|white|purple|orange|pink|brown)" + tail),
+        ("action", r"(?:Make|Have)\s+" + noun + r"\s+(?:stand|sit|walk|run|jump|smile)" + tail),
+    ]
+    # Text must take priority over generic replacement.
+    rules.insert(0, rules.pop(2))
+    for typ, pattern in rules:
+        if re.fullmatch(pattern, instruction.strip(), re.I):
+            return [Unit(unit.ref_phrase, unit.codes, typ)]
+    # Add is only safe without spatial language or with a reviewed terminal anchor.
+    if re.fullmatch(r"(?:Add|Insert|Draw)\s+" + ref + tail, instruction.strip(), re.I):
+        if not re.search(r"\b(?:near|next|beside|behind|front|on|in|under|above|at|to)\b", unit.ref_phrase, re.I):
+            return [Unit(unit.ref_phrase, unit.codes, "add")]
+    raise ValueError("No reliable atomic noref grammar; provide reviewed units")
+
+
+def condition_localization(instruction, items, *, variant="noref", reviewed=None, strict=False):
+    if variant not in {"ref", "noref"}:
+        raise ValueError("Expected requested variant ref/noref")
+    groups = grouped_units(instruction, items)
+    ref = render_units(instruction, groups, variant="ref")
+    if variant == "ref":
+        return {"conditioning_prompt": ref, "requested_variant": variant,
+                "actual_variant": "ref", "fallback_reason": None}
+    try:
+        units = bind_edit_units(instruction, items, reviewed)
+        prompt = render_units(instruction, units, variant="noref")
+        return {"conditioning_prompt": prompt, "requested_variant": variant,
+                "actual_variant": "noref", "fallback_reason": None}
+    except (ValueError, KeyError, TypeError) as exc:
+        if strict:
+            raise ValueError(f"Strict noref unsupported: {exc}") from exc
+        return {"conditioning_prompt": ref, "requested_variant": variant,
+                "actual_variant": "ref", "fallback_reason": str(exc)}
 
 
 def _with_codes(phrase, codes):
@@ -230,9 +304,12 @@ def render_units(instruction, units, *, variant="ref"):
                             start = text_prefix.start()
                     if unit.edit_type == "remove":
                         suffix = re.match(
-                            r"\s+from\s+[^,.;!?]+(?=[.;!?]?$)", instruction[end:], re.I
+                            r"\s+from\s+(?:this|the)\s+(?:image|photo|picture|scene)(?=[.;!?]?$)",
+                            instruction[end:], re.I
                         )
-                        if suffix and not re.search(r"\band\b", suffix.group(), re.I):
+                        # Do not delete arbitrary 'from ...' tails: they may
+                        # contain what/how, not just a redundant image reference.
+                        if suffix:
                             end += suffix.end()
         replacements.append((start, end, _with_codes(replacement, unit.codes)))
     replacements.sort()

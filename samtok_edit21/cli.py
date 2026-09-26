@@ -1,15 +1,22 @@
 from __future__ import annotations
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .data import EXPERIMENT_ROOT, read_rows, write_json, write_rows
 from .model import DEFAULT_QWEN, DEFAULT_SAMTOK
 
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in {"train", "cache"}:
+        from .train import main as training_main
+        return training_main(argv)
     parser = argparse.ArgumentParser(description="SAMTok + Qwen-Image-2.1")
     subs = parser.add_subparsers(dest="command", required=True)
+    subs.add_parser("train", help="Delegate to the canonical DiffSynth training entry point")
+    subs.add_parser("cache", help="Delegate to the canonical cache-v2 builder")
     build = subs.add_parser("build-debug")
     build.add_argument("--output", default=EXPERIMENT_ROOT + "/data")
     base = "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/"
@@ -34,6 +41,7 @@ def main():
     validate = subs.add_parser("validate")
     validate.add_argument("--metadata", required=True)
     validate.add_argument("--base-path", default=".")
+    validate.add_argument("--check-bindings", action="store_true")
     region = subs.add_parser(
         "regions", help="SAM2 point/box proposals; masks and SAMTok codes for selection"
     )
@@ -50,38 +58,11 @@ def main():
     region.add_argument("--output", required=True)
     region.add_argument("--samtok", default=DEFAULT_SAMTOK)
     region.add_argument("--device", default="cuda")
-    for name in ("train", "cache", "infer", "localize"):
+    for name in ("infer", "localize"):
         p = subs.add_parser(name)
         p.add_argument("--qwen", default=DEFAULT_QWEN)
         p.add_argument("--samtok", default=DEFAULT_SAMTOK)
         p.add_argument("--output", required=True)
-        if name in {"train", "cache"}:
-            p.add_argument("--metadata")
-            p.add_argument("--base-path", default=EXPERIMENT_ROOT + "/data")
-            p.add_argument("--max-pixels", type=int, default=1048576)
-        if name == "train":
-            p.add_argument("--stage", choices=["stage1", "stage2"], required=True)
-            p.add_argument("--cache")
-            p.add_argument("--steps", type=int)
-            p.add_argument("--accumulation", type=int, default=8)
-            p.add_argument("--rank", type=int)
-            p.add_argument("--dropout", type=float)
-            p.add_argument("--lr", type=float)
-            p.add_argument(
-                "--lr-schedule", choices=["constant", "cosine"], default="constant"
-            )
-            p.add_argument("--warmup-steps", type=int, default=0)
-            p.add_argument("--weight-decay", type=float)
-            p.add_argument("--max-grad-norm", type=float, default=1.0)
-            p.add_argument("--ntp-weight", type=float, default=0.05)
-            p.add_argument("--fm-weight", type=float, default=1.0)
-            p.add_argument("--seed", type=int, default=20260920)
-            p.add_argument("--save-every", type=int, default=100)
-            p.add_argument(
-                "--init-adapter",
-                dest="resume_adapter",
-                help="Warm start adapter weights; optimizer starts fresh",
-            )
         if name in {"cache", "infer", "localize"}:
             p.add_argument("--te-adapter")
         if name in {"infer", "localize"}:
@@ -92,6 +73,9 @@ def main():
             p.add_argument("--device", default="cuda")
             p.add_argument("--max-new-tokens", type=int, default=256)
             p.add_argument("--seed", type=int, default=0)
+            p.add_argument("--variant", choices=("ref", "noref"), default="noref")
+            p.add_argument("--strict-noref", action="store_true")
+            p.add_argument("--units-file", help="Reviewed atomic units JSON list, in localization group order")
             if name == "infer":
                 p.add_argument(
                     "--mode",
@@ -105,6 +89,8 @@ def main():
                     ],
                     default="online",
                 )
+                p.add_argument("--benchmark-output", action="store_true")
+                p.add_argument("--reference-image-index", type=int)
                 p.add_argument("--cot-file")
                 p.add_argument("--mask", nargs="+")
                 p.add_argument("--dit-adapter")
@@ -114,7 +100,7 @@ def main():
             else:
                 p.add_argument("--candidates", type=int, default=1)
                 p.add_argument("--decode-masks", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.command == "build-debug":
         from .prepare import build_debug
 
@@ -158,6 +144,18 @@ def main():
         from PIL import Image
 
         rows = read_rows(args.metadata)
+        if args.check_bindings:
+            from .protocol import grouped_units, parse_cot, render_units
+            failures = []
+            for index, row in enumerate(rows):
+                if row["sample_type"] == "edit_ntp":
+                    try:
+                        render_units(row["prompt"], grouped_units(row["prompt"], parse_cot(row["mt_cot"])))
+                    except ValueError as exc:
+                        failures.append({"row": index, "reason": str(exc)})
+            print(json.dumps({"binding_failures": failures, "ntp_rows": sum(r["sample_type"] == "edit_ntp" for r in rows)}))
+            if failures:
+                raise SystemExit(1)
         paths = set()
         for row in rows:
             sources = row["edit_image"]
@@ -173,26 +171,6 @@ def main():
                 {"rows": len(rows), "decoded_images": len(paths), "passed": True}
             )
         )
-    elif args.command in {"train", "cache"}:
-        from .training import train, cache
-
-        if args.command == "train":
-            defaults = {
-                "stage1": dict(rank=64, dropout=0.05, lr=4e-5, weight_decay=0.05),
-                "stage2": dict(rank=32, dropout=0.0, lr=1e-4, weight_decay=0.01),
-            }[args.stage]
-            for key, value in defaults.items():
-                if getattr(args, key) is None:
-                    setattr(args, key, value)
-            if args.stage == "stage1" and not args.metadata:
-                parser.error("stage1 requires --metadata")
-            if args.stage == "stage2" and not args.cache:
-                parser.error("stage2 requires --cache")
-            train(args)
-        else:
-            if not args.metadata:
-                parser.error("cache requires --metadata")
-            cache(args)
     else:
         inference(args)
 
@@ -206,7 +184,39 @@ def inference(args):
 
     if args.command == "localize" and args.candidates < 1:
         raise ValueError("candidates must be positive")
-    torch.manual_seed(args.seed)
+    from accelerate.utils import set_seed
+    from .protocol import spans_in
+    set_seed(args.seed)
+    masks = spans_in(args.prompt)
+    mode = getattr(args, "mode", None)
+    if (args.command == "localize" or mode in {"online", "oracle", "interactive"} or masks) and len(args.image) != 1:
+        raise ValueError("Mask/localization modes require exactly one source image")
+    if mode in {"direct", "stock"} and masks:
+        raise ValueError("direct/stock are plain modes; masks require inline")
+    if mode == "inline" and not masks:
+        raise ValueError("inline requires mask spans")
+    if mode == "oracle" and not args.cot_file:
+        raise ValueError("oracle requires --cot-file")
+    if mode == "interactive" and not args.mask:
+        raise ValueError("interactive requires --mask")
+    if args.strict_noref and args.variant != "noref":
+        raise ValueError("--strict-noref requires --variant noref")
+    if args.strict_noref and args.command == "infer" and mode not in {"online", "oracle"}:
+        raise ValueError("--strict-noref is only defined for online/oracle")
+    if getattr(args, "benchmark_output", False):
+        if len(args.image) > 1 and args.reference_image_index is None:
+            raise ValueError("Multi-image benchmark requires --reference-image-index")
+        reference = args.reference_image_index if args.reference_image_index is not None else 0
+        if not 0 <= reference < len(args.image):
+            raise ValueError("Invalid reference image index")
+    reviewed = json.loads(Path(args.units_file).read_text()) if args.units_file else None
+    if getattr(args, "dit_adapter", None):
+        from .provenance import assert_inference_identity
+        config = json.loads((Path(args.dit_adapter) / "adapter.json").read_text())
+        if config["stage"] != "stage2":
+            raise ValueError("--dit-adapter must belong to Stage 2")
+        assert_inference_identity(config.get("conditioning_identity", {}),
+                                  args.qwen, args.samtok, args.te_adapter)
 
     if args.command == "infer" and Path(args.output).suffix.lower() != ".png":
         raise ValueError("Save RGBA output as .png")
@@ -225,21 +235,7 @@ def inference(args):
     if args.te_adapter:
         load_adapter(pipe.text_encoder, args.te_adapter)
     if getattr(args, "dit_adapter", None):
-        from .training import adapter_identity
-
-        config = load_adapter(pipe.dit, args.dit_adapter)
-        conditioning_identity = config.get("conditioning_identity", {})
-        # Cache manifests store the adapter identity as a nested record.  Older
-        # checkpoints may contain only its path; normalize both forms before
-        # comparing hashes.
-        expected = conditioning_identity.get("te_adapter_identity")
-        if expected is None and conditioning_identity.get("te_adapter"):
-            expected = adapter_identity(conditioning_identity["te_adapter"])
-        actual = adapter_identity(args.te_adapter)
-        if (expected or {}).get("sha256") != (actual or {}).get("sha256"):
-            raise ValueError(
-                "DiT checkpoint was trained with a different TE adapter; use its cache identity"
-            )
+        load_adapter(pipe.dit, args.dit_adapter)
     pipe.eval()
     if args.command == "localize":
         results = [
@@ -251,6 +247,7 @@ def inference(args):
                 width=args.width,
                 max_new_tokens=args.max_new_tokens,
                 do_sample=args.candidates > 1,
+                variant=args.variant, reviewed_units=reviewed, strict_noref=args.strict_noref,
             )
             for _ in range(args.candidates)
         ]
@@ -299,6 +296,7 @@ def inference(args):
         images,
         mode=mode,
         cot=cot,
+        variant=args.variant, reviewed_units=reviewed, strict_noref=args.strict_noref,
         max_new_tokens=args.max_new_tokens,
         height=args.height,
         width=args.width,
@@ -311,6 +309,15 @@ def inference(args):
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.suffix.lower() != ".png":
         raise ValueError("Save RGBA output as .png")
+    raw_size = image.size
+    raw_path = None
+    if args.benchmark_output:
+        raw_path = out.with_name(out.stem + ".raw.png")
+        image.save(raw_path)
+        rgba = image.convert("RGBA")
+        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        image = Image.alpha_composite(white, rgba).convert("RGB")
+        image = image.resize(images[reference].size, Image.Resampling.LANCZOS)
     image.save(out)
     write_json(
         out.with_suffix(".json"),
@@ -319,6 +326,8 @@ def inference(args):
             "args": vars(args),
             "output_mode": image.mode,
             "output_size": image.size,
+            "raw_size": raw_size, "raw_output": str(raw_path) if raw_path else None,
+            "postprocessing": "white-alpha-composite+reference-resize" if args.benchmark_output else "native",
         },
     )
     print(json.dumps(report, ensure_ascii=False))

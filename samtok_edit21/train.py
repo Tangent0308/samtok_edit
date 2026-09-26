@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
 
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.utils import DataLoaderConfiguration
+from accelerate.utils import DataLoaderConfiguration, broadcast_object_list, set_seed
 from torch.utils.data import Dataset, SequentialSampler
 
 DIFFSYNTH_ROOT = Path(__file__).resolve().parents[1] / "DiffSynth-Studio"
@@ -49,6 +50,8 @@ from .training import (  # noqa: E402
     validate_conditioning,
 )
 from .model import load_pipeline, ntp_loss  # noqa: E402
+from .provenance import FORMAT, conditioning_identity, assert_models_match, verify_cache
+
 
 
 def _cpu(value: Any):
@@ -73,8 +76,9 @@ class ScheduledMetadata(Dataset):
 
     load_from_cache = False
 
-    def __init__(self, rows, schedule):
+    def __init__(self, rows, schedule, *, cache=False):
         self.rows = rows
+        self.cache = cache
         self.schedule = list(schedule)
         self.schedule_sampler = SequentialSampler(self)
 
@@ -82,7 +86,11 @@ class ScheduledMetadata(Dataset):
         return len(self.schedule)
 
     def __getitem__(self, index):
-        return dict(self.rows[self.schedule[index]])
+        row_index = self.schedule[index]
+        row = dict(self.rows[row_index])
+        if self.cache:
+            row['_row_index'] = row_index
+        return row
 
 
 class ScheduledCache(Dataset):
@@ -102,33 +110,7 @@ class ScheduledCache(Dataset):
     def __getitem__(self, index):
         row = self.rows[self.schedule[index]]
         path = self.cache_dir / row["_cache_file"]
-        return torch.load(path, map_location="cpu", weights_only=True)
-
-
-def verify_cache(cache_dir, manifest):
-    """Validate DiffSynth runner shards before Stage 2 consumes them."""
-    cache_dir = Path(cache_dir)
-    if manifest.get("format") != "samtok21-cache-v1":
-        raise ValueError("Unexpected cache format")
-    rows = manifest.get("rows", [])
-    if not rows:
-        raise ValueError("Cache manifest is empty")
-    for row in rows:
-        relative = row.get("_cache_file")
-        if not relative or Path(relative).is_absolute():
-            raise ValueError("Cache file must be a relative path")
-        path = cache_dir / relative
-        side_path = path.with_suffix(".json")
-        if not path.is_file() or not side_path.is_file():
-            raise ValueError(f"Missing cache shard or sidecar: {relative}")
-        side = json.loads(side_path.read_text())
-        original = {key: value for key, value in row.items() if key != "_cache_file"}
-        if side.get("row_hash") != row_hash(original):
-            raise ValueError(f"Cache row hash mismatch: {relative}")
-        if side.get("sha256") != file_hash(path):
-            raise ValueError(f"Cache checksum mismatch: {relative}")
-        validate_conditioning(torch.load(path, map_location="cpu", weights_only=True))
-    return True
+        return torch.load(path, map_location="cpu", weights_only=True)["inputs"]
 
 
 class SamtokTrainingModule(DiffusionTrainingModule):
@@ -163,7 +145,9 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             target = self.pipe.text_encoder if args.stage == "stage1" else self.pipe.dit
             add_adapter(target, args.stage, args.rank, args.dropout)
 
-        if args.stage == "stage1":
+        if task == "sft:data_process":
+            self.pipe.eval()
+        elif args.stage == "stage1":
             self.pipe.text_encoder.model.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
@@ -173,14 +157,27 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             self.pipe.dit.train()
         else:
             self.pipe.eval()
+        if task == "sft:train":
+            self._branch_grad_peaks = []
+            for parameter in self.parameters():
+                if parameter.requires_grad:
+                    parameter.register_hook(self._observe_branch_gradient)
+
+    def _observe_branch_gradient(self, gradient):
+        # Hooks observe this backward, not gradients left by earlier accumulated
+        # microsteps. Zero LoRA-A gradients at initialization remain valid.
+        self._branch_grad_peaks.append(gradient.detach().abs().amax().float())
 
     def forward(self, data, inputs=None):
+        self._branch_grad_peaks = []
         if self.task == "sft:data_process":
             prepared = prepare_fm(
                 self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=False
             )
             validate_conditioning(prepared)
-            return _cpu(prepared)
+            original = {k: v for k, v in data.items() if k != "_row_index"}
+            return {"inputs": _cpu(prepared), "row_index": data["_row_index"],
+                    "row_hash": row_hash(original), "identity": self.args.conditioning_identity}
 
         if self.stage == "stage2":
             if inputs is None:
@@ -198,8 +195,12 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             prepared = prepare_fm(
                 self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=True
             )
+            if not prepared["prompt_embeds"].requires_grad:
+                raise RuntimeError("FM lost its gradient connection to TE")
             loss, metrics = flow_loss(self.pipe, prepared)
             loss = loss * self.args.fm_weight
+        if not torch.isfinite(loss).all() or not loss.requires_grad:
+            raise RuntimeError('Loss must be finite and differentiable')
         self.last_metrics = metrics
         return loss
 
@@ -210,13 +211,15 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         )
         norms = [p.grad.detach().float().norm() for p in trainable if p.grad is not None]
         total = float(torch.stack(norms).norm().item()) if norms else 0.0
-        if not torch.isfinite(torch.tensor(total)) or frozen_with_grad:
+        branch_peak = float(torch.stack(self._branch_grad_peaks).amax()) if self._branch_grad_peaks else 0.0
+        if not norms or total == 0 or branch_peak == 0 or not torch.isfinite(torch.tensor(total)) or frozen_with_grad:
             raise RuntimeError(
                 f"Invalid gradient audit: total={total}, "
                 f"frozen_with_grad={frozen_with_grad}"
             )
         return {
             "grad_norm_before_clip": total,
+            "current_backward_grad_peak": branch_peak,
             "trainable_grad_tensors": len(norms),
             "nonzero_grad_tensors": sum(float(n) > 0 for n in norms),
             "frozen_grad_tensors": frozen_with_grad,
@@ -249,125 +252,149 @@ def _schedule_dataset(args, accelerator, rows):
     return schedule, report
 
 
+def _main_rank_result(accelerator, function):
+    # Broadcast failures too: other ranks must not hang waiting for a failed hash/check.
+    payload = [None]
+    if accelerator.is_main_process:
+        try:
+            payload[0] = {"result": function()}
+        except Exception as exc:
+            payload[0] = {"error": f"{type(exc).__name__}: {exc}"}
+    broadcast_object_list(payload)
+    if "error" in payload[0]:
+        raise ValueError(payload[0]["error"])
+    return payload[0]["result"]
+
+
+def _fresh_output(args, accelerator):
+    def create():
+        path = Path(args.output)
+        if path.exists() and any(path.iterdir()):
+            raise ValueError("Use a fresh output directory; --init-adapter is weights-only warm-start")
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+    _main_rank_result(accelerator, create)
+
+
+def scheduler_factory(args, updates):
+    if args.warmup_steps < 0 or args.warmup_steps > updates:
+        raise ValueError("warmup-steps must lie in [0, optimizer updates]")
+    def factor(step):
+        if step < args.warmup_steps:
+            return (step + 1) / args.warmup_steps
+        if args.lr_schedule == "constant":
+            return 1.0
+        progress = (step - args.warmup_steps) / max(1, updates - args.warmup_steps)
+        return 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
+    return lambda optimizer: torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
+
+
 def run_train(args):
     accelerator = _accelerator(args.accumulation)
-    # Transformers' ``device_map={"": "cuda"}`` resolves to CUDA device 0.
-    # Bind every rank explicitly before loading Qwen3 and DiffSynth modules so
-    # each process owns only its local GPU.
     args.device = str(accelerator.device)
+    _fresh_output(args, accelerator)
+    set_seed(args.seed)  # same adapter initialization on every rank
     if args.stage == "stage2":
         manifest = json.loads((Path(args.cache) / "manifest.json").read_text())
-        verify_cache(args.cache, manifest)
+        args.max_pixels = manifest["identity"]["max_pixels"]
+        def validate():
+            verify_cache(args.cache, manifest)
+            assert_models_match(manifest["identity"], args.qwen, args.samtok)
+        _main_rank_result(accelerator, validate)
         rows = manifest["rows"]
-        for row in rows:
-            row["_cache_file"] = row["_cache_file"]
         schedule, report = _schedule_dataset(args, accelerator, rows)
         dataset = ScheduledCache(rows, args.cache, schedule)
+        base_identity = manifest["identity"]["models"]
     else:
         rows = read_rows(args.metadata)
         schedule, report = _schedule_dataset(args, accelerator, rows)
         dataset = ScheduledMetadata(rows, schedule)
-
+        from .provenance import model_identity
+        base_identity = _main_rank_result(accelerator, lambda: model_identity(args.qwen, args.samtok))
+    if args.init_adapter:
+        init_config = json.loads((Path(args.init_adapter) / "adapter.json").read_text())
+        if init_config.get("base_identity") is not None and init_config["base_identity"] != base_identity:
+            raise ValueError("Warm-start base model differs from adapter provenance")
+        if args.stage == "stage2" and init_config.get("conditioning_identity") != manifest["identity"]:
+            raise ValueError("Warm-start Stage 2 conditioning identity differs from cache")
+    updates = len(schedule) // (accelerator.num_processes * args.accumulation)
+    factory = scheduler_factory(args, updates)
     model = SamtokTrainingModule(args, "sft:train")
-    logger = ModelLogger(
-        args.output,
-        remove_prefix_in_ckpt="pipe.text_encoder."
-        if args.stage == "stage1"
-        else "pipe.dit.",
-        enable_csv_log=True,
-    )
+    logger = ModelLogger(args.output, remove_prefix_in_ckpt="pipe.text_encoder."
+                        if args.stage == "stage1" else "pipe.dit.", enable_csv_log=True)
     if accelerator.is_main_process:
-        Path(args.output).mkdir(parents=True, exist_ok=True)
         write_json(Path(args.output) / "schedule.json", report)
+        write_json(Path(args.output) / "run.json", {
+            "args": vars(args), "base_identity": base_identity, "optimizer_updates": updates,
+            "seed_policy": "shared initialization, seed+rank after prepare",
+            "init_adapter_semantics": "weights only; fresh optimizer/scheduler",
+        })
     launch_training_task(
-        accelerator,
-        dataset,
-        model,
-        logger,
-        learning_rate=args.lr,
-        weight_decay=args.weight_decay,
-        num_workers=args.num_workers,
-        save_steps=args.save_steps,
-        num_epochs=1,
-        max_grad_norm=args.max_grad_norm,
-        args=None,
+        accelerator, dataset, model, logger, learning_rate=args.lr,
+        weight_decay=args.weight_decay, num_workers=args.num_workers,
+        save_steps=args.save_steps, num_epochs=1, max_grad_norm=args.max_grad_norm,
+        scheduler_factory=factory, training_seed=args.seed, args=None,
     )
-    # ModelLogger keeps the DiffSynth step checkpoint format.  Also emit the
-    # compact adapter directory consumed by Stage 1 cache construction and by
-    # --init-adapter, so the two training tasks compose without conversion.
     accelerator.wait_for_everyone()
-    if accelerator.is_main_process:
-        adapter_config = {
-            "stage": args.stage,
-            "rank": args.rank,
-            "dropout": args.dropout,
-        }
+    def save():
+        config = {"stage": args.stage, "base_identity": base_identity}
         if args.stage == "stage2":
-            adapter_config["conditioning_identity"] = manifest["identity"]
-        save_adapter(
-            accelerator.unwrap_model(model).pipe.text_encoder
-            if args.stage == "stage1"
-            else accelerator.unwrap_model(model).pipe.dit,
-            Path(args.output) / "adapter",
-            adapter_config,
-        )
+            config["conditioning_identity"] = manifest["identity"]
+        pipe = accelerator.unwrap_model(model).pipe
+        save_adapter(pipe.text_encoder if args.stage == "stage1" else pipe.dit,
+                     Path(args.output) / "adapter", config)
+    _main_rank_result(accelerator, save)
+    accelerator.end_training()
 
 
 def _cache_manifest(args, accelerator, rows):
-    if not accelerator.is_main_process:
-        return
-    output = Path(args.output)
-    entries = []
+    output, entries, seen = Path(args.output), [], set()
     for rank_dir in sorted(p for p in output.iterdir() if p.is_dir() and p.name.isdigit()):
-        rank = int(rank_dir.name)
-        files = sorted(rank_dir.glob("*.pth"), key=lambda p: int(p.stem))
-        for local_id, path in enumerate(files):
-            row_index = rank + local_id * accelerator.num_processes
-            if row_index >= len(rows):
-                raise ValueError("Cache shard has more files than metadata rows")
-            row = rows[row_index]
-            side = {
-                "row_index": row_index,
-                "row_hash": row_hash(row),
-                "sha256": file_hash(path),
-                "qwen": args.qwen,
-                "samtok": args.samtok,
-                "te_adapter": args.te_adapter,
-                "te_adapter_identity": adapter_identity(args.te_adapter),
-                "max_pixels": args.max_pixels,
-            }
-            write_json(path.with_suffix(".json"), side)
-            entries.append({**row, "_cache_file": str(path.relative_to(output))})
-    write_json(
-        output / "manifest.json",
-        {
-            "format": "samtok21-cache-v1",
-            "identity": {
-                "metadata_sha256": file_hash(args.metadata),
-                "qwen": args.qwen,
-                "samtok": args.samtok,
-                "te_adapter": args.te_adapter,
-                "te_adapter_identity": adapter_identity(args.te_adapter),
-                "max_pixels": args.max_pixels,
-            },
-            "rows": entries,
-        },
-    )
+        for path in sorted(rank_dir.glob("*.pth"), key=lambda p: int(p.stem)):
+            payload = torch.load(path, map_location="cpu", weights_only=True)
+            index = payload["row_index"]
+            if index in seen or not 0 <= index < len(rows):
+                raise ValueError("Duplicate/out-of-range cache row")
+            seen.add(index)
+            row = rows[index]
+            if payload["row_hash"] != row_hash(row) or payload["identity"] != args.conditioning_identity:
+                raise ValueError("Cache payload row/identity mismatch")
+            write_json(path.with_suffix(".json"), {
+                "row_index": index, "row_hash": row_hash(row),
+                "sha256": file_hash(path), "identity": args.conditioning_identity,
+            })
+            entries.append((index, {**row, "_cache_file": str(path.relative_to(output))}))
+    if seen != set(range(len(rows))):
+        raise ValueError("Cache does not cover every metadata row exactly once")
+    manifest = {"format": FORMAT, "identity": args.conditioning_identity,
+                "row_count": len(rows), "rows": [row for _, row in sorted(entries)]}
+    verify_cache(output, manifest)
+    write_json(output / "manifest.json", manifest)  # atomic publication after validation
 
 
 def run_cache(args):
     accelerator = _accelerator()
     args.device = str(accelerator.device)
+    _fresh_output(args, accelerator)
+    set_seed(args.seed)
     rows = read_rows(args.metadata)
-    dataset = ScheduledMetadata(rows, list(range(len(rows))))
+    if any(row["sample_type"] == "edit_ntp" for row in rows):
+        raise ValueError("Cache only accepts FM metadata, never edit_ntp")
+    args.conditioning_identity = _main_rank_result(
+        accelerator, lambda: conditioning_identity(args.qwen, args.samtok, args.te_adapter,
+                                                   args.max_pixels, args.metadata))
+    te_config = json.loads((Path(args.te_adapter) / "adapter.json").read_text())
+    if te_config.get("base_identity") is not None and te_config["base_identity"] != args.conditioning_identity["models"]:
+        raise ValueError("TE adapter base model differs from cache provenance")
+    if te_config["stage"] != "stage1":
+        raise ValueError("--te-adapter must be a Stage 1 adapter")
+    dataset = ScheduledMetadata(rows, list(range(len(rows))), cache=True)
     model = SamtokTrainingModule(args, "sft:data_process")
-    logger = ModelLogger(args.output)
-    launch_data_process_task(
-        accelerator, dataset, model, logger, num_workers=args.num_workers, args=None
-    )
+    launch_data_process_task(accelerator, dataset, model, ModelLogger(args.output),
+                             num_workers=args.num_workers, args=None)
     accelerator.wait_for_everyone()
-    _cache_manifest(args, accelerator, rows)
-
+    _main_rank_result(accelerator, lambda: _cache_manifest(args, accelerator, rows))
+    accelerator.end_training()
 
 def _parser():
     parser = argparse.ArgumentParser(description="SAMTok with DiffSynth runners")
@@ -395,13 +422,36 @@ def _parser():
         p.add_argument("--fm-weight", type=float, default=1.0)
         p.add_argument("--max-grad-norm", type=float, default=1.0)
         p.add_argument("--seed", type=int, default=20260920)
-        p.add_argument("--save-steps", type=int, default=100)
+        p.add_argument("--save-steps", "--save-every", type=int, default=100)
+        p.add_argument("--lr-schedule", choices=("constant", "cosine"), default="constant")
+        p.add_argument("--warmup-steps", type=int, default=0)
         p.add_argument("--init-adapter")
     return parser
 
 
-def main():
-    args = _parser().parse_args()
+def normalize_args(args):
+    if hasattr(args, 'resume_adapter') and not hasattr(args, 'init_adapter'):
+        args.init_adapter = args.resume_adapter
+    if not hasattr(args, 'save_steps'):
+        args.save_steps = getattr(args, 'save_every', 100)
+    # Fill missing fields for the legacy Python wrappers, using the same parser
+    # defaults as the public CLI instead of maintaining another recipe.
+    parser_defaults = _parser().parse_args([getattr(args, "command", "train"),
+                                           "--output", args.output])
+    for key, value in vars(parser_defaults).items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    for key, value in {'num_workers': 0, 'lr_schedule': 'constant', 'warmup_steps': 0}.items():
+        if not hasattr(args, key):
+            setattr(args, key, value)
+    if getattr(args, 'init_adapter', None):
+        config = json.loads((Path(args.init_adapter) / 'adapter.json').read_text())
+        if config['stage'] != args.stage:
+            raise ValueError('--init-adapter belongs to another stage')
+        for key in ('rank', 'dropout'):
+            if getattr(args, key, None) is not None and getattr(args, key) != config[key]:
+                raise ValueError(f'Explicit --{key} conflicts with warm-start adapter')
+            setattr(args, key, config[key])
     defaults = {
         "stage1": {"accumulation": 8, "rank": 64, "dropout": 0.05, "lr": 4e-5, "weight_decay": 0.05},
         "stage2": {"accumulation": 4, "rank": 32, "dropout": 0.0, "lr": 1e-4, "weight_decay": 0.01},
@@ -409,6 +459,13 @@ def main():
     for key, value in defaults.items():
         if getattr(args, key) is None:
             setattr(args, key, value)
+    if args.accumulation < 1 or (args.steps is not None and args.steps < 1):
+        raise ValueError("accumulation/steps must be positive")
+    return args
+
+
+def main(argv=None):
+    args = normalize_args(_parser().parse_args(argv))
     if args.command == "cache":
         if not args.metadata or not args.te_adapter:
             raise SystemExit("cache requires --metadata and --te-adapter")

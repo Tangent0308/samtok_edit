@@ -139,12 +139,21 @@ def test_cache_manifest_checks_geometry_and_checksum(tmp_path):
         "prompt_embeds_mask": torch.ones(1, 4, dtype=torch.bool),
         "edit_image_pad_mask": torch.ones(1, 4, dtype=torch.bool),
     }
-    torch.save(inputs, shard)
+    from samtok_edit21.provenance import FORMAT, PREPROCESSING
+    identity = {"schema": FORMAT, "preprocessing": PREPROCESSING,
+                "models": {"test_fixture": "synthetic"}, "metadata_sha256": "fixture",
+                "row_hashes": [row_hash(row)]}
+    torch.save({"inputs": inputs, "row_index": 0, "row_hash": row_hash(row),
+                "identity": identity}, shard)
     manifest = {
-        "format": "samtok21-cache-v1",
+        "format": FORMAT,
+        "identity": identity,
+        "row_count": 1,
         "rows": [{**row, "_cache_file": "0/0.pth"}],
     }
     side = {
+        "row_index": 0,
+        "identity": identity,
         "row_hash": row_hash(row),
         "sha256": file_hash(shard),
     }

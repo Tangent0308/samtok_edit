@@ -7,8 +7,8 @@ The implementation is based on the DiffSynth version vendored in `DiffSynth-Stud
 ## Environment
 
 ```bash
-python -m venv /opt/tiger/tanyue/samtok_edit_qwen_image_2_1/.venv
-source /opt/tiger/tanyue/samtok_edit_qwen_image_2_1/.venv/bin/activate
+python3.11 -m venv /path/to/samtok21-venv
+source /path/to/samtok21-venv/bin/activate
 pip install -r requirements.txt
 export PYTHONPATH=$PWD:DiffSynth-Studio
 ```
@@ -56,6 +56,7 @@ accelerate launch --num_processes 8 --mixed_precision bf16 \
 
 ```bash
 python -m samtok_edit21.cli localize --image /path/source.png \
+  --prompt "Make the leftmost bird blue." \
   --te-adapter /path/stage1/adapter --output /path/localize.json
 python -m samtok_edit21.cli infer --image /path/source.png \
   --prompt "..." --te-adapter /path/stage1/adapter \
@@ -63,3 +64,5 @@ python -m samtok_edit21.cli infer --image /path/source.png \
 ```
 
 For the complete implementation notes and code references, read [`SAMTokEdit_Qwen21_代码实现与使用.md`](SAMTokEdit_Qwen21_代码实现与使用.md). Smoke commands and results are recorded in [`SAMTokEdit_Qwen21_实验记录.md`](SAMTokEdit_Qwen21_实验记录.md).
+
+The proposed mask attention supervision, regional flow-matching loss, and inference attention bias are described in [the implementation plan](SAMTokEdit_Qwen21_mask区域约束实现规划.md), with architecture diagrams and source references. These extensions are planned and are not yet implemented.
