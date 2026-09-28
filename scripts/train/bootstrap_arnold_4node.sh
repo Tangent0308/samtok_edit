@@ -4,7 +4,8 @@ set -Eeuo pipefail
 
 # ----- User settings -----
 export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_4node_debug_20260928}"
-export SAMTOK_RUN_ID="${SAMTOK_RUN_ID:-qwen21_4n_debug_001}"
+# Set this explicitly and identically on all workers; edit for EVERY new attempt.
+export SAMTOK_RUN_ID="qwen21_4n_debug_002"
 # Prefer injecting WANDB_API_KEY as an ARNOLD secret on every worker.
 # For a one-off run, replace the placeholder with your key before submitting.
 export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
@@ -32,21 +33,41 @@ RUN="$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID"
 BOOTSTRAP="$RUN/bootstrap"
 NODE="$ARNOLD_ID"
 REPO="/tmp/samtok-edit-${SAMTOK_RUN_ID}-node${NODE}"
+if [[ -e "$RUN/nodes/$NODE" || -e "$RUN/SUCCESS.json" ]]; then
+  echo "Run already used: $RUN. Set a NEW common SAMTOK_RUN_ID; old logs are preserved." >&2
+  exit 2
+fi
 mkdir -p "$BOOTSTRAP"
+# Atomic per-node claim: reject scheduler retries BEFORE cloning/installing or appending logs.
+if ! mkdir "$BOOTSTRAP/node${NODE}.claimed"; then
+  echo "Worker $NODE already started this run. Use a NEW common SAMTOK_RUN_ID." >&2
+  exit 2
+fi
 exec > >(tee -a "$BOOTSTRAP/node${NODE}.log") 2>&1
+BOOTSTRAP_PHASE=checkout
 bootstrap_failed() {
-  result=$?
+  local result="${1:-$?}"
+  trap - ERR TERM INT
   mkdir -p "$RUN/nodes/$NODE"
-  printf '{"error":"bootstrap failed; see bootstrap/node%s.log","exit_code":%d}\n' "$NODE" "$result" > "$RUN/nodes/$NODE/failure.json"
+  local failure_tmp="$RUN/nodes/$NODE/bootstrap-failure.$$.tmp"
+  printf '{"error":"bootstrap failed during %s; see bootstrap/node%s.log","exit_code":%d}\n' \
+    "$BOOTSTRAP_PHASE" "$NODE" "$result" > "$failure_tmp"
+  # Publish complete JSON only if no more specific Python failure exists.
+  ln "$failure_tmp" "$RUN/nodes/$NODE/failure.json" 2>/dev/null || true
+  unlink "$failure_tmp"
   exit "$result"
 }
 trap bootstrap_failed ERR
+trap 'bootstrap_failed 143' TERM
+trap 'bootstrap_failed 130' INT
 
 export WANDB_DISABLE_SERVICE=true WANDB_START_METHOD=thread
 export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export SAMTOK_ENV="/tmp/samtok21-${SAMTOK_RUN_ID}-node${NODE}-env"
 export SAMTOK_PYTHON="${SAMTOK_PYTHON:-/usr/bin/python3.11}"
+export SAMTOK_CUDA_READY_TIMEOUT="${SAMTOK_CUDA_READY_TIMEOUT:-600}"
+export SAMTOK_CUDA_READY_INTERVAL="${SAMTOK_CUDA_READY_INTERVAL:-15}"
 
 if [[ -e "$REPO" ]]; then
   echo "Node-local checkout already exists: $REPO (choose a fresh SAMTOK_RUN_ID)" >&2
@@ -57,4 +78,5 @@ export GIT_TERMINAL_PROMPT=0
 git clone --branch "$SAMTOK_EDIT_BRANCH" --single-branch "$SAMTOK_EDIT_REPO_URL" "$REPO"
 cd "$REPO"
 git rev-parse HEAD > "$BOOTSTRAP/node${NODE}.commit.txt"
+BOOTSTRAP_PHASE=environment-or-pipeline
 bash scripts/train/run_arnold_4node.sh "$@"

@@ -22,6 +22,21 @@ def atomic_json(path, value):
     tmp.replace(path)
 
 
+def record_failure(path, value):
+    """Publish complete JSON without replacing an earlier, more useful failure."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.failure.tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    try:
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass
+    finally:
+        tmp.unlink()
+
+
 def topology(env, local=False):
     if local:
         return dict(nodes=1, node_rank=0, gpus=8, world_size=8,
@@ -79,7 +94,12 @@ class Pipeline:
         self.audit_script = self.repo / "scripts/train/audit_debug_run.py"
         self.node = self.root / "nodes" / str(self.rank)
         # Never consume stale success markers from a previous attempt.
-        self.node.mkdir(parents=True, exist_ok=False)
+        try:
+            self.node.mkdir(parents=True, exist_ok=False)
+        except FileExistsError as exc:
+            raise RuntimeError(f"Run directory already used: {self.node}. "
+                               "Set the same NEW SAMTOK_RUN_ID on every worker; "
+                               "old failure/success markers must not be reused.") from exc
         self.logdir = self.root / "logs" / f"node{self.rank}"
         self.logdir.mkdir(parents=True, exist_ok=True)
         self.env = dict(os.environ, PYTHONUNBUFFERED="1", TOKENIZERS_PARALLELISM="false")
@@ -95,7 +115,14 @@ class Pipeline:
     def check_failures(self):
         failures = list((self.root / "nodes").glob("*/failure.json"))
         if failures:
-            raise RuntimeError("Worker failure: " + ", ".join(str(p) for p in failures))
+            details = []
+            for path in sorted(failures):
+                try:
+                    error = json.loads(path.read_text()).get("error", "unknown failure")
+                except (OSError, ValueError):
+                    error = "failure details unavailable"
+                details.append(f"{path}: {str(error)[:1000]}")
+            raise RuntimeError("Worker failure: " + "; ".join(details))
 
     def barrier(self, phase):
         atomic_json(self.node / f"{phase}.ok.json", {"time": time.time()})
@@ -232,7 +259,7 @@ def main():
     try:
         pipeline.run()
     except BaseException as exc:
-        atomic_json(pipeline.node/"failure.json", {"error": str(exc), "type": type(exc).__name__, "time": time.time()})
+        record_failure(pipeline.node/"failure.json", {"error": str(exc), "type": type(exc).__name__, "time": time.time()})
         raise
 
 

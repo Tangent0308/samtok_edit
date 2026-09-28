@@ -20,7 +20,6 @@ fi
 PYTHONPATH="$REPO:$REPO/DiffSynth-Studio" "$SAMTOK_ENV/bin/python" - <<'PY'
 import sys, torch, wandb, transformers, accelerate, peft
 assert sys.version_info[:2] == (3, 11)
-assert torch.cuda.is_available() and torch.cuda.device_count() == 8
 assert torch.__version__.split('+')[0] == '2.8.0'
 assert transformers.__version__ == '5.12.1'
 assert accelerate.__version__ == '1.14.0'
@@ -28,5 +27,8 @@ assert peft.__version__ == '0.20.0'
 assert wandb.__version__ == '0.13.98'
 from samtok_edit21.attention_supervision import require_attention_backend
 require_attention_backend()
-print('Cluster environment validated: Python 3.11 / torch 2.8 / CUDA / eight GPUs / W&B / FlexAttention')
+print('Cluster packages validated: Python 3.11 / torch 2.8 / W&B / FlexAttention')
 PY
+PYTHONPATH="$REPO:$REPO/DiffSynth-Studio" "$SAMTOK_ENV/bin/python" -m samtok_edit21.cuda_readiness \
+  --output "${SAMTOK_CUDA_DIAGNOSTICS:-${SAMTOK_ENV}-cuda-diagnostics}" \
+  --timeout "${SAMTOK_CUDA_READY_TIMEOUT:-600}" --interval "${SAMTOK_CUDA_READY_INTERVAL:-15}"

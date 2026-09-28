@@ -16,7 +16,13 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export NODE_RANK="$ARNOLD_ID"
 unset PORT MASTER_ADDR MASTER_PORT NNODES GPUS_PER_NODE
 RUN="$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID"
+if [[ -e "$RUN/nodes/$ARNOLD_ID" ]]; then
+  echo "Run already used: $RUN/nodes/$ARNOLD_ID; set a NEW common SAMTOK_RUN_ID." >&2
+  exit 2
+fi
 mkdir -p "$RUN/bootstrap"
+export SAMTOK_RUN_ROOT="$RUN"
+export SAMTOK_CUDA_DIAGNOSTICS="$RUN/bootstrap/node${ARNOLD_ID}-cuda"
 export SAMTOK_ENV="${SAMTOK_ENV:-/tmp/samtok21-${SAMTOK_RUN_ID}-node${ARNOLD_ID}-env}"
 export WANDB_DISABLE_SERVICE=true WANDB_START_METHOD=thread
 export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
