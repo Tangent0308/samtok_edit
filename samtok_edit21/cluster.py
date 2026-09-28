@@ -72,6 +72,11 @@ class Pipeline:
         self.rank = self.topo["node_rank"]
         self.root = Path(args.run_root).resolve()
         self.repo = Path(__file__).resolve().parents[1]
+        self.git_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True
+        ).strip()
+        self.inference_script = self.repo / "scripts/train/debug_inference8.py"
+        self.audit_script = self.repo / "scripts/train/audit_debug_run.py"
         self.node = self.root / "nodes" / str(self.rank)
         # Never consume stale success markers from a previous attempt.
         self.node.mkdir(parents=True, exist_ok=False)
@@ -151,8 +156,11 @@ class Pipeline:
         packages = {name: importlib.metadata.version(name) for name in
                     ("torch", "transformers", "accelerate", "peft", "byted-wandb", "setuptools")}
         common = {**{k:v for k,v in self.topo.items() if k != "node_rank"},
-                  "args": vars(a), "source_sha256": source_digest(self.repo), "packages": packages,
-                  "debug_scripts": {str(p):hashlib.sha256(Path(p).read_bytes()).hexdigest() for p in (a.inference_script, a.audit_script) if p},
+                  "args": vars(a), "git_commit": self.git_commit,
+                  "source_sha256": source_digest(self.repo), "packages": packages,
+                  "debug_scripts": {str(p.relative_to(self.repo)):
+                      hashlib.sha256(p.read_bytes()).hexdigest()
+                      for p in (self.inference_script, self.audit_script)},
                   "data": {n:hashlib.sha256((data/n).read_bytes()).hexdigest() for n in
                            ("stage1.jsonl", "stage2.jsonl", "regions/manifest.json")}}
         atomic_json(self.node / "topology.json", {"common": common, "hostname": socket.gethostname(),
@@ -188,13 +196,13 @@ class Pipeline:
             "--attention-weight", str(a.attention_weight), "--attention-warmup-steps", "1",
             "--steps", str(a.stage2_steps), "--save-steps", "4", "--accumulation", "4",
             "--rank", str(a.stage2_rank), "--output", str(self.root/"stage2"), *shared, *tracking("stage2")])
-        if a.inference_script and self.rank == 0:
+        if self.rank == 0:
             self.command("inference", [sys.executable, "-m", "torch.distributed.run", "--standalone",
-                         "--nproc_per_node", "8", "--max_restarts", "0", a.inference_script,
+                         "--nproc_per_node", "8", "--max_restarts", "0", str(self.inference_script),
                          "--run-root", str(self.root), "--data", str(data), "--qwen", a.qwen, "--samtok", a.samtok])
         self.barrier("inference")
-        if a.audit_script and self.rank == 0:
-            self.command("audit", [sys.executable, a.audit_script, "--run-root", str(self.root)])
+        if self.rank == 0:
+            self.command("audit", [sys.executable, str(self.audit_script), "--run-root", str(self.root)])
         self.barrier("audit")
         if self.rank == 0:
             atomic_json(self.root / "SUCCESS.json", {"time": time.time(), "world_size": self.topo["world_size"]})
@@ -219,8 +227,6 @@ def main():
     p.add_argument("--attention-weight", type=float, default=0.1, help="Smoke coefficient only; calibrate for real training")
     p.add_argument("--seed", type=int, default=20260928)
     p.add_argument("--timeout", type=int, default=7200, help="Per-phase and barrier timeout in seconds")
-    p.add_argument("--inference-script")
-    p.add_argument("--audit-script")
     args = p.parse_args()
     pipeline = Pipeline(args)
     try:

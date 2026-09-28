@@ -22,11 +22,13 @@ DDP 的每个 rank 仍然处理一条样本；不引入 FSDP/ZeRO 或跨机模�
 
 ## 2. 对官方和现有项目具体增加了什么
 
-### 2.1 ARNOLD 与四机编排
+### 2.1 ARNOLD 入口与四机编排
 
-方法需求：32 ranks 必须共享同一个 rendezvous 地址和端口，每阶段成功后才能进入下一阶段。
+方法需求：32 ranks 必须共享同一个 rendezvous 地址和端口，每阶段成功后才能进入下一阶段；所有训练节点必须运行同一个已推送的 Git commit。
 
-实现：[topology](../samtok_edit21/cluster.py#L25) 从 `ARNOLD_WORKER_HOSTS` 第一项读取 `host:port` 或 `[IPv6]:port`，用 `ARNOLD_ID` 作为 node rank；显式 `MASTER_ADDR/MASTER_PORT` 可以覆盖。**不读取通用 `PORT`**。四节点通过共享目录交换拓扑、参数、源代码 hash、数据 hash 和依赖版本，全部一致后才启动 NCCL 检查。
+实现：共享盘上的 `launch_4node.sh` 是不依赖预先 clone 的 bootstrap 入口。每个 worker 同时执行该入口，分别从 GitHub 克隆 `qwen-image-2.1-dev` 到本机 `/tmp`，在本机创建 Python 环境；共享实验目录仅保存数据、日志和训练产物。入口要求 ARNOLD 注入 `ARNOLD_WORKER_HOSTS`、`ARNOLD_WORKER_NUM=4`、`ARNOLD_WORKER_GPU=8`、`ARNOLD_ID=0..3`。它不覆盖 ARNOLD 主机列表或节点编号，也不读取通用 `PORT`。W&B key 通过每个 worker 的 `WANDB_API_KEY` secret 注入；也可以在入口填写区替换占位值。
+
+[topology](../samtok_edit21/cluster.py#L25) 从 `ARNOLD_WORKER_HOSTS` 第一项读取 `host:port` 或 `[IPv6]:port`，用 `ARNOLD_ID` 作为 node rank。四节点通过共享目录交换 Git commit、拓扑、参数、源代码 hash、数据 hash 和依赖版本，全部一致后才启动 NCCL 检查。
 
 ```python
 # 对应 cluster.py 中的核心逻辑；完整错误处理见链接
@@ -96,19 +98,23 @@ W&B 的 `train/weighted_total` 对应进入 backward 前的样本 loss，已经�
 
 ## 4. 完整启动命令
 
-在 ARNOLD 创建 **4 workers，每 worker 8 GPUs**，共享盘挂载到相同路径。通过任务环境/密钥配置给每个 worker 注入 `WANDB_API_KEY`。四个 worker 使用完全相同的启动命令：
+在 ARNOLD 创建 **4 workers，每 worker 8 GPUs**，共享盘挂载到相同路径。为所有 worker 设置相同的运行 ID，并通过 ARNOLD 环境/密钥配置把 `WANDB_API_KEY` 注入每个 worker。ARNOLD 自行注入 `ARNOLD_WORKER_HOSTS`、`ARNOLD_WORKER_NUM=4`、`ARNOLD_WORKER_GPU=8` 和各自的 `ARNOLD_ID=0..3`。四个 worker 同时执行相同入口：
 
 ```bash
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_4node_debug_20260928
 export SAMTOK_RUN_ID=qwen21_4n_debug_001
+# 推荐由 ARNOLD secret 注入；临时运行时可把下一行占位值替换成真实 key。
+export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
-bash "$SAMTOK_EXPERIMENT/source/scripts/train/run_arnold_4node.sh"
+# ARNOLD 每个 worker 注入：ARNOLD_WORKER_HOSTS、ARNOLD_WORKER_NUM=4、
+# ARNOLD_WORKER_GPU=8、ARNOLD_ID=0/1/2/3；不要手动给四个节点设相同 ARNOLD_ID。
+bash "$SAMTOK_EXPERIMENT/launch_4node.sh"
 ```
 
-也可执行已放好的 `bash "$SAMTOK_EXPERIMENT/launch_4node.sh"`，默认使用同一个 `qwen21_4n_debug_001`。不要在四台机器各自用时间戳生成 run ID。重跑时统一改成 `qwen21_4n_debug_002` 等新名字；入口不会覆盖已启动过的 run。此轮直接使用实验目录中的源码快照，不依赖远程分支是否已推送新改动。
+入口从 `https://github.com/Tangent0308/samtok_edit.git` 克隆 `qwen-image-2.1-dev` 到各节点的本地 `/tmp/samtok-edit-<run-id>-node<rank>`。不使用实验目录中的源码快照。请确保提交已经推送到该分支后再启动；manifest 会记录 commit，并在四台节点间核对一致性。不要在四台机器各自用时间戳生成 run ID。重跑时统一改成 `qwen21_4n_debug_002` 等新名字；run 目录和节点 checkout 都不会复用。
 
-入口所需 ARNOLD 变量：`ARNOLD_ID=0..3`，`ARNOLD_WORKER_NUM=4`，`ARNOLD_WORKER_GPU=8`，`ARNOLD_WORKER_HOSTS`。若平台没有 hosts 列表，可在所有节点统一设置 `MASTER_ADDR` 与 `MASTER_PORT`；显式值优先，必须确保所有节点一致。保留平台注入的 NCCL/网卡/IB 环境；脚本不强行禁用 IB 或指定网卡。
+入口所需 ARNOLD 变量：`ARNOLD_ID=0..3`，`ARNOLD_WORKER_NUM=4`，`ARNOLD_WORKER_GPU=8`，`ARNOLD_WORKER_HOSTS`。入口从 host 列表第一项解析公共 rendezvous 地址和端口，并清除可能冲突的通用 `PORT` 和遗留 rank/master 变量。保留平台注入的 NCCL/网卡/IB 环境；脚本不强行禁用 IB 或指定网卡。
 
 默认每个 worker 用系统 `/usr/bin/python3.11` 创建本机虚拟环境；可以通过 `SAMTOK_PYTHON` 指定 Python 3.11。包源默认 `https://bytedpypi.byted.org/simple/`，可通过 `SAMTOK_INDEX` 修改为可访问这些固定版本和内部包的源。
 
