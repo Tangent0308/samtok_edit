@@ -78,6 +78,6 @@ python -m samtok_edit21.cli infer --image /path/source.png \
   --dit-adapter /path/stage2/adapter --output /path/result.png
 ```
 
-For the complete implementation notes and code references, read [`SAMTokEdit_Qwen21_代码实现与使用.md`](SAMTokEdit_Qwen21_代码实现与使用.md). Smoke commands and results are recorded in [`SAMTokEdit_Qwen21_实验记录.md`](SAMTokEdit_Qwen21_实验记录.md).
+For the complete implementation notes and code references, read [`docs/SAMTokEdit_Qwen21_代码实现与使用.md`](docs/SAMTokEdit_Qwen21_代码实现与使用.md). Smoke commands and results are recorded in [`docs/SAMTokEdit_Qwen21_实验记录.md`](docs/SAMTokEdit_Qwen21_实验记录.md).
 
-The proposed mask attention supervision, regional flow-matching loss, and inference attention bias are described in [the implementation plan](SAMTokEdit_Qwen21_mask区域约束实现规划.md), with architecture diagrams and source references. These extensions are planned and are not yet implemented.
+The attention supervision and regional flow-matching loss are implemented. See [the four-node training guide](docs/SAMTokEdit_Qwen21_四机训练运行指南.md) for the multi-node runner, W&B setup, and debug launch.

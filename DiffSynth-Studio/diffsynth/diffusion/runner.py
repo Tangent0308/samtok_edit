@@ -163,7 +163,7 @@ def launch_training_task(
                 if accelerator.sync_gradients:
                     update_hook = getattr(accelerator.unwrap_model(model), "on_optimizer_step", None)
                     if update_hook is not None:
-                        update_hook(optimizer_step, accelerator, skipped=accelerator.optimizer_step_was_skipped)
+                        update_hook(optimizer_step, accelerator, skipped=accelerator.optimizer_step_was_skipped, learning_rate=effective_lr)
                 optimizer.zero_grad()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
         if save_steps is None:

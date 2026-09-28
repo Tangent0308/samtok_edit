@@ -1,0 +1,5 @@
+-c constraints-cluster.txt
+# Internal ARNOLD client; install from the ByteDance index.
+byted-wandb==0.13.98
+# byted-wandb imports pkg_resources, removed in setuptools 81.
+setuptools==80.9.0

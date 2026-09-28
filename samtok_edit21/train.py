@@ -10,13 +10,15 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.utils import DataLoaderConfiguration, broadcast_object_list, gather_object, set_seed
+from accelerate.utils import DataLoaderConfiguration, InitProcessGroupKwargs, broadcast_object_list, gather_object, set_seed
 from torch.utils.data import Dataset, SequentialSampler
 
 DIFFSYNTH_ROOT = Path(__file__).resolve().parents[1] / "DiffSynth-Studio"
@@ -36,6 +38,7 @@ from .data import (  # noqa: E402
     make_schedule,
     read_rows,
     row_hash,
+    row_kind,
     write_json,
 )
 from .model import DEFAULT_QWEN, DEFAULT_SAMTOK  # noqa: E402
@@ -110,7 +113,9 @@ class ScheduledCache(Dataset):
     def __getitem__(self, index):
         row = self.rows[self.schedule[index]]
         path = self.cache_dir / row["_cache_file"]
-        return torch.load(path, map_location="cpu", weights_only=True)["inputs"]
+        inputs = torch.load(path, map_location="cpu", weights_only=True)["inputs"]
+        inputs["_sample_kind"] = row_kind(row)
+        return inputs
 
 
 class SamtokTrainingModule(DiffusionTrainingModule):
@@ -186,12 +191,9 @@ class SamtokTrainingModule(DiffusionTrainingModule):
                          attention_layers=self.args.attention_layers if base else (),
                          attention_read_weight=self.args.attention_read_weight)
 
-    def on_optimizer_step(self, completed_updates, accelerator, skipped=False):
+    def on_optimizer_step(self, completed_updates, accelerator, skipped=False, learning_rate=None):
         """One collective per accumulation window; logs are per-sample means."""
         self.completed_updates = completed_updates
-        if not (self.args.region_weight or self.args.attention_weight):
-            self.pending_metrics.clear()
-            return
         records = gather_object(self.pending_metrics)
         # In single-process mode gather_object returns the SAME list.
         # Rebind rather than clear, otherwise the gathered records disappear.
@@ -201,14 +203,24 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             values = defaultdict(list)
             for record in records:
                 for key, value in record.items():
-                    if isinstance(value, (float, int)):
+                    if isinstance(value, (float, int)) and not key.startswith("_"):
                         values[key].append(value)
             entry = {"optimizer_step": completed_updates, "skipped": skipped,
+                     "samples": len(records), "world_size": accelerator.num_processes,
+                     "branches": dict(Counter(r["_branch"] for r in records)),
+                     "rank_samples": dict(Counter(str(r["_rank"]) for r in records)),
                      "metrics": {k: sum(v) / len(v) for k, v in values.items()},
                      "counts": {k: len(v) for k, v in values.items()},
                      "skip_reasons": dict(Counter(r["region_skip_reason"] for r in records if "region_skip_reason" in r))}
-            with (Path(self.args.output) / "supervision_metrics.jsonl").open("a") as stream:
+            with (Path(self.args.output) / "training_metrics.jsonl").open("a") as stream:
                 stream.write(json.dumps(entry) + "\n")
+            if self.args.region_weight or self.args.attention_weight:
+                with (Path(self.args.output) / "supervision_metrics.jsonl").open("a") as stream:
+                    stream.write(json.dumps(entry) + "\n")
+        else:
+            entry = None
+        if hasattr(self, "tracker"):
+            self.tracker.log(entry, learning_rate)
 
     def forward(self, data, inputs=None):
         self._branch_grad_peaks = []
@@ -225,6 +237,8 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         if self.stage == "stage2":
             if inputs is None:
                 raise ValueError("Stage 2 training expects cached inputs")
+            inputs = dict(inputs)
+            cached_branch = inputs.pop("_sample_kind", "cached_fm")
             validate_conditioning(inputs)
             loss, metrics = self._flow(inputs)
         elif data["sample_type"] == "edit_ntp":
@@ -246,8 +260,9 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         if not torch.isfinite(loss).all() or not loss.requires_grad:
             raise RuntimeError('Loss must be finite and differentiable')
         self.last_metrics = metrics
-        if self.args.region_weight or self.args.attention_weight:
-            self.pending_metrics.append({**metrics, "weighted_total": loss.detach().item()})
+        branch = cached_branch if self.stage == "stage2" else row_kind(data)
+        self.pending_metrics.append({**metrics, "weighted_total": loss.detach().item(),
+                                     "_branch": branch, "_rank": int(os.environ.get("RANK", 0))})
         return loss
 
     def after_backward_audit(self):
@@ -263,21 +278,46 @@ class SamtokTrainingModule(DiffusionTrainingModule):
                 f"Invalid gradient audit: total={total}, "
                 f"frozen_with_grad={frozen_with_grad}"
             )
-        return {
+        result = {
+            "branch": self.pending_metrics[-1]["_branch"],
             "grad_norm_before_clip": total,
             "current_backward_grad_peak": branch_peak,
             "trainable_grad_tensors": len(norms),
             "nonzero_grad_tensors": sum(float(n) > 0 for n in norms),
             "frozen_grad_tensors": frozen_with_grad,
         }
+        with (Path(self.args.output) / f"gradients-rank{os.environ.get('RANK', '0')}.jsonl").open("a") as stream:
+            stream.write(json.dumps(result) + "\n")
+        return result
 
 
 def _accelerator(accumulation=1):
     return Accelerator(
         gradient_accumulation_steps=accumulation,
-        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=False)],
+        kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=False),
+                         InitProcessGroupKwargs(timeout=timedelta(seconds=int(
+                             os.environ.get("SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS", "1800"))))],
         dataloader_config=DataLoaderConfiguration(even_batches=False),
     )
+
+
+def verify_rank_parameters(model, accelerator, output):
+    """Verify that synchronized optimization left identical trainable weights."""
+    import hashlib
+    digest, count = hashlib.sha256(), 0
+    for name, parameter in sorted(accelerator.unwrap_model(model).named_parameters()):
+        if parameter.requires_grad:
+            digest.update(name.encode())
+            digest.update(parameter.detach().float().cpu().contiguous().numpy().tobytes())
+            count += parameter.numel()
+    records = gather_object([{"rank": accelerator.process_index, "sha256": digest.hexdigest(),
+                              "trainable_parameters": count,
+                              "peak_memory_gib": torch.cuda.max_memory_allocated() / 2**30}])
+    def check():
+        if len({r["sha256"] for r in records}) != 1 or len({r["trainable_parameters"] for r in records}) != 1:
+            raise RuntimeError("Trainable parameters diverged between DDP ranks")
+        write_json(Path(output) / "rank_parameters.json", records)
+    _main_rank_result(accelerator, check)
 
 
 def _schedule_dataset(args, accelerator, rows):
@@ -437,7 +477,10 @@ def run_train(args):
     if args.plan_only:
         accelerator.end_training()
         return
+    from .tracking import TrainingTracker
+    tracker = TrainingTracker(args, accelerator, plan)  # fail before expensive model loading
     model = SamtokTrainingModule(args, "sft:train")
+    model.tracker = tracker
     logger = ModelLogger(args.output, remove_prefix_in_ckpt="pipe.text_encoder."
                         if args.stage == "stage1" else "pipe.dit.", enable_csv_log=True)
     launch_training_task(
@@ -447,6 +490,7 @@ def run_train(args):
         scheduler_factory=factory, training_seed=args.seed, args=None,
     )
     accelerator.wait_for_everyone()
+    verify_rank_parameters(model, accelerator, args.output)
     def save():
         config = {"stage": args.stage, "base_identity": base_identity,
                   "supervision": {k: getattr(args, k) for k in ("region_weight", "region_n_min", "attention_weight", "attention_read_weight", "attention_layers", "attention_warmup_steps")}}
@@ -459,6 +503,7 @@ def run_train(args):
         save_adapter(pipe.text_encoder if args.stage == "stage1" else pipe.dit,
                      Path(args.output) / "adapter", config)
     _main_rank_result(accelerator, save)
+    tracker.finish()
     accelerator.end_training()
 
 
@@ -558,6 +603,11 @@ def _parser():
         p.add_argument("--attention-layers", type=int, nargs="+", default=[7, 11, 15, 19, 23], help="Zero-based DiT layers")
         p.add_argument("--attention-warmup-steps", type=int, default=500, help="Successful optimizer updates, independent of LR warmup")
         if command == "train":
+            p.add_argument("--wandb-mode", choices=("disabled", "offline", "online"), default="disabled")
+            p.add_argument("--wandb-project", default="samtok-edit")
+            p.add_argument("--wandb-entity", default="2200012743-peking-university")
+            p.add_argument("--wandb-name")
+            p.add_argument("--wandb-id")
             p.add_argument("--plan-only", action="store_true",
                            help="Validate provenance and print exposure plan without loading models or writing output")
     return parser
