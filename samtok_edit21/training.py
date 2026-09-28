@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -223,7 +224,7 @@ def validate_conditioning(inputs):
     finite(inputs)
 
 
-def prepare_fm(pipe, row, base_path, max_pixels, *, te_grad=False):
+def prepare_fm(pipe, row, base_path, max_pixels, *, te_grad=False, supervision=None):
     images, target, height, width = load_images(row, base_path, max_pixels)
     if target is None:
         raise ValueError("FM requires a target image")
@@ -232,13 +233,27 @@ def prepare_fm(pipe, row, base_path, max_pixels, *, te_grad=False):
         target_latent = pipe.vae.encode(pipe.preprocess_image(target))
         source_latents = [pipe.vae.encode(pipe.preprocess_image(im)) for im in images]
     with torch.enable_grad() if te_grad else torch.no_grad():
-        cond = encode_edit(pipe, row["prompt"], images)
+        cond = encode_edit(pipe, row["prompt"], images, return_positions=True) if supervision is not None and supervision["eligible"] else encode_edit(pipe, row["prompt"], images)
+    if supervision is not None:
+        supervision = dict(supervision)
+        if supervision["eligible"]:
+            supervision["span_positions"] = cond.pop("span_positions")
     inputs = {"input_latents": target_latent, "edit_latents": source_latents, **cond}
+    if supervision is not None:
+        inputs["region_supervision"] = supervision
+        from .region_supervision import validate_supervision
+        validate_supervision(supervision, inputs, row, require_positions=supervision["eligible"])
     validate_conditioning(inputs)
     return inputs
 
 
-def flow_loss(pipe, inputs, *, timestep_index=None, noise=None, checkpointing=True):
+def flow_loss(pipe, inputs, *, timestep_index=None, noise=None, checkpointing=True,
+              region_weight=0.0, region_n_min=16.0, attention_weight=0.0,
+              attention_layers=(), attention_read_weight=0.5, return_components=False):
+    if not math.isfinite(attention_weight) or attention_weight < 0 or not math.isfinite(region_weight) or region_weight < 0:
+        raise ValueError("Loss weights must be finite and nonnegative")
+    if attention_weight and not attention_layers:
+        raise ValueError("Nonzero attention weight requires selected layers")
     # Exactly the official FlowMatchSFTLoss sampling, target and weighting;
     # expose timestep/weight for audit and repeatable gradient checks.
     i = (
@@ -251,26 +266,75 @@ def flow_loss(pipe, inputs, *, timestep_index=None, noise=None, checkpointing=Tr
     noise = torch.randn_like(x) if noise is None else noise
     noisy = pipe.scheduler.add_noise(x, noise, t)
     target = pipe.scheduler.training_target(x, noise, t)
+    supervision = inputs.get("region_supervision")
+    enabled = region_weight > 0 or bool(attention_layers)
+    eligible = False
+    probe = None
+    if enabled:
+        from .region_supervision import validate_supervision
+        validate_supervision(supervision, inputs, require_positions=bool(attention_layers))
+        eligible = supervision["eligible"]
+        if eligible and attention_layers:
+            from .attention_supervision import AttentionSupervision
+            probe = AttentionSupervision(supervision["span_positions"], supervision["coverage_source"],
+                                         supervision["coverage_target"], tuple(attention_layers))
+    model_inputs = {k: v for k, v in inputs.items() if k != "region_supervision"}
+    if probe is not None:
+        model_inputs["attention_probe"] = probe
     pred = pipe.model_fn(
         dit=pipe.dit,
         latents=noisy,
         timestep=t,
-        **inputs,
+        **model_inputs,
         kv_cache=None,
         use_gradient_checkpointing=checkpointing,
     )
+    if probe is not None:
+        pred, statistics = pred
     if pred.shape != target.shape:
         raise RuntimeError("FM prediction/target shape mismatch")
     mse = torch.nn.functional.mse_loss(pred.float(), target.float())
     weight = pipe.scheduler.training_weight(t).to(pipe.device)
-    loss = mse * weight
-    return loss, {
-        "loss_fm": loss.detach().item(),
+    basic_fm = mse * weight
+    fm, aux = basic_fm, mse.new_zeros(())
+    metrics = {}
+    if eligible:
+        from .region_supervision import attention_regions, region_fm_loss
+        coverage = supervision["coverage_target"].to(device=pred.device, dtype=torch.float32)
+        if region_weight > 0:
+            regional, values = region_fm_loss((pred.float() - target.float()).square().mean(1),
+                                             coverage.amax(0)[None], region_weight, region_n_min)
+            fm = regional * weight
+            metrics.update(values)
+        metrics.update(mask_count=len(coverage), mask_max_target=coverage.flatten(1).amax(1).mean(),
+                       mask_max_source=supervision["coverage_source"].flatten(1).amax(1).mean(),
+                       attn_uniform_target=attention_regions(coverage).mean(),
+                       attn_uniform_source=attention_regions(supervision["coverage_source"]).mean())
+        if probe is not None:
+            from .attention_supervision import attention_loss
+            aux, values = attention_loss(statistics, read_weight=attention_read_weight,
+                                        heads=pipe.dit.transformer_blocks[0].attn.heads,
+                                        target_tokens=target.shape[-2] * target.shape[-1], layers=attention_layers)
+            metrics.update(values)
+    loss = fm + attention_weight * aux
+    metrics.update({
+        "loss_fm": fm.detach().item(),
+        "loss_fm_basic": basic_fm.detach().item(),
+        "loss_total": loss.detach().item(),
+        "attention_weight": attention_weight,
+        "region_weight": region_weight,
+        "region_eligible": int(eligible),
         "fm_mse": mse.detach().item(),
         "timestep": t.item(),
         "training_weight": weight.item(),
         "target_shape": list(target.shape),
-    }
+    })
+    if enabled and not eligible:
+        metrics["region_skip_reason"] = supervision["reason"]
+    metrics = {k: v.detach().item() if isinstance(v, torch.Tensor) else v for k, v in metrics.items()}
+    if return_components:
+        return loss, metrics, {"fm": fm, "attention": aux, "basic_fm": basic_fm}
+    return loss, metrics
 
 
 # Backward-compatible Python entry points; there is only one training loop.

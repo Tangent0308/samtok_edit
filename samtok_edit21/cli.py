@@ -10,6 +10,12 @@ from .model import DEFAULT_QWEN, DEFAULT_SAMTOK
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "prepare-regions":
+        from .region_supervision import main as region_main
+        return region_main(argv[1:])
+    if argv and argv[0] == "calibrate-attention":
+        from .calibrate_attention import main as calibration_main
+        return calibration_main(argv[1:])
     if argv and argv[0] in {"train", "cache"}:
         from .train import main as training_main
         return training_main(argv)
@@ -17,6 +23,8 @@ def main(argv=None):
     subs = parser.add_subparsers(dest="command", required=True)
     subs.add_parser("train", help="Delegate to the canonical DiffSynth training entry point")
     subs.add_parser("cache", help="Delegate to the canonical cache-v2 builder")
+    subs.add_parser("prepare-regions", help="Prepare frozen region supervision for both training stages")
+    subs.add_parser("calibrate-attention", help="Calibrate A against actual C gradients without optimizer updates")
     build = subs.add_parser("build-debug")
     build.add_argument("--output", default=EXPERIMENT_ROOT + "/data")
     base = "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/"

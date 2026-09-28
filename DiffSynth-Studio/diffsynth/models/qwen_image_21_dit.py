@@ -208,10 +208,10 @@ def _qwenimage21_prefix_segments(image_ids: torch.Tensor, prefix_len: int) -> li
     return segments
 
 
-def _attention(query, key, value, attn_mask=None, use_flex=False):
+def _attention(query, key, value, attn_mask=None, use_flex=False, return_lse=False):
     return attention_forward(
         query, key, value, q_pattern="b s n d", k_pattern="b s n d", v_pattern="b s n d", out_pattern="b s n d",
-        attn_mask=attn_mask, use_flex=use_flex,
+        attn_mask=attn_mask, use_flex=use_flex, return_lse=return_lse,
     )
 
 
@@ -226,7 +226,8 @@ class QwenImage21AttnProcessor:
         cache_write_slice: slice | None = None,
         segments: list[tuple[int, int, bool]] | None = None,
         key_valid: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        attention_probe: Any | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         query = attn.to_q(hidden_states)
         key = attn.to_k(hidden_states)
         value = attn.to_v(hidden_states)
@@ -242,6 +243,9 @@ class QwenImage21AttnProcessor:
             query = apply_rotary_emb_qwen(query, rotary_emb, use_real=False)
             key = apply_rotary_emb_qwen(key, rotary_emb, use_real=False)
 
+        if attention_probe is not None and (kv_cache is not None or not FLEX_ATTN_AVAILABLE or not isinstance(attention_mask, BlockMask)):
+            raise ValueError("Attention statistics require uncached FlexAttention")
+        statistics = None
         decode = kv_cache is not None and "key" in kv_cache
         if kv_cache is not None:
             if decode:
@@ -264,7 +268,14 @@ class QwenImage21AttnProcessor:
             if pad_kv:
                 key = F.pad(key.transpose(1, 3), (0, pad_kv)).transpose(1, 3)
                 value = F.pad(value.transpose(1, 3), (0, pad_kv)).transpose(1, 3)
-            hidden_states = _attention(query, key, value, attn_mask=attention_mask, use_flex=True)[:, :seq_len_q]
+            result = _attention(query, key, value, attn_mask=attention_mask, use_flex=True,
+                                return_lse=attention_probe is not None)
+            if attention_probe is not None:
+                hidden_states, lse = result
+                statistics = attention_probe(query[:, :seq_len_q], key[:, :seq_len_kv], lse[:, :, :seq_len_q])
+            else:
+                hidden_states = result
+            hidden_states = hidden_states[:, :seq_len_q]
         else:
             # Splited attention route on the first step or without kv cache
             valid = None if key_valid is None else key_valid[:, None, None, :]
@@ -287,7 +298,8 @@ class QwenImage21AttnProcessor:
             hidden_states = torch.cat(outputs, dim=1)
         hidden_states = hidden_states.flatten(2, 3).type_as(query)
         hidden_states = attn.to_out[0](hidden_states)
-        return attn.to_out[1](hidden_states)
+        output = attn.to_out[1](hidden_states)
+        return output if attention_probe is None else (output, statistics)
 
 
 class QwenImage21Attention(nn.Module):
@@ -305,7 +317,7 @@ class QwenImage21Attention(nn.Module):
         self.norm_k = QwenImage21RMSNorm(dim_head, eps=eps)
         self.processor = QwenImage21AttnProcessor()
 
-    def forward(self, hidden_states: torch.Tensor, **kwargs) -> torch.Tensor:
+    def forward(self, hidden_states: torch.Tensor, **kwargs) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         return self.processor(self, hidden_states, **kwargs)
 
 
@@ -346,7 +358,8 @@ class QwenImage21TransformerBlock(nn.Module):
         cache_write_slice: slice | None = None,
         segments: list[tuple[int, int, bool]] | None = None,
         key_valid: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        attention_probe: Any | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         mod1, mod2 = modulation.chunk(2, dim=-1)
 
         img_modulated, img_gate1 = self._modulate(self.img_norm1(hidden_states), mod1, target_token_mask)
@@ -358,12 +371,15 @@ class QwenImage21TransformerBlock(nn.Module):
             cache_write_slice=cache_write_slice,
             segments=segments,
             key_valid=key_valid,
+            attention_probe=attention_probe,
         )
+        if attention_probe is not None:
+            attn_output, statistics = attn_output
         hidden_states = hidden_states + img_gate1.tanh() * attn_output
 
         img_modulated2, img_gate2 = self._modulate(self.img_norm2(hidden_states), mod2, target_token_mask)
         hidden_states = hidden_states + img_gate2.tanh() * self.img_mlp(img_modulated2)
-        return hidden_states
+        return hidden_states if attention_probe is None else (hidden_states, statistics)
 
 
 class QwenImage21Rope(nn.Module):
@@ -497,7 +513,21 @@ class QwenImage21DiT(nn.Module):
         kv_cache: list[dict[str, torch.Tensor]] | None = None,
         use_gradient_checkpointing: bool = False,
         use_gradient_checkpointing_offload: bool = False,
-    ) -> torch.Tensor:
+        attention_probe: Any | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        if attention_probe is not None:
+            from packaging.version import Version
+            if Version(torch.__version__.split("+")[0]) < Version("2.8"):
+                raise RuntimeError("Differentiable attention LSE requires PyTorch >= 2.8")
+            if kv_cache is not None or not FLEX_ATTN_AVAILABLE or not self.causal_condition:
+                raise ValueError("Attention supervision requires uncached block-causal FlexAttention")
+            if any(i < 0 or i >= len(self.transformer_blocks) for i in attention_probe.layers):
+                raise ValueError("Attention probe layer out of range")
+            from ..core.gradient.gradient_checkpoint import _HAS_DEEPSPEED
+            if _HAS_DEEPSPEED:
+                import deepspeed
+                if deepspeed.checkpointing.is_configured():
+                    raise ValueError("Attention statistics require PyTorch non-reentrant checkpointing")
         batch_size = hidden_states.shape[0]
         hidden_states = self.img_in(hidden_states)
         encoder_hidden_states = self.txt_in(encoder_hidden_states)
@@ -518,6 +548,8 @@ class QwenImage21DiT(nn.Module):
 
         rotary_emb = self.pos_embed(img_shapes[0], image_pad_mask, device=hidden_states.device)
         image_ids, target_token_mask = self.build_token_metadata(image_pad_mask, img_shapes[0])
+        bound_probe = None if attention_probe is None else attention_probe.bind_layout(repeats, image_ids, target_token_mask)
+        auxiliary = []
 
         timestep = timestep.to(hidden_states.dtype)
         if self.causal_condition:
@@ -567,6 +599,7 @@ class QwenImage21DiT(nn.Module):
 
         for index_block, block in enumerate(self.transformer_blocks):
             block_kv_cache = kv_cache[index_block] if kv_cache is not None else None
+            selected_probe = bound_probe if attention_probe is not None and index_block in attention_probe.layers else None
             joint_hidden_states = gradient_checkpoint_forward(
                 block,
                 use_gradient_checkpointing,
@@ -580,7 +613,12 @@ class QwenImage21DiT(nn.Module):
                 cache_write_slice=cache_write_slice,
                 segments=segments,
                 key_valid=joint_key_valid,
+                attention_probe=selected_probe,
             )
+            if selected_probe is not None:
+                joint_hidden_states, statistics = joint_hidden_states
+                auxiliary.append(statistics)
 
         joint_hidden_states = self.norm_out(joint_hidden_states, temb, modulation_mask)
-        return self.proj_out(joint_hidden_states)
+        output = self.proj_out(joint_hidden_states)
+        return output if attention_probe is None else (output, torch.stack(auxiliary))

@@ -212,10 +212,13 @@ def ntp_loss(pipe, instruction, images, cot):
     }
 
 
-def encode_edit(pipe, prompt, images):
+def encode_edit(pipe, prompt, images, *, return_positions=False):
     spans = spans_in(prompt)
     unit = QwenImage21Unit_PromptEmbedder()
-    result = unit.process(pipe, prompt, images)
+    result = unit.process(pipe, prompt, images, return_token_ids=True) if return_positions else unit.process(pipe, prompt, images)
+    if return_positions:
+        from .attention_supervision import span_positions
+        result["span_positions"] = span_positions(pipe.processor.tokenizer, result.pop("prompt_input_ids"), prompt)
     if spans:
         # Added SAMTok tokens are ordinary atomic vocabulary tokens, so the official
         # processor retains boundaries without a second manual BPE encoding.
@@ -247,6 +250,9 @@ def localize(
         raise ValueError("strict_noref requires variant=noref")
     if len(images) != 1:
         raise ValueError("Localization requires exactly one source image")
+    # Pass 2's ShapeChecker rounds the requested canvas up before resizing
+    # source images. Localize on that same canvas even for nonaligned requests.
+    height, width = pipe.check_resize_height_width(height, width)
     prepared = resize_sources(pipe, images, height, width)
     inputs, prefix, _ = localization_inputs(pipe, instruction, prepared)
     kwargs = {

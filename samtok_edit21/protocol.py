@@ -316,7 +316,13 @@ def interactive_prompt(instruction, code_groups, *, whole_image=False):
     for codes in code_groups:
         _with_codes("", codes)
     pattern = r"(?<!\w)(?:" + "|".join(map(re.escape, REGION_REFS)) + r")(?!\w)"
-    refs = list(re.finditer(pattern, instruction, re.I))
+    # Words being edited (e.g. Replace 'it' with 'go') are literal text,
+    # not references to a selected region. Leave them to the text-edit branch.
+    quoted_ranges = [m.span() for m in re.finditer(
+        r'''(?<!\w)(?:"[^"\n]*"|'[^'\n]*'|“[^”\n]*”|‘[^’\n]*’)''', instruction
+    )]
+    refs = [m for m in re.finditer(pattern, instruction, re.I)
+            if not any(start <= m.start() < end for start, end in quoted_ranges)]
     if refs:
         if len(refs) != len(code_groups):
             raise ValueError(

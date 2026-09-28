@@ -16,7 +16,7 @@ from typing import Any
 
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.utils import DataLoaderConfiguration, broadcast_object_list, set_seed
+from accelerate.utils import DataLoaderConfiguration, broadcast_object_list, gather_object, set_seed
 from torch.utils.data import Dataset, SequentialSampler
 
 DIFFSYNTH_ROOT = Path(__file__).resolve().parents[1] / "DiffSynth-Studio"
@@ -121,6 +121,12 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         self.args = args
         self.task = task
         self.stage = args.stage
+        self.completed_updates = 0
+        self.pending_metrics = []
+        self.region_store = None
+        if getattr(args, "region_cache", None) and (args.stage == "stage1" or task == "sft:data_process"):
+            from .region_supervision import RegionStore
+            self.region_store = RegionStore(args.region_cache, args.max_pixels)
         if task == "sft:data_process":
             components = ("text_encoder", "vae")
         elif args.stage == "stage2":
@@ -168,11 +174,48 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         # microsteps. Zero LoRA-A gradients at initialization remain valid.
         self._branch_grad_peaks.append(gradient.detach().abs().amax().float())
 
+    def _supervision(self, row):
+        return None if self.region_store is None else self.region_store.load(row, self.args.base_path)
+
+    def _flow(self, inputs):
+        base = self.args.attention_weight
+        warmup = self.args.attention_warmup_steps
+        effective = base * (min(self.completed_updates / warmup, 1.0) if warmup else 1.0)
+        return flow_loss(self.pipe, inputs, region_weight=self.args.region_weight,
+                         region_n_min=self.args.region_n_min, attention_weight=effective,
+                         attention_layers=self.args.attention_layers if base else (),
+                         attention_read_weight=self.args.attention_read_weight)
+
+    def on_optimizer_step(self, completed_updates, accelerator, skipped=False):
+        """One collective per accumulation window; logs are per-sample means."""
+        self.completed_updates = completed_updates
+        if not (self.args.region_weight or self.args.attention_weight):
+            self.pending_metrics.clear()
+            return
+        records = gather_object(self.pending_metrics)
+        # In single-process mode gather_object returns the SAME list.
+        # Rebind rather than clear, otherwise the gathered records disappear.
+        self.pending_metrics = []
+        if accelerator.is_main_process:
+            from collections import Counter, defaultdict
+            values = defaultdict(list)
+            for record in records:
+                for key, value in record.items():
+                    if isinstance(value, (float, int)):
+                        values[key].append(value)
+            entry = {"optimizer_step": completed_updates, "skipped": skipped,
+                     "metrics": {k: sum(v) / len(v) for k, v in values.items()},
+                     "counts": {k: len(v) for k, v in values.items()},
+                     "skip_reasons": dict(Counter(r["region_skip_reason"] for r in records if "region_skip_reason" in r))}
+            with (Path(self.args.output) / "supervision_metrics.jsonl").open("a") as stream:
+                stream.write(json.dumps(entry) + "\n")
+
     def forward(self, data, inputs=None):
         self._branch_grad_peaks = []
         if self.task == "sft:data_process":
             prepared = prepare_fm(
-                self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=False
+                self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=False,
+                supervision=self._supervision(data)
             )
             validate_conditioning(prepared)
             original = {k: v for k, v in data.items() if k != "_row_index"}
@@ -183,7 +226,7 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             if inputs is None:
                 raise ValueError("Stage 2 training expects cached inputs")
             validate_conditioning(inputs)
-            loss, metrics = flow_loss(self.pipe, inputs)
+            loss, metrics = self._flow(inputs)
         elif data["sample_type"] == "edit_ntp":
             images, _, height, width = load_images(
                 data, self.args.base_path, self.args.max_pixels
@@ -193,15 +236,18 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             loss = loss * self.args.ntp_weight
         else:
             prepared = prepare_fm(
-                self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=True
+                self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=True,
+                supervision=self._supervision(data)
             )
             if not prepared["prompt_embeds"].requires_grad:
                 raise RuntimeError("FM lost its gradient connection to TE")
-            loss, metrics = flow_loss(self.pipe, prepared)
+            loss, metrics = self._flow(prepared)
             loss = loss * self.args.fm_weight
         if not torch.isfinite(loss).all() or not loss.requires_grad:
             raise RuntimeError('Loss must be finite and differentiable')
         self.last_metrics = metrics
+        if self.args.region_weight or self.args.attention_weight:
+            self.pending_metrics.append({**metrics, "weighted_total": loss.detach().item()})
         return loss
 
     def after_backward_audit(self):
@@ -317,6 +363,9 @@ def validate_training_length_and_saves(args):
 
 
 def run_train(args):
+    if args.attention_weight:
+        from .attention_supervision import require_attention_backend
+        require_attention_backend()
     validate_training_length_and_saves(args)
     accelerator = _accelerator(args.accumulation)
     args.device = str(accelerator.device)
@@ -329,6 +378,9 @@ def run_train(args):
         def validate():
             verify_cache(args.cache, manifest)
             assert_models_match(manifest["identity"], args.qwen, args.samtok)
+            if args.region_weight or args.attention_weight:
+                if not manifest.get("supervision_identity"):
+                    raise ValueError("Training requires a conditioning cache built with --region-cache")
         _main_rank_result(accelerator, validate)
         rows = manifest["rows"]
         schedule, report = _schedule_dataset(args, accelerator, rows)
@@ -336,6 +388,12 @@ def run_train(args):
         base_identity = manifest["identity"]["models"]
     else:
         rows = read_rows(args.metadata)
+        if args.region_weight:
+            from .region_supervision import RegionStore
+            store = RegionStore(args.region_cache, args.max_pixels)
+            for row in rows:
+                if row["sample_type"] != "edit_ntp":
+                    store.load(row, args.base_path)
         schedule, report = _schedule_dataset(args, accelerator, rows)
         dataset = ScheduledMetadata(rows, schedule)
         from .provenance import model_identity
@@ -390,9 +448,13 @@ def run_train(args):
     )
     accelerator.wait_for_everyone()
     def save():
-        config = {"stage": args.stage, "base_identity": base_identity}
+        config = {"stage": args.stage, "base_identity": base_identity,
+                  "supervision": {k: getattr(args, k) for k in ("region_weight", "region_n_min", "attention_weight", "attention_read_weight", "attention_layers", "attention_warmup_steps")}}
+        if args.stage == "stage1" and args.region_cache:
+            config["supervision_identity"] = model.region_store.identity
         if args.stage == "stage2":
             config["conditioning_identity"] = manifest["identity"]
+            config["supervision_identity"] = manifest.get("supervision_identity")
         pipe = accelerator.unwrap_model(model).pipe
         save_adapter(pipe.text_encoder if args.stage == "stage1" else pipe.dit,
                      Path(args.output) / "adapter", config)
@@ -421,6 +483,9 @@ def _cache_manifest(args, accelerator, rows):
         raise ValueError("Cache does not cover every metadata row exactly once")
     manifest = {"format": FORMAT, "identity": args.conditioning_identity,
                 "row_count": len(rows), "rows": [row for _, row in sorted(entries)]}
+    if args.region_cache:
+        from .region_supervision import RegionStore
+        manifest["supervision_identity"] = RegionStore(args.region_cache, args.max_pixels).identity
     verify_cache(output, manifest)
     write_json(output / "manifest.json", manifest)  # atomic publication after validation
 
@@ -485,6 +550,13 @@ def _parser():
         warmup.add_argument("--warmup-steps", type=int,
                             help="Explicit optimizer updates, overriding the stage default ratio")
         p.add_argument("--init-adapter")
+        p.add_argument("--region-cache", help="Independent frozen region cache (Stage 1 and conditioning cache builder)")
+        p.add_argument("--region-weight", type=float, default=0.0, help="C coefficient; suggested 0.5, zero disables")
+        p.add_argument("--region-n-min", type=float, default=16.0)
+        p.add_argument("--attention-weight", type=float, default=0.0, help="Calibrated final A coefficient; Stage 2 only")
+        p.add_argument("--attention-read-weight", type=float, default=0.5)
+        p.add_argument("--attention-layers", type=int, nargs="+", default=[7, 11, 15, 19, 23], help="Zero-based DiT layers")
+        p.add_argument("--attention-warmup-steps", type=int, default=500, help="Successful optimizer updates, independent of LR warmup")
         if command == "train":
             p.add_argument("--plan-only", action="store_true",
                            help="Validate provenance and print exposure plan without loading models or writing output")
@@ -532,6 +604,20 @@ def normalize_args(args):
             setattr(args, key, value)
     if args.accumulation < 1 or (args.steps is not None and args.steps < 1):
         raise ValueError("accumulation/steps must be positive")
+    for key in ("region_weight", "attention_weight", "attention_read_weight"):
+        if not math.isfinite(getattr(args, key)) or getattr(args, key) < 0:
+            raise ValueError(f"{key} must be finite and nonnegative")
+    if not math.isfinite(args.region_n_min) or args.region_n_min <= 0 or args.attention_warmup_steps < 0:
+        raise ValueError("Invalid region n_min / attention warmup")
+    if not args.attention_layers or len(set(args.attention_layers)) != len(args.attention_layers) or any(i < 0 or i >= 32 for i in args.attention_layers):
+        raise ValueError("Attention layers must be unique indices in [0,31]")
+    args.attention_layers = sorted(args.attention_layers)
+    if args.stage == "stage1" and args.attention_weight:
+        raise ValueError("Attention supervision is Stage 2 only")
+    if args.command == "train" and args.stage == "stage1" and args.region_weight and not args.region_cache:
+        raise ValueError("Stage 1 C requires --region-cache")
+    if args.command == "train" and args.stage == "stage2" and args.region_cache:
+        raise ValueError("Stage 2 reads regions from conditioning cache; use --region-cache during cache construction")
     return args
 
 

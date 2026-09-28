@@ -150,6 +150,12 @@ def verify_cache(directory, manifest):
         if len(inputs["edit_latents"]) != source_count:
             raise ValueError("Source latent count differs from metadata image count")
         validate_conditioning(inputs)
+        supervision = inputs.get("region_supervision")
+        if manifest.get("supervision_identity") is not None or supervision is not None:
+            from .region_supervision import validate_supervision
+            validate_supervision(supervision, inputs, original, require_positions=True)
+            if supervision["identity"] != manifest.get("supervision_identity"):
+                raise ValueError("Conditioning cache supervision identity mismatch")
     if seen_indices != set(range(len(rows))):
         raise ValueError("Cache row indices are not a complete unique range")
     return True

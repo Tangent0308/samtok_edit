@@ -171,7 +171,7 @@ class QwenImage21Unit_PromptEmbedder(PipelineUnit):
         canvas.paste(image, mask=image.getchannel("A"))
         return canvas
 
-    def process(self, pipe, prompt, edit_image):
+    def process(self, pipe, prompt, edit_image, return_token_ids=False):
         if pipe.text_encoder is None or pipe.processor is None:
             return {}
         pipe.load_models_to_device(self.onload_model_names)
@@ -220,7 +220,14 @@ class QwenImage21Unit_PromptEmbedder(PipelineUnit):
         if prompt_embeds_mask.all():
             prompt_embeds_mask = None
         image_pad_mask = torch.stack([torch.cat([mask, mask.new_zeros(max_seq_len - mask.size(0))]) for mask in image_pad_mask])
-        return {"prompt_embeds": prompt_embeds, "prompt_embeds_mask": prompt_embeds_mask, "edit_image_pad_mask": image_pad_mask}
+        result = {"prompt_embeds": prompt_embeds, "prompt_embeds_mask": prompt_embeds_mask, "edit_image_pad_mask": image_pad_mask}
+        if return_token_ids:
+            ids = [sample_ids[sample_mask.bool()][self._drop_idx:]
+                   for sample_ids, sample_mask in zip(model_inputs.input_ids, model_inputs.attention_mask)]
+            result["prompt_input_ids"] = torch.stack([
+                torch.cat([sample, sample.new_full((max_seq_len - len(sample),), -1)]) for sample in ids
+            ])
+        return result
 
 
 class QwenImage21Unit_NoiseInitializer(PipelineUnit):
@@ -322,6 +329,7 @@ def model_fn_qwen_image_21(
     kv_cache=None,
     use_gradient_checkpointing=False,
     use_gradient_checkpointing_offload=False,
+    attention_probe=None,
     **kwargs,
 ):
     latent_height, latent_width = latents.shape[2], latents.shape[3]
@@ -343,7 +351,11 @@ def model_fn_qwen_image_21(
         kv_cache=kv_cache,
         use_gradient_checkpointing=use_gradient_checkpointing,
         use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
+        attention_probe=attention_probe,
     )
+    if attention_probe is not None:
+        model_output, statistics = model_output
+        return unpatchify(model_output[:, -target_seq_len:], latent_height, latent_width), statistics
     return unpatchify(model_output[:, -target_seq_len:], latent_height, latent_width)
 
 

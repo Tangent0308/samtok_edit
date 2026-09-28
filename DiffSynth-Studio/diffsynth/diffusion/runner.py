@@ -160,6 +160,10 @@ def launch_training_task(
                                   "loss_last_microstep": float(loss.detach())}
                         with open(os.path.join(model_logger.output_path, "optimizer_steps.jsonl"), "a") as f:
                             f.write(json.dumps(record) + "\n")
+                if accelerator.sync_gradients:
+                    update_hook = getattr(accelerator.unwrap_model(model), "on_optimizer_step", None)
+                    if update_hook is not None:
+                        update_hook(optimizer_step, accelerator, skipped=accelerator.optimizer_step_was_skipped)
                 optimizer.zero_grad()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
         if save_steps is None:

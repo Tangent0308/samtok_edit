@@ -204,7 +204,9 @@ def convert_record(record):
         errors["binding"] = str(exc)
     edit_type = "composite" if len(units) > 1 else units[0].edit_type
     native = native_edit_type(record)
-    if native is not None and native != edit_type:
+    # Native labels constrain atomic operations; multiple independently bound
+    # operations still make the derived sample composite (e.g. two recolors).
+    if native is not None and any(u.edit_type != native for u in units):
         raise ValueError("Reviewed units disagree with the dataset's native type mapping")
     if "edit_type" in record and record["edit_type"] != edit_type:
         raise ValueError("Record edit_type disagrees with its atomic units")
@@ -270,7 +272,11 @@ def convert_record(record):
 def sample_edit_type(record):
     native = native_edit_type(record)
     if "edit_type" in record:
-        if record["edit_type"] not in EDIT_TYPES or (native is not None and record["edit_type"] != native):
+        mismatch = native is not None and record["edit_type"] != native
+        units = record.get("units", [])
+        if record["edit_type"] == "composite" and len(units) >= 2:
+            mismatch = native is not None and any(u.get("edit_type") != native for u in units)
+        if record["edit_type"] not in EDIT_TYPES or mismatch:
             raise ValueError("Invalid edit_type or conflict with native dataset type")
         return record["edit_type"]
     if native is not None:

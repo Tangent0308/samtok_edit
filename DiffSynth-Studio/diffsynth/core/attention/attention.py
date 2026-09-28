@@ -218,16 +218,24 @@ def xformers_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, q_patt
     return out
 
 
-def flex_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, q_pattern="b n s d", k_pattern="b n s d", v_pattern="b n s d", out_pattern="b n s d", dims=None, attn_mask=None, scale=None, score_mod=None):
+def flex_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, q_pattern="b n s d", k_pattern="b n s d", v_pattern="b n s d", out_pattern="b n s d", dims=None, attn_mask=None, scale=None, score_mod=None, return_lse=False):
     assert FLEX_ATTN_AVAILABLE, "Flex Attention is not available. Please upgrade torch to 2.5.0 or later."
     required_in_pattern, required_out_pattern = "b n s d", "b n s d"
     q, k, v = rearrange_qkv(q, k, v, q_pattern, k_pattern, v_pattern, required_in_pattern, dims)
-    out = flex_attention_func(query=q, key=k, value=v, block_mask=attn_mask, scale=scale, score_mod=score_mod)
+    out = flex_attention_func(query=q, key=k, value=v, block_mask=attn_mask, scale=scale, score_mod=score_mod, return_lse=return_lse)
+    if return_lse:
+        out, lse = out
+        return rearrange_out(out, out_pattern, required_out_pattern, dims), lse
     out = rearrange_out(out, out_pattern, required_out_pattern, dims)
     return out
 
 
-def attention_forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, q_pattern="b n s d", k_pattern="b n s d", v_pattern="b n s d", out_pattern="b n s d", dims=None, attn_mask=None, scale=None, is_causal=False, compatibility_mode=False, window_size=None, use_flex=False, score_mod=None):
+def attention_forward(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, q_pattern="b n s d", k_pattern="b n s d", v_pattern="b n s d", out_pattern="b n s d", dims=None, attn_mask=None, scale=None, is_causal=False, compatibility_mode=False, window_size=None, use_flex=False, score_mod=None, return_lse=False):
+    if return_lse:
+        if not use_flex or is_causal or window_size is not None:
+            raise ValueError("Differentiable LSE requires FlexAttention with an explicit block mask")
+        return flex_attention(q, k, v, q_pattern, k_pattern, v_pattern, out_pattern, dims,
+                              attn_mask=attn_mask, scale=scale, score_mod=score_mod, return_lse=True)
     if compatibility_mode or (attn_mask is not None) or ATTENTION_IMPLEMENTATION == "torch":
         if use_flex or score_mod is not None:
             return flex_attention(q, k, v, q_pattern, k_pattern, v_pattern, out_pattern, dims, attn_mask=attn_mask, scale=scale, score_mod=score_mod)

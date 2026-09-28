@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Thin, inference-only wrapper around the released SAMTok VQ-SAM2 codec."""
+"""Frozen released SAMTok VQ-SAM2 codec for inference and region preprocessing."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import torch
 import torchvision
 from PIL import Image
 
-from .protocol import CODEBOOK_DEPTH, CODEBOOK_SIZE, SPAN_RE, span_of, valid_span_codes
+from .protocol import CODEBOOK_DEPTH, CODEBOOK_SIZE, SPAN_RE, span_of, spans_in, valid_span_codes
 
 
 def fix_mt_format_comprehensive(text: str) -> str:
@@ -177,6 +177,17 @@ class SamtokCodec:
         ]
 
     @torch.no_grad()
+    def decode_strict(self, pil_image, text: str) -> list[np.ndarray]:
+        """Decode every original span in order, without visualization repair."""
+        spans = spans_in(text)
+        if not spans:
+            raise ValueError("Region supervision requires mask spans")
+        pairs = SPAN_RE.findall(text)
+        if len(pairs) != len(spans):
+            raise ValueError("Mask span count mismatch")
+        return self._decode_pairs(pil_image, pairs)
+
+    @torch.no_grad()
     def decode(self, pil_image, cot_text: str) -> list[np.ndarray]:
         """Decode valid spans for visualization or IoU evaluation."""
 
@@ -188,7 +199,10 @@ class SamtokCodec:
         ]
         if not pairs:
             return []
-        codes = [[first, second - CODEBOOK_SIZE] for first, second in pairs]
+        return self._decode_pairs(pil_image, pairs)
+
+    def _decode_pairs(self, pil_image, pairs):
+        codes = [[int(first), int(second) - CODEBOOK_SIZE] for first, second in pairs]
         masks = self.vq.forward_with_codes(
             self._pixel_values([pil_image] * len(codes)),
             torch.tensor(codes, dtype=torch.long, device=self.device),

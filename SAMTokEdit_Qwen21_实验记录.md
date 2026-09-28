@@ -555,3 +555,149 @@ $PY $CHECK/check_doc_cli.py
 ```
 
 重跑须替换为新的 OUT，不能覆盖现有训练/cache 输出；integration.py 内的 ROOT 也应对应新目录。关键证据：`acceptance.log`、`regressions.log`、`stage1.log`、`cache.log`、`stage2.log`、两阶段 `optimizer_steps.jsonl`、`integration.json`、`integration_retry.log`、`localize.json`、`oracle_ref.png`、`oracle_noref.png`、`online.png`、`interactive.png`。临时目录不作为长期产物存储保证，测试覆盖、命令与数值保留在本文。
+
+## 12. 2026-09-27：训练注意力监督 A 与区域加权 FM C
+
+### 12.1 范围、环境与数据
+
+在 `qwen-image-2.1-dev` 分支 `c2db140` 基础上实现训练 A/C；方案文件 `/opt/tiger/tanyue/SAMTok_mask_attention_constraints.md` 的 SHA256 为 `970e674d18f03e71e04b47eca207c7ece2eba15e72f72018ffdf670ed15badc8`。未实现推理软 mask B，未更换官方固定版本、基座权重、数据协议或 224-module DiT LoRA 范围。当前源码与命令见实现文档第 10 节。
+
+环境：H100 80GB，PyTorch 2.8.0+cu128、Transformers 5.12.1，Python `/tmp/samtok21-fixes-dUnbt5/venv/bin/python`。全部新增验收脚本、日志、cache、adapter、图片位于仓库外 `/tmp/samtok-region-train-Rzdty0`（下文 OUT），没有把调试产物加到 repo。
+
+使用先前 RefEdit 数据根目录 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data`，metadata 为 `/tmp/samtok21-fixes-dUnbt5/reviewed_stage1.jsonl` 和 `reviewed_stage2.jsonl`。这次真实 smoke 是**一组鸟类编辑图对**的 NTP/ref/noref/plain 四种训练行，不是四个独立场景；target 是已审核的 leftmost bird。图像训练上限 65536 pixels（256×256），LoRA rank=2、seed=926，缩短训练验证软件路径。
+
+### 12.2 预处理、身份与数学验收
+
+区域预处理实际加载发布 VQ-SAM2 权重，严格解码 `<|mt_start|><|mt_0017|><|mt_0322|><|mt_end|>`，使用本次图对的全图对齐认证。4 个独立区域记录中 ref/noref 两条 eligible，NTP/plain 两条 task skip。区域身份为 `29a9f711bb00eb4f8a59ed98aec67220d5cdf7fd34a32abdd4a0102558a8da65`。source/target 均为 16×16 latent grid，外扩后 coverage 均值 0.3091871142、最大值 1。
+
+实际 cache 中 plain/ref/noref 的 `prompt_embeds` 长度分别为 89/94/90（hidden=4096）；ref 四-token 位置 `[81,82,83,84]`，noref 为 `[77,78,79,80]`。位置由真实 processor IDs 裁剪取得，未硬编码这些数字。Stage 2 cache 含三条 FM 行、独立监督身份与完整行/hash/checksum 校验。
+
+独立区域 shard 的本次大小：eligible 各 5165 bytes、ineligible 各 2115 bytes；带区域 conditioning shard 为 plain 801249、ref 845251、noref 812483 bytes。相同尺寸/字段布局的先前无区域 cache 为 800929、841889、809121 bytes；每个 UMT shard 增加约 3362 bytes（不同 TE 权重的内容不能据此称为同一 cache）。这只是 K=1、16×16 网格的序列化成本。
+
+新增临时 `test_supervision.py`、`test_contracts.py` 覆盖：
+
+- C 与独立归一化位置权重参考及解析梯度一致；零/全覆盖、soft coverage、极小区域、内外都触发 n_min、恒定误差和 lambda=0；实际位置权重和为 1。
+- coverage 与 hat 分离；非方形区域、S/T 不同网格；多组 mask 不去重、位置映射与网格顺序。
+- A 对照完整 dense attention：FP32 和 BF16、多头/多组、source/text/target block-causal 可见性；检查未选中 keys 经 LSE 获得梯度。Q/K 相对 L2 容差分别为 `1e-4` 和 `0.015`；loss 容差 `rtol=2e-4, atol=2e-5`。
+- 真实 QwenImage21DiT 类的小尺寸两层模型：norm、RoPE、padding、跨层统计、默认输出不变、checkpoint 开/关的参数梯度一致；额外覆盖 non-reentrant CPU saved-tensor offload 路径。此项不等于完整模型 CPU offload 性能验收。
+- 跨层先加总 N/D 后求比例，防止误改成逐层 loss 平均；warmup 首窗口、累积窗口固定系数、skipped update、499/500 边界。
+- region/cache 身份、row/type/位置/网格/空区域校验；非法 CLI 参数；基础 cache 向后兼容；不合格样本保持原 FM，缺监督数据则报错。
+
+仓库基础测试、上述新测试、先前数据合同和训练计划回归一起执行；最终测试数量与结果见 12.7。测试中的数学对照只验证实现，不证明学习后的编辑效果。
+
+### 12.3 真实训练与 A 梯度校准
+
+Stage 1 C：单卡、2 updates、accumulation=8，共 16 microsteps；每个 update 的 NTP/ref/noref/plain=3/2/2/1。默认 Stage 1 cosine/4% LR warmup；`region_weight=0.5, n_min=16`。504 个 TE LoRA 参数张量收到梯度，冻结参数梯度为 0；第二窗口 504 个张量均有非零梯度。最终裁剪前累积梯度范数 0.0433330052。
+
+单进程日志修复后复跑产物在 `stage1_verified`；两次训练 adapter 权重 SHA256 均为 `2220411aca8e48a15d95da73e8f25d0496872ce08102889776602b8f8026c3da`。conditioning cache 使用 `stage1/adapter`，复跑没有换掉该已记录路径或身份。
+
+| Stage 1 update | FM 子集：基础 FM 均值 | FM 子集：实际 C/FM 均值 | 全部 8 microsteps 的加权 loss 均值 |
+|---|---:|---:|---:|
+| 1 | 0.2682171293 | 0.2724085458 | 0.1816543809 |
+| 2 | 0.2352962092 | 0.2390282735 | 0.1606751354 |
+
+每窗口 FM 指标覆盖 5 行，区域指标覆盖 4 行，NTP 指标覆盖 3 行，plain task skip=1；不可把不同 counts 的均值直接相加。
+
+校准加载同一份 cache、全 224-module rank-2 DiT LoRA，ref/noref 两条合格行 × timestep **索引** 100/500/900，共 6 次测量；不是把 timestep 数值固定为这三个数。各目标使用相同 noise/t/RNG，无 optimizer update。`--target-ratio 0.2` 给出固定系数 **0.03421928752136922**。
+
+| 行 / 索引 | 基础 FM 梯度范数 | C 梯度范数 | 未乘系数 A 梯度范数 | 最终系数 × A/C |
+|---|---:|---:|---:|---:|
+| ref / 100 | 0.00588131 | 0.00627825 | 0.04428959 | 0.241398 |
+| ref / 500 | 0.01373127 | 0.01436531 | 0.04523563 | 0.107755 |
+| ref / 900 | 0.00498495 | 0.00511648 | 0.04293319 | 0.287140 |
+| noref / 100 | 0.00412411 | 0.00460762 | 0.03025191 | 0.224671 |
+| noref / 500 | 0.00985964 | 0.01083895 | 0.02813189 | 0.088814 |
+| noref / 900 | 0.00507031 | 0.00510702 | 0.02689544 | 0.180211 |
+
+系数为逐测量建议值的中位数，不保证每行比值都在 0.1–0.3 内。该数值仅为单图/rank-2 smoke 结果，不能直接推广为正式 rank-32、多类型数据的训练系数。
+
+Stage 2 真实执行 C-only、A-only、A+C，以及双卡 A+C；均为 2 updates、每卡 accumulation=4、每卡 8 microsteps、rank=2、224 个 LoRA 模块 / 448 个可训练张量。A+C 单卡用校准系数；A-only 和双卡 smoke 用 0.1，只测执行与分布式路径。为跨过 warmup 边界，smoke 显式设 `attention_warmup_steps=1`；正式默认仍为 500。所有训练的基础参数、模型身份、recipe 写入对应 run/adapter JSON。
+
+| 路径 | 首窗口 A 系数 → 次窗口 | 次窗口基础 FM 均值 | 次窗口 C/FM 均值 | 次窗口总 loss 均值 |
+|---|---|---:|---:|---:|
+| 单卡 A+C | 0 → 0.0342192875 | 0.1197351078 | 0.1249861210 | 0.1431241278 |
+| 双卡 A+C | 0 → 0.1 | 0.1652065690 | 0.1685958132 | 0.2219781233 |
+
+单卡每窗口日志覆盖 4 样本，其中 A 覆盖 3、plain skip=1；双卡正确汇总为 8 样本，A 覆盖 6、plain skip=2。首窗口虽 A 系数为 0，仍有 A 指标。最终梯度审计：单卡 A+C 0.0049497252、双卡主 rank 0.0059811715；448 个 LoRA 梯度张量均有限，冻结参数梯度为 0。checkpoint 重算没有重复计入指标。
+
+### 12.4 真实 DiT 的四分支数值与性能 smoke
+
+`benchmark.py` 在同一模型初始化、cache 行、noise 与 timestep 索引 500 下，分别运行基础 FM/C/A/A+C；不做 optimizer update，逐项 forward+backward，包含 gradient checkpoint 的重算。每种 3 次，表中取后两次平均，排除该模式首步；A 测试系数=0.1。这不是正式长程消融。
+
+四种分支的基础 FM 都是 **0.2717275321**，即读取 A 统计没有改变 DiT 的预测；C 后 FM 为 0.2765913010，A 主项为 0.4896236360、read 为 0.4778242111，A+C 总 loss 为 0.3494448662。Q/K LoRA-B 梯度非零，448 个 LoRA 梯度有限，冻结参数无梯度。
+
+| 分支 | 稳态 forward 秒 | backward + checkpoint 重算秒 | 合计秒 | peak allocated GiB |
+|---|---:|---:|---:|---:|
+| FM | 0.11845 | 0.20581 | 0.32427 | 13.71195 |
+| C | 0.12479 | 0.20585 | 0.33064 | 13.71224 |
+| A | 0.13349 | 0.21465 | 0.34814 | 13.71225 |
+| A+C | 0.13544 | 0.21346 | 0.34890 | 13.71225 |
+
+限制：H100、256×256、K=1、rank=2、单 microbatch，CUDA synchronize 计时，峰值为 PyTorch allocated 而非整卡 nvidia-smi 占用；不含 optimizer step、数据读取和权重启动哈希。仅两次稳态样本，不能据此推断 1024²、较大 K、rank=32、长程训练吞吐或显存。不同分支首步含编译/冷启动，原始数值保存在 `benchmark.json`。
+
+### 12.5 调试中发现的问题及处理
+
+| 问题 | 归属与原因 | 实际处理 |
+|---|---|---|
+| 区域 manifest 无法 JSON 序列化 processor size | 本次新增预处理实现：Transformers 返回 SizeDict 对象 | 改为通过官方 `get_processor_min_pixels` 取实际整数几何参数；真实预处理重跑成功 |
+| 单卡监督日志出现空 metrics | 本次新增日志实现：单进程 `gather_object` 返回原列表，随后 clear 同时清掉结果 | 改为重新绑定 pending list；添加别名/计数回归；Stage 1 复跑指标正常且 adapter 权重逐文件 hash 相同 |
+| 校准多次 autograd.grad 报 donated buffers / retain_graph 错误 | PyTorch compiled backward 的内存复用约束与初版校准策略不兼容，不是 FM/A 公式错误 | 三个目标分别重建前向，同 noise/t/RNG，各反传一次；不改全局 compiler 状态；6 次真实校准通过 |
+| 推理验收脚本两处断言失败 | 临时测试脚本假设错误：把 7 个官方 suffix 当成 224 个具体模块；把全有效 `prompt_embeds_mask=None` 当成 Tensor | 按真实挂载模块计数；明确处理 None；不为适配测试改动模型/缓存格式 |
+| 非方形全覆盖 mask 的插值值略大于 1 | PyTorch FP32 antialias resize 舍入：123×217 → 32×96 的全 1 mask 最大值实测 1.0000002384；本项目严格范围检查需兼容该数值现象 | 最终 coverage 投影回 [0,1]，保留 soft coverage、不重新阈值化；新增非方形全覆盖回归。原有合法 cache 数值不变 |
+
+A/C 数学与实现未引入推理 bias。测试修复与模型实现修复在上表分开记录，不能将测试脚本误判归为官方模型 bug。
+
+### 12.6 本次命令与产物
+
+```bash
+export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
+export CHECK=/tmp/samtok21-fixes-dUnbt5
+export OUT=/tmp/samtok-region-train-Rzdty0
+export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=$PWD:DiffSynth-Studio
+# CODEC_SHA 取本批数据编码阶段已确认使用的 mask_tokenizer 权重 hash。
+CUDA_VISIBLE_DEVICES=7 $PY -m samtok_edit21.cli prepare-regions \
+  --metadata "$CHECK/reviewed_stage1.jsonl" --base-path "$DATA" \
+  --max-pixels 65536 --assume-aligned --mask-tokenizer-sha256 "$CODEC_SHA" \
+  --output "$OUT/regions"
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+  --metadata "$CHECK/reviewed_stage1.jsonl" --base-path "$DATA" \
+  --max-pixels 65536 --output "$OUT/stage1" --steps 2 --rank 2 \
+  --save-steps 8 --seed 926 --region-cache "$OUT/regions" --region-weight 0.5
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train cache \
+  --metadata "$CHECK/reviewed_stage2.jsonl" --base-path "$DATA" \
+  --max-pixels 65536 --te-adapter "$OUT/stage1/adapter" \
+  --region-cache "$OUT/regions" --output "$OUT/cache"
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.cli calibrate-attention \
+  --cache "$OUT/cache" --output "$OUT/calibration.json" \
+  --rank 2 --samples 2 --timesteps 100 500 900 --seed 926
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+  --cache "$OUT/cache" --output "$OUT/stage2" --steps 2 --rank 2 \
+  --save-steps 4 --seed 926 --region-weight 0.5 \
+  --attention-weight 0.03421928752136922 --attention-warmup-steps 1
+CUDA_VISIBLE_DEVICES=4,5 OMP_NUM_THREADS=4 $PY -m torch.distributed.run \
+  --standalone --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --cache "$OUT/cache" --output "$OUT/stage2_ddp" --steps 2 --rank 2 \
+  --save-steps 4 --seed 926 --region-weight 0.5 \
+  --attention-weight 0.1 --attention-warmup-steps 1
+CUDA_VISIBLE_DEVICES=7 $PY -m pytest -p no:cacheprovider -q tests \
+  "$OUT/test_supervision.py" "$OUT/test_contracts.py" \
+  /tmp/samtok-data-contract-zmsuwi/test_contract.py "$CHECK/test_training_plan.py"
+CUDA_VISIBLE_DEVICES=3 $PY "$OUT/benchmark.py"
+CUDA_VISIBLE_DEVICES=0 $PY "$OUT/integration.py"
+```
+
+另执行同一 Stage 2 命令：C-only 输出 `stage2_c`（region=0.5、attention=0）；A-only 输出 `stage2_a`（region=0、attention=0.1、warmup=1）。`stage1_verified` 为日志修复后同配置复跑。`cache_probe/calibration_probe.log` 是使用先前 adapter 的早期接口调试，不是最终 Stage 2 的 conditioning 来源；正式本轮结果以 `cache/calibration.json/stage2` 为准。重跑必须换 OUT，禁止覆盖已有训练目录。
+
+### 12.7 验收结论与未覆盖范围
+
+验收结果：最终组合测试 **142 passed, 3 warnings**（26.63 秒，warnings 为 Transformers/NumPy 既有弃用提示）；另跑历史缓存/identity/LoRA/scheduler 等回归 **29 passed, 11 deselected**。最终组合已包含有效 token 面积/实际位置权重和日志、499/500 warmup 边界及 antialias 数值限幅的回归。两份文档的 **65 条 CLI 示例通过参数语法检查**（校准系数变量在检查时替换成数值，不执行训练命令）。`git diff --check` 通过。没有新增测试脚本进入 repo。
+
+最终证据文件：`acceptance_release.log`、`regressions.log`、`doc_cli.log`、`regions.log`、`stage1_verified.log`、`cache.log`、`calibration.json`、`stage2.log`、`stage2_c.log`、`stage2_a.log`、`stage2_ddp.log`、对应目录的 `supervision_metrics.jsonl/optimizer_steps.jsonl`、`benchmark.json`、`integration_final.log/integration.json`。临时目录不保证长期保留，复现设置及关键数值已记入本文。
+
+重载与推理：`integration_final.log` / `integration.json` 验证 adapter 挂载仍为 224 个模块；三个真实样本的在线 TE/VAE 条件与 cache、区域 coverage 与 span 位置逐张量一致，最大差异为 0。重复同一 span 的真实位置为 `[81,82,83,84]` 和 `[85,86,87,88]`，没有去重。加载新 Stage 1/2 adapter 后，原接口 inline 与 direct 均完成 2 步推理，输出 256×256 RGBA（`inline.png/direct.png`），无 A/B probe 注入。这不是图像质量评估。
+
+本次验收区分软件正确性与方法效果：前者检查公式、梯度、冻结边界、身份、训练/缓存/重载接口；后者需要正式训练后的独立评测。当前未进行长程训练、1024² 大图性能验收、较大 K 的完整模型压测、各编辑原子类型的真实质量对照，也未实现推理 B。
+
+后续质量消融应固定 cache、样本序列、seed、初始化、LR 和长度，对比 baseline/C/A/A+C；A 的系数对各实际 FM 分支分别校准。Stage 1 是否使用 C 的消融必须各自重建 Stage 2 cache。用正确/交换/随机/无 code 检查编辑落点及区域外保持，再评估完整定位链路；本节短程 loss 变化不能当成质量提升结论。
