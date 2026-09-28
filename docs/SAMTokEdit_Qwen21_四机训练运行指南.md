@@ -26,7 +26,7 @@ DDP 的每个 rank 仍然处理一条样本；不引入 FSDP/ZeRO 或跨机模�
 
 方法需求：32 ranks 必须共享同一个 rendezvous 地址和端口，每阶段成功后才能进入下一阶段；所有训练节点必须运行同一个已推送的 Git commit。
 
-实现：共享盘上的 `launch_4node.sh` 是不依赖预先 clone 的 bootstrap 入口。每个 worker 同时执行该入口，分别从 GitHub 克隆 `qwen-image-2.1-dev` 到本机 `/tmp`，在本机创建 Python 环境；共享实验目录仅保存数据、日志和训练产物。入口要求 ARNOLD 注入 `ARNOLD_WORKER_HOSTS`、`ARNOLD_WORKER_NUM=4`、`ARNOLD_WORKER_GPU=8`、`ARNOLD_ID=0..3`。它不覆盖 ARNOLD 主机列表或节点编号，也不读取通用 `PORT`。W&B key 通过每个 worker 的 `WANDB_API_KEY` secret 注入；也可以在入口填写区替换占位值。
+实现：[bootstrap_arnold_4node.sh](../scripts/train/bootstrap_arnold_4node.sh) 是不依赖预先 clone 的完整 bootstrap 入口。ARNOLD 作业启动时需将下面第 4 节的完整脚本作为 worker 启动命令提交；四个 worker 同时执行同一脚本。它们分别从 GitHub 克隆 `qwen-image-2.1-dev` 到本机 `/tmp`，在本机创建 Python 环境；共享实验目录只保存调试数据、日志和训练产物。入口要求 ARNOLD 注入 `ARNOLD_WORKER_HOSTS`、`ARNOLD_WORKER_NUM=4`、`ARNOLD_WORKER_GPU=8`、`ARNOLD_ID=0..3`，并向每个 worker 注入 `WANDB_API_KEY` secret。
 
 [topology](../samtok_edit21/cluster.py#L25) 从 `ARNOLD_WORKER_HOSTS` 第一项读取 `host:port` 或 `[IPv6]:port`，用 `ARNOLD_ID` 作为 node rank。四节点通过共享目录交换 Git commit、拓扑、参数、源代码 hash、数据 hash 和依赖版本，全部一致后才启动 NCCL 检查。
 
@@ -96,27 +96,80 @@ W&B 的 `train/weighted_total` 对应进入 backward 前的样本 loss，已经�
 
 四机比本地八卡每次更新多处理四倍样本。这是保持每 rank 配比与累积次数的结果；短调试使用有放回调度，18 个源样本会被重复使用。54 行 cache 在 32 ranks 上分成 22×2 + 10×1，验证不整除时没有补齐重复样本。
 
-## 4. 完整启动命令
+## 4. 完整 ARNOLD 入口
 
-在 ARNOLD 创建 **4 workers，每 worker 8 GPUs**，共享盘挂载到相同路径。为所有 worker 设置相同的运行 ID，并通过 ARNOLD 环境/密钥配置把 `WANDB_API_KEY` 注入每个 worker。ARNOLD 自行注入 `ARNOLD_WORKER_HOSTS`、`ARNOLD_WORKER_NUM=4`、`ARNOLD_WORKER_GPU=8` 和各自的 `ARNOLD_ID=0..3`。四个 worker 同时执行相同入口：
+在 ARNOLD 配置 **4 workers × 8 GPUs**，将共享盘挂载到四个 worker 的相同路径。ARNOLD 向每个 worker 注入 `ARNOLD_WORKER_HOSTS`、`ARNOLD_WORKER_NUM=4`、`ARNOLD_WORKER_GPU=8` 和本节点唯一的 `ARNOLD_ID=0..3`。把 `WANDB_API_KEY` 配成作业 secret，ARNOLD 应在四台 worker 的环境中提供它。也可将脚本用户设置区的 `FILL_IN_WANDB_API_KEY` 替换为实际值。
+
+把下面完整脚本提交为 ARNOLD worker 的启动命令，并让四个 worker 同时执行。这里需要的是 bootstrap 本身：它先从 GitHub 克隆远程分支，再进入克隆目录安装环境和启动训练；不需要先在共享实验目录放置项目源码。脚本源文件也保存在仓库的 [bootstrap_arnold_4node.sh](../scripts/train/bootstrap_arnold_4node.sh)。
 
 ```bash
-export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_4node_debug_20260928
-export SAMTOK_RUN_ID=qwen21_4n_debug_001
-# 推荐由 ARNOLD secret 注入；临时运行时可把下一行占位值替换成真实 key。
+#!/usr/bin/env bash
+# Pre-clone ARNOLD entrypoint: run the same script on all four workers.
+set -Eeuo pipefail
+
+# ----- User settings -----
+export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_4node_debug_20260928}"
+export SAMTOK_RUN_ID="${SAMTOK_RUN_ID:-qwen21_4n_debug_001}"
+# Prefer injecting WANDB_API_KEY as an ARNOLD secret on every worker.
+# For a one-off run, replace the placeholder with your key before submitting.
 export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
-export WANDB_ENTITY=2200012743-peking-university
-export WANDB_PROJECT=samtok-edit
-# ARNOLD 每个 worker 注入：ARNOLD_WORKER_HOSTS、ARNOLD_WORKER_NUM=4、
-# ARNOLD_WORKER_GPU=8、ARNOLD_ID=0/1/2/3；不要手动给四个节点设相同 ARNOLD_ID。
-bash "$SAMTOK_EXPERIMENT/launch_4node.sh"
+export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
+export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
+export SAMTOK_EDIT_REPO_URL="https://github.com/Tangent0308/samtok_edit.git"
+export SAMTOK_EDIT_BRANCH="qwen-image-2.1-dev"
+
+# ----- ARNOLD checks -----
+: "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
+: "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM=4}"
+: "${ARNOLD_WORKER_GPU:?ARNOLD must inject ARNOLD_WORKER_GPU=8}"
+: "${ARNOLD_ID:?ARNOLD must inject ARNOLD_ID for this worker (0..3)}"
+[[ "$ARNOLD_WORKER_NUM" == 4 && "$ARNOLD_WORKER_GPU" == 8 ]] || { echo 'Expected 4 workers x 8 GPUs' >&2; exit 2; }
+[[ "$ARNOLD_ID" =~ ^[0-3]$ ]] || { echo 'ARNOLD_ID must be 0, 1, 2, or 3' >&2; exit 2; }
+[[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
+[[ -n "$WANDB_API_KEY" && "$WANDB_API_KEY" != FILL_IN_WANDB_API_KEY ]] || { echo 'Set WANDB_API_KEY as an ARNOLD secret or replace the placeholder' >&2; exit 2; }
+
+# ARNOLD_WORKER_HOSTS carries the common rendezvous port; generic PORT varies by worker.
+unset PORT MASTER_ADDR MASTER_PORT NODE_RANK NNODES GPUS_PER_NODE
+export NODE_RANK="$ARNOLD_ID"
+export ARNOLD_WORKER_NUM=4 ARNOLD_WORKER_GPU=8
+
+RUN="$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID"
+BOOTSTRAP="$RUN/bootstrap"
+NODE="$ARNOLD_ID"
+REPO="/tmp/samtok-edit-${SAMTOK_RUN_ID}-node${NODE}"
+mkdir -p "$BOOTSTRAP"
+exec > >(tee -a "$BOOTSTRAP/node${NODE}.log") 2>&1
+bootstrap_failed() {
+  result=$?
+  mkdir -p "$RUN/nodes/$NODE"
+  printf '{"error":"bootstrap failed; see bootstrap/node%s.log","exit_code":%d}\n' "$NODE" "$result" > "$RUN/nodes/$NODE/failure.json"
+  exit "$result"
+}
+trap bootstrap_failed ERR
+
+export WANDB_DISABLE_SERVICE=true WANDB_START_METHOD=thread
+export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
+export NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
+export SAMTOK_ENV="/tmp/samtok21-${SAMTOK_RUN_ID}-node${NODE}-env"
+export SAMTOK_PYTHON="${SAMTOK_PYTHON:-/usr/bin/python3.11}"
+
+if [[ -e "$REPO" ]]; then
+  echo "Node-local checkout already exists: $REPO (choose a fresh SAMTOK_RUN_ID)" >&2
+  false
+fi
+export GIT_TERMINAL_PROMPT=0
+# Clone the exact requested branch into node-local /tmp; never execute an MNT source snapshot.
+git clone --branch "$SAMTOK_EDIT_BRANCH" --single-branch "$SAMTOK_EDIT_REPO_URL" "$REPO"
+cd "$REPO"
+git rev-parse HEAD > "$BOOTSTRAP/node${NODE}.commit.txt"
+bash scripts/train/run_arnold_4node.sh "$@"
 ```
 
-入口从 `https://github.com/Tangent0308/samtok_edit.git` 克隆 `qwen-image-2.1-dev` 到各节点的本地 `/tmp/samtok-edit-<run-id>-node<rank>`。不使用实验目录中的源码快照。请确保提交已经推送到该分支后再启动；manifest 会记录 commit，并在四台节点间核对一致性。不要在四台机器各自用时间戳生成 run ID。重跑时统一改成 `qwen21_4n_debug_002` 等新名字；run 目录和节点 checkout 都不会复用。
+默认实验路径是 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_4node_debug_20260928`，该目录只提供已经准备好的 `data/`，并接收 `runs/<SAMTOK_RUN_ID>/` 日志和产物。四个 worker 的 `SAMTOK_RUN_ID` 必须一致。第一次默认 `qwen21_4n_debug_001`；重跑时使用全新的 ID，例如 `qwen21_4n_debug_002`，以避免复用节点本地 checkout 或旧的 stage 标记。
 
-入口所需 ARNOLD 变量：`ARNOLD_ID=0..3`，`ARNOLD_WORKER_NUM=4`，`ARNOLD_WORKER_GPU=8`，`ARNOLD_WORKER_HOSTS`。入口从 host 列表第一项解析公共 rendezvous 地址和端口，并清除可能冲突的通用 `PORT` 和遗留 rank/master 变量。保留平台注入的 NCCL/网卡/IB 环境；脚本不强行禁用 IB 或指定网卡。
+入口从 `https://github.com/Tangent0308/samtok_edit.git` 克隆 `qwen-image-2.1-dev` 到各节点的本地 `/tmp/samtok-edit-<run-id>-node<rank>`。确认所需 commit 已推送到该分支后再启动。四机 manifest 记录 Git commit，并在训练前比较各节点 commit、源码摘要、参数、数据摘要和依赖版本。入口不读取通用 `PORT`，使用 `ARNOLD_WORKER_HOSTS` 第一项中的共享 rendezvous 端口，并保留平台提供的 NCCL/网卡/IB 设置。
 
-默认每个 worker 用系统 `/usr/bin/python3.11` 创建本机虚拟环境；可以通过 `SAMTOK_PYTHON` 指定 Python 3.11。包源默认 `https://bytedpypi.byted.org/simple/`，可通过 `SAMTOK_INDEX` 修改为可访问这些固定版本和内部包的源。
+W&B 默认 entity 为 `2200012743-peking-university`、project 为 `samtok-edit`，均可在 ARNOLD 作业环境覆盖。key 不写入命令行参数或训练 manifest；设置文件只记录是否存在 key。默认系统 Python 为 `/usr/bin/python3.11`，可用 `SAMTOK_PYTHON` 覆盖；Python 环境和编译缓存位于 worker 本机 `/tmp`。
 
 ## 5. 产物和结束条件
 
