@@ -3,16 +3,16 @@
 set -Eeuo pipefail
 
 export SAMTOK_DATA_EXPERIMENT="${SAMTOK_DATA_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928}"
-export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref4n_full_002}"
+export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref4n_full_003}"
 export SAMTOK_ANNOTATION_SOURCES="${SAMTOK_ANNOTATION_SOURCES:-$SAMTOK_DATA_EXPERIMENT/data/semantic_sources.jsonl}"
 export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507}"
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
 export SAMTOK_EDIT_REPO_URL="https://github.com/Tangent0308/samtok_edit.git"
 export SAMTOK_EDIT_BRANCH="qwen-image-2.1-dev"
-# Optional: pin a pushed commit. This default resumes the failed 001 run;
-# set SAMTOK_ANNOTATION_RESUME_FROM='' for an unrelated new experiment.
+# Optional: pin a pushed commit. The revised prompt/protocol needs a fresh run.
+# Resume only a run made with identical code, model, input and sharding.
 export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"
-export SAMTOK_ANNOTATION_RESUME_FROM="${SAMTOK_ANNOTATION_RESUME_FROM-$SAMTOK_DATA_EXPERIMENT/data/semantic_runs/qwen21_noref4n_full_001}"
+export SAMTOK_ANNOTATION_RESUME_FROM="${SAMTOK_ANNOTATION_RESUME_FROM:-}"
 
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the common worker host list}"
 : "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM=4}"

@@ -917,3 +917,8 @@ $PY -m pytest -q -p no:cacheprovider tests "$REVIEW/test_tracking_config.py"
 ## 2026-09-29：noref 两字段转换与模型对照
 
 已将纯文本模型输出简化为 ref_phrase + noref_instruction，类型/占位符/mask ID 由程序补齐。完整 prompt、相对代码索引、同批 155 条的 4B/8B 速度与逐条质量审阅、八卡汇总结果见[两字段转换与模型对比](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。本轮不进行扩散模型训练；原 mask 不重算、不重做几何质量筛选。
+
+
+## 2026-09-29：noref 示例污染与协议校验修复
+
+旧 `_002` 全量处理完成（96,270 accepted / 2,304 failed）。确认 color/grapes 示例污染；修复 prompt、带上次输出的重试、reference 介词结尾误判与若干语义校验漏洞。最终本地八卡重跑 2,304 条：1,422 候选、882 失败；30 项协议/回归测试通过。accepted 抽查仍有语义问题，未自动合并训练数据。完整因果证据、代码索引、实际输出及局限见[noref 失败分析与修复](SAMTokEdit_Qwen21_noref失败分析与修复.md)。四机入口改为新 `_003`，不得从旧身份直接 resume。

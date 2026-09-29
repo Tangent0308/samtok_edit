@@ -374,15 +374,23 @@ def validate_inline(prompt, variant, edit_type):
             raise ValueError("Mask group must follow a complete phrase and one space")
         if before.endswith("<|mt_end|> "):
             raise ValueError("Masks for one phrase must be directly concatenated")
-        if re.search(r"(?:^|\s)(?:the|a|an|to|of|on|in|at|with|from|near|under|over|behind|beside) $", before, re.I):
+        # A complete reference can end in a stranded preposition, e.g.
+        # "the sofa that the cat is resting on". Its binding was checked by
+        # exact source-span matching; a last-word heuristic cannot reject it.
+        forbidden = (r"the|a|an" if variant == "ref" else
+                     r"the|a|an|to|of|on|in|at|with|from|near|under|over|behind|beside")
+        if re.search(r"(?:^|\s)(?:" + forbidden + r") $", before, re.I):
             raise ValueError("Mask group cannot directly follow an article/preposition")
         if after and (after.startswith("  ") or (after[0].isalnum()) or re.match(r"\s+[.,;:!?]", after)):
             raise ValueError("Invalid spacing after mask group")
         if variant == "noref":
             choices = list(NOREF.values()) + ["in this region"] if edit_type == "composite" else ["in this region" if edit_type == "add" else NOREF[edit_type]]
+            # A grammatical preposition before the phrase is not its type.
+            # E.g. attribute "Fill in this region" still ends in "this region".
             phrases = sorted(set(NOREF.values()) | {"in this region"}, key=len, reverse=True)
             matched = next((p for p in phrases if re.search(r"(?<!\w)" + re.escape(p) + r" $", before, re.I)), None)
-            if matched not in choices:
+            grammatical_in = matched == "in this region" and "this region" in choices
+            if matched not in choices and not grammatical_in:
                 raise ValueError("Noref mask must follow the type-specific region phrase")
 
 

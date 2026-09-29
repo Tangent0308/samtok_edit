@@ -17,44 +17,58 @@ from .prepare import convert_record, canonical_reference
 from .protocol import EDIT_TYPES, span_of, phrase_span
 
 PROMPT = r'''Convert the input image-edit instruction into a version located by a mask.
-Return ONLY JSON: {"ref_phrase": ..., "noref_instruction": ...}.
+Return ONLY JSON: {"ref_phrase": ["original phrase"], "noref_instruction": ...}.
 
-ref_phrase: copy the complete original description of the edited object or PART,
-including old location/identity qualifiers, without leading a/an/the. Do not copy
-the requested action, property operators (color/material of), or new replacement.
-For addition, copy the NEW content plus its placement. For text editing, copy the
-OLD quoted text including quotes, or its carrier if unquoted. Never use "this region"
-as ref_phrase. For a whole-image edit only, use "this image".
+ref_phrase is a LIST, one item per edited referent. Copy each complete original
+object/PART description EXACTLY, including old location/identity qualifiers,
+without leading a/an/the. Exclude the action, property operators and replacement.
+For addition, copy NEW content plus placement. For text replacement, copy OLD
+quoted text including quotes, or its carrier when no OLD text is supplied.
+For text insertion, reference the carrier/placement, NEVER the NEW text.
+A whole-image edit uses ["this image"]. Do not shorten or paraphrase references.
 
-noref_instruction: replace old object/location descriptions with "this region".
-For addition, retain ALL new content and replace only placement with "in this region".
-Keep original wording otherwise: actions, attributes, counts, comparison objects,
-and keep-unchanged clauses. Remove old text and its carrier/location for text edits.
-Do not generate mask tokens or classify the edit.
-Independent edits use a ref_phrase list in original order and one "this region"
-each. A joint operation uses one reference. Comparisons are not separate edits.
-
-Change the color of the left vase to gold.
-{"ref_phrase":"left vase","noref_instruction":"Change the color of this region to gold."}
-Add a basket filled with grapes beside the chair.
-{"ref_phrase":"basket filled with grapes beside the chair","noref_instruction":"Add a basket filled with grapes in this region."}
-A person jumps off the ledge.
-{"ref_phrase":"person","noref_instruction":"This region jumps off the ledge."}
-Replace the text 'OLD' with 'NEW' on the left sign.
-{"ref_phrase":"'OLD'","noref_instruction":"Replace this region with 'NEW'."}
-Remove the cat and recolor the dog blue.
-{"ref_phrase":["cat","dog"],"noref_instruction":"Remove this region and recolor this region blue."}
+noref_instruction: replace old edited objects and their locating descriptions
+with "this region". Keep original wording otherwise: actions, new values/content,
+counts, comparisons and keep-unchanged clauses. Do not add property names or expand
+verbs. For addition keep ALL new content; replace only placement with "in this
+region" (append it if placement is absent). For text replacement remove OLD text
+and its carrier/location but preserve NEW text and every additional constraint.
+Do not keep a from-OLD clause, repeat NEW as OLD, or write text-on-this-region.
+For text insertion use Add NEW to this region, preserving the exact NEW text.
+Do not generate mask tokens or classify the edit. Independent edited referents
+need separate list items and one "this region" each in original order. A joint
+operation uses one reference. Comparisons and action participants are not separate
+edits: retain the unchanged comparison object/action destination in noref.
+The placeholder denotes the WHOLE selected reference, including its part name.
+Never write "seat of this region" when ref_phrase already selects the seat.
+If correction is provided, revise previous_output to address it; do not repeat it.
 '''
+
+PROMPT_EXAMPLES = {
+    'attribute': ('Make the rough wooden bowl smooth.', ['rough wooden bowl'], 'Make this region smooth.'),
+    'remove': ('Remove the broken clock on the wall.', ['broken clock on the wall'], 'Remove this region.'),
+    'replace': ('Replace the cracked plate with a glass bowl.', ['cracked plate'], 'Replace this region with a glass bowl.'),
+    'action': ('A person jumps off the ledge.', ['person'], 'This region jumps off the ledge.'),
+    'add': ('Add a small lamp on the desk.', ['small lamp on the desk'], 'Add a small lamp in this region.'),
+    'text': ("Replace the text 'Exit' with 'Open' on the sign.", ["'Exit'"], "Replace this region with 'Open'."),
+    'composite': ('Remove the chair and make the old desk smooth.', ['chair', 'old desk'], 'Remove this region and make this region smooth.'),
+}
 
 
 def task_prompt(edit_type):
-    return PROMPT
+    example = PROMPT_EXAMPLES.get(edit_type)
+    if example is None and edit_type == 'compositional_editing':
+        example = PROMPT_EXAMPLES['composite']
+    if example is None:
+        return PROMPT
+    return (PROMPT + '\nFORMAT EXAMPLE (unrelated content; never copy it into the answer):\n'
+            + example[0] + '\n' + json.dumps({'ref_phrase': example[1],
+                                              'noref_instruction': example[2]}) + '\n')
 
 
 OUTPUT_SCHEMA = {
     'type': 'object', 'properties': {
-        'ref_phrase': {'anyOf': [{'type': 'string'}, {'type': 'array',
-                       'items': {'type': 'string'}, 'minItems': 1}]},
+        'ref_phrase': {'type': 'array', 'items': {'type': 'string'}, 'minItems': 1},
         'noref_instruction': {'type': 'string'}},
     'required': ['ref_phrase', 'noref_instruction'], 'additionalProperties': False}
 
@@ -191,6 +205,20 @@ def normalize_annotation(source, output):
         stop = regions[i + 1].start() if i + 1 < len(regions) else len(noref)
         clause = noref[previous_end:stop]
         typ, reason = resolve_type(source, ref, clause)
+        # Restore only an exact enclosing quote pair from the source. This also
+        # prevents internal apostrophes being mistaken for partial quoted text.
+        if typ == 'text' and ref.strip()[:1] not in {'"', "'", '“', '‘'}:
+            candidate = ref.strip()
+            try:
+                a, b = phrase_span(source['instruction'], candidate)
+            except ValueError:
+                pass
+            else:
+                pairs = {'"': '"', "'": "'", '“': '”', '‘': '’'}
+                if a > 0 and b < len(source['instruction']):
+                    left, right = source['instruction'][a - 1], source['instruction'][b]
+                    if pairs.get(left) == right:
+                        ref = left + candidate + right
         ref = canonical_reference(ref, typ)
         if typ != 'global':
             try:
@@ -211,6 +239,11 @@ def normalize_annotation(source, output):
         if region.start() == 0 and region.group()[0].isupper():
             phrase = phrase[0].upper() + phrase[1:]
         start = region.start()
+        article = re.search(r'\b(?:the|a|an)\s+$', noref[:start], re.I)
+        if article:
+            start = article.start()
+        if typ != 'add' and region.group().lower() == 'in this region':
+            phrase = 'in ' + phrase
         # "Add X to this region" and "Add X in this region" use the same
         # protocol placement phrase. Only the preposition is normalized.
         if typ == 'add':
@@ -289,6 +322,32 @@ def verify_semantic_review(source, annotation, review):
     """Deterministic sanity checks, not a claimed semantic quality score."""
     if review.get('valid') is not True:
         raise ValueError('Missing positive structural checks')
+    references = [u['ref_phrase'] for u in annotation['units']]
+    for ref in references:
+        if (re.match(r'^(?:add|insert|remove|delete|replace|change|make|turn|transform|move|adjust|recolor)\b', ref, re.I)
+                and source['instruction'].casefold().startswith(ref.casefold())):
+            raise ValueError('Reference includes the editing verb; copy only the edited referent')
+    for ref in references:
+        # A part already selected by the mask must not become a part OF that part.
+        part = re.match(r"(.+?)\s+of\s+", ref, re.I)
+        if part and re.search(r"\b" + re.escape(part[1]) + r"\s+of\s+(?:the object in )?this region", annotation['noref_instruction'], re.I):
+            raise ValueError('The region already denotes the selected part; remove the repeated part-of operator')
+    # Missing reference qualifiers and dropped target content are both visible
+    # when a source word occurs in neither the references nor the rewrite.
+    # Text edits intentionally omit carrier wording outside the OLD-text span.
+    if not any(u['edit_type'] == 'text' for u in annotation['units']):
+        missing = (_words(source['instruction'])
+                   - _words(annotation['noref_instruction'] + ' ' + ' '.join(references))
+                   - _words('is are be has have been being'))
+        if missing:
+            raise ValueError('Missing original words: ' + ', '.join(sorted(missing))
+                             + '. Keep old locating details in ref_phrase and new content/constraints in noref_instruction')
+    else:
+        for match in re.finditer(r',\s*(?:making|keeping|leaving)\b|\b(?:while|without)\b', source['instruction'], re.I):
+            missing = (_words(source['instruction'][match.start():])
+                       - _words(annotation['noref_instruction'] + ' ' + ' '.join(references)))
+            if missing:
+                raise ValueError('Text rewrite lost additional constraints: ' + ', '.join(sorted(missing)))
     # A rewrite can add generic scaffolding, but not new objects copied from
     # a few-shot example. This is lexical conservation, not semantic judging.
     allowed = set('the a an this region object text image in of to from with and or '
@@ -307,14 +366,31 @@ def verify_semantic_review(source, annotation, review):
         raise ValueError('Keep original wording; unexpected new words: ' + ', '.join(sorted(new_words)))
     for index, unit in enumerate(annotation['units']):
         if unit['edit_type'] == 'add':
+            if re.search(r'\b(?:make|turn|change|move)\s+in this region\b', annotation['noref_instruction'], re.I):
+                raise ValueError('Addition requires NEW content before the region; dataset label and instruction may conflict')
             before = annotation['noref_instruction'].split('{mask_' + str(index) + '}')[0]
             before = re.split(r'\{mask_\d+\}', before)[-1]
+            content = _words(before) - _words('add insert draw place put attach back this region')
+            if len(annotation['units']) == 1 and content - _words(unit['ref_phrase']):
+                raise ValueError('Add reference must include NEW content and placement, not only the existing carrier')
             if re.search(r'\b(?:add|insert|draw|place|put)\s+(?:(?:a|an|the)\s+)?in this region\s*$', before, re.I):
                 raise ValueError('Add rewrite lost the NEW content before the placement')
         if unit['edit_type'] == 'attribute' and re.match(
                 r"^(?:the )?(?:material|colou?r|texture|pattern) of\b", unit['ref_phrase'], re.I):
             raise ValueError('Reference swallowed an attribute operator')
         if unit['edit_type'] == 'text':
+            if re.search(r"\bfrom\s+[\"']", annotation['noref_instruction'], re.I):
+                raise ValueError('Text noref must remove the from-OLD clause, not substitute NEW into it')
+            if re.search(r"\btext\s+(?:on|in|of)\s+the text in this region", annotation['noref_instruction'], re.I):
+                raise ValueError('The region already denotes the text; remove the redundant text/carrier operator')
+            # OLD strings must disappear even when the model selected a carrier.
+            boundary = re.search(r"\b(?:to|with)\s+(?:(?:the\s+)?text\s+)?[\"']", source['instruction'], re.I)
+            if boundary:
+                old_strings = re.findall(r"([\"'])(.*?)\1", source['instruction'][:boundary.start()])
+                new_strings = {v for _, v in re.findall(r"([\"'])(.*?)\1", source['instruction'][boundary.start():])}
+                for quote, old_text in old_strings:
+                    if old_text and old_text not in new_strings and quote + old_text + quote in annotation['noref_instruction']:
+                        raise ValueError('Text rewrite retained OLD quoted text: ' + old_text)
             # Explicit quoted NEW strings must survive, including text insertion.
             pattern = r'''(?:\b(?:to|with)\s+(?:(?:the\s+)?text\s+)?|\b(?:insert|add)\s+(?:the\s+)?text\s+)([\"'])(.*?)\1'''
             for match in re.finditer(pattern, source['instruction'], re.I):
@@ -356,7 +432,7 @@ def main():
         model_identity = {str(p.relative_to(args.model)): file_hash(p) for p in sorted(Path(args.model).iterdir())
                           if p.suffix in {'.json', '.safetensors', '.txt', '.jinja'}}
     identity = {'sources_sha256': file_hash(args.sources), 'model': model_identity,
-                'annotation_prompt': row_hash(PROMPT), 'output_schema': row_hash(OUTPUT_SCHEMA),
+                'annotation_prompt': row_hash({'rules': PROMPT, 'examples': PROMPT_EXAMPLES}), 'output_schema': row_hash(OUTPUT_SCHEMA),
                 'implementation': file_hash(__file__),
                 'protocol_dependencies': {name: file_hash(Path(__file__).with_name(name))
                                           for name in ('prepare.py', 'protocol.py')}, 'shard': args.shard, 'shards': args.shards,
@@ -430,7 +506,9 @@ def main():
         for attempt in range(args.attempts):
             ids = list(pending)
             requests = [model_input(pending[i]['source'],
-                        pending[i]['attempts'][-1]['error'] if pending[i]['attempts'] else None)
+                        {'error': pending[i]['attempts'][-1]['error'],
+                         'previous_output': pending[i]['attempts'][-1]['output']}
+                        if pending[i]['attempts'] else None)
                         for i in ids]
             outputs = generate(requests, 512)
             for i, raw in zip(ids, outputs):

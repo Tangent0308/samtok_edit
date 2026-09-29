@@ -1,6 +1,6 @@
 # noref 两字段转换实现与 4B / 8B 对照实验
 
-更新：2026-09-29。本页记录当前实现；四机完整 ARNOLD 入口仍在[四机运行指南第 7.3 节](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)。
+更新：2026-09-29。当前 prompt/校验已修订；第 4 节保留旧版模型对比结果，不能当作新版准确率。最新失败分析与验证见[修复记录](SAMTokEdit_Qwen21_noref失败分析与修复.md)。四机完整 ARNOLD 入口仍在[四机运行指南第 7.3 节](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)。
 
 ## 1. 总体说明
 
@@ -23,7 +23,7 @@ flowchart LR
 
 ### 2.1 输入与模型输出
 
-[annotate_full.py:68](../samtok_edit21/annotate_full.py#L68)：输入原指令及已有的协议类型；只有类型尚未映射时才传原生粗类别。源记录仍完整保留 dataset、native_type、instances 与 ID；这些字段不需要模型重复生成。重试请求额外携带上一条错误原因。
+[annotate_full.py:82](../samtok_edit21/annotate_full.py#L82)：输入原指令及已有的协议类型；只有类型尚未映射时才传原生粗类别。源记录仍完整保留 dataset、native_type、instances 与 ID；这些字段不需要模型重复生成。重试请求额外携带上一条错误原因与 previous_output，使模型可以针对实际答案纠错。
 
 ```json
 {
@@ -36,12 +36,12 @@ flowchart LR
 
 ```json
 {
-  "ref_phrase": "basket filled with grapes beside the chair",
+  "ref_phrase": ["basket filled with grapes beside the chair"],
   "noref_instruction": "Add a basket filled with grapes in this region."
 }
 ```
 
-复合指令仍是两个字段，`ref_phrase` 改为列表：
+现在所有模型输出的 `ref_phrase` 都统一为列表，包括只有一个指代的样本；程序仍兼容历史字符串。复合指令仍是两个字段：
 
 ```json
 {
@@ -54,7 +54,7 @@ flowchart LR
 
 ### 2.2 类型沿用与粗类别细化
 
-[annotate_full.py:76](../samtok_edit21/annotate_full.py#L76)：RefEdit、CrispEdit、ScaleEdit、Derived 中已有明确映射的类型直接沿用，模型没有重新分类权限。原生类别到协议类型的基础映射沿用 [prepare.py:TYPE_MAP](../samtok_edit21/prepare.py#L32)。
+[annotate_full.py:90](../samtok_edit21/annotate_full.py#L90)：RefEdit、CrispEdit、ScaleEdit、Derived 中已有明确映射的类型直接沿用，模型没有重新分类权限。原生类别到协议类型的基础映射沿用 [prepare.py:TYPE_MAP](../samtok_edit21/prepare.py#L32)。
 
 ```python
 mapped = source.get('provisional_type')
@@ -68,7 +68,7 @@ if mapped in REGION_PHRASES:
 
 ### 2.3 程序生成协议字段
 
-[annotate_full.py:164](../samtok_edit21/annotate_full.py#L164)：检查 reference 是原文唯一连续片段，按原文顺序对应 region；将中间文本规范成下表的训练短语，再插入 `{mask_i}`。
+[annotate_full.py:178](../samtok_edit21/annotate_full.py#L178)：检查 reference 是原文唯一连续片段，按原文顺序对应 region；将中间文本规范成下表的训练短语，再插入 `{mask_i}`。
 
 | 训练类型 | 程序生成的片段 |
 |---|---|
@@ -98,11 +98,11 @@ if mapped in REGION_PHRASES:
 
 ### 2.4 原 mask 绑定、检查与失败记录
 
-[annotate_full.py:131](../samtok_edit21/annotate_full.py#L131)：一个语义单元直接引用已有 `union`；多个单元按 reference 与已有 instance/observation 描述的词项重合绑定 ID，覆盖每个实例一次。词项匹配只是保守的文本关联，不能当作语义证明；存在歧义就保留失败，绝不生成新 mask。
+[annotate_full.py:145](../samtok_edit21/annotate_full.py#L145)：一个语义单元直接引用已有 `union`；多个单元按 reference 与已有 instance/observation 描述的词项重合绑定 ID，覆盖每个实例一次。词项匹配只是保守的文本关联，不能当作语义证明；存在歧义就保留失败，绝不生成新 mask。
 
-[annotate_full.py:241](../samtok_edit21/annotate_full.py#L241)：复用原 `convert_record` 验证 NTP/ref/noref 结构、引用顺序和占位符。[annotate_full.py:288](../samtok_edit21/annotate_full.py#L288) 现在只有确定性检查：新词异常、add 丢失新增内容、text 的 OLD/NEW 混淆、属性操作词被吞入引用等。输出明确记录 `semantic_quality_verified=false`；没有用模型的自评充当准确率。
+[annotate_full.py:274](../samtok_edit21/annotate_full.py#L274)：复用原 `convert_record` 验证 NTP/ref/noref 结构、引用顺序和占位符。[annotate_full.py:321](../samtok_edit21/annotate_full.py#L321) 现在只有确定性检查：新词异常、add 丢失新增内容、text 的 OLD/NEW 混淆、属性操作词被吞入引用等。输出明确记录 `semantic_quality_verified=false`；没有用模型的自评充当准确率。
 
-[annotate_full.py:332](../samtok_edit21/annotate_full.py#L332)：每卡一个 TP=1 副本，BF16、temperature=0、max_tokens=512、max_model_len=8192、batch_size=64。Qwen3-8B 使用 `enable_thinking=False`，与 4B 的直接输出方式一致。续跑身份包括输入、模型、prompt、schema、转换实现以及 prepare/protocol 的 SHA256。
+[annotate_full.py:408](../samtok_edit21/annotate_full.py#L408)：每卡一个 TP=1 副本，BF16、temperature=0、max_tokens=512、max_model_len=8192、batch_size=64。Qwen3-8B 使用 `enable_thinking=False`，与 4B 的直接输出方式一致。续跑身份包括输入、模型、prompt、schema、转换实现以及 prepare/protocol 的 SHA256。
 
 ### 2.5 四机行为
 
@@ -112,44 +112,57 @@ if mapped in REGION_PHRASES:
 
 ## 3. 当前完整 prompt
 
-以下内容直接摘自代码的 PROMPT 常量，没有另写一份与实现不一致的提示：
+共享规则如下，直接摘自当前代码的 `PROMPT` 常量：
 
 ```text
 Convert the input image-edit instruction into a version located by a mask.
-Return ONLY JSON: {"ref_phrase": ..., "noref_instruction": ...}.
+Return ONLY JSON: {"ref_phrase": ["original phrase"], "noref_instruction": ...}.
 
-ref_phrase: copy the complete original description of the edited object or PART,
-including old location/identity qualifiers, without leading a/an/the. Do not copy
-the requested action, property operators (color/material of), or new replacement.
-For addition, copy the NEW content plus its placement. For text editing, copy the
-OLD quoted text including quotes, or its carrier if unquoted. Never use "this region"
-as ref_phrase. For a whole-image edit only, use "this image".
+ref_phrase is a LIST, one item per edited referent. Copy each complete original
+object/PART description EXACTLY, including old location/identity qualifiers,
+without leading a/an/the. Exclude the action, property operators and replacement.
+For addition, copy NEW content plus placement. For text replacement, copy OLD
+quoted text including quotes, or its carrier when no OLD text is supplied.
+For text insertion, reference the carrier/placement, NEVER the NEW text.
+A whole-image edit uses ["this image"]. Do not shorten or paraphrase references.
 
-noref_instruction: replace old object/location descriptions with "this region".
-For addition, retain ALL new content and replace only placement with "in this region".
-Keep original wording otherwise: actions, attributes, counts, comparison objects,
-and keep-unchanged clauses. Remove old text and its carrier/location for text edits.
-Do not generate mask tokens or classify the edit.
-Independent edits use a ref_phrase list in original order and one "this region"
-each. A joint operation uses one reference. Comparisons are not separate edits.
-
-Change the color of the left vase to gold.
-{"ref_phrase":"left vase","noref_instruction":"Change the color of this region to gold."}
-Add a basket filled with grapes beside the chair.
-{"ref_phrase":"basket filled with grapes beside the chair","noref_instruction":"Add a basket filled with grapes in this region."}
-A person jumps off the ledge.
-{"ref_phrase":"person","noref_instruction":"This region jumps off the ledge."}
-Replace the text 'OLD' with 'NEW' on the left sign.
-{"ref_phrase":"'OLD'","noref_instruction":"Replace this region with 'NEW'."}
-Remove the cat and recolor the dog blue.
-{"ref_phrase":["cat","dog"],"noref_instruction":"Remove this region and recolor this region blue."}
+noref_instruction: replace old edited objects and their locating descriptions
+with "this region". Keep original wording otherwise: actions, new values/content,
+counts, comparisons and keep-unchanged clauses. Do not add property names or expand
+verbs. For addition keep ALL new content; replace only placement with "in this
+region" (append it if placement is absent). For text replacement remove OLD text
+and its carrier/location but preserve NEW text and every additional constraint.
+Do not keep a from-OLD clause, repeat NEW as OLD, or write text-on-this-region.
+For text insertion use Add NEW to this region, preserving the exact NEW text.
+Do not generate mask tokens or classify the edit. Independent edited referents
+need separate list items and one "this region" each in original order. A joint
+operation uses one reference. Comparisons and action participants are not separate
+edits: retain the unchanged comparison object/action destination in noref.
+The placeholder denotes the WHOLE selected reference, including its part name.
+Never write "seat of this region" when ref_phrase already selects the seat.
+If correction is provided, revise previous_output to address it; do not repeat it.
 ```
 
-## 4. 对照实验与质量记录
+每次只附本类一个格式示例，模型沿用输入类型、不输出 edit_type。没有匹配示例的 reasoning/count 等粗类别不强加 composite 示例。只有原生 `compositional_editing` 使用复合示例。示例字典如下：
+
+```python
+{
+    'attribute': ('Make the rough wooden bowl smooth.', ['rough wooden bowl'], 'Make this region smooth.'),
+    'remove': ('Remove the broken clock on the wall.', ['broken clock on the wall'], 'Remove this region.'),
+    'replace': ('Replace the cracked plate with a glass bowl.', ['cracked plate'], 'Replace this region with a glass bowl.'),
+    'action': ('A person jumps off the ledge.', ['person'], 'This region jumps off the ledge.'),
+    'add': ('Add a small lamp on the desk.', ['small lamp on the desk'], 'Add a small lamp in this region.'),
+    'text': ("Replace the text 'Exit' with 'Open' on the sign.", ["'Exit'"], "Replace this region with 'Open'."),
+    'composite': ('Remove the chair and make the old desk smooth.', ['chair', 'old desk'], 'Remove this region and make this region smooth.'),
+}
+```
+
+输出仍只有 `ref_phrase` 与 `noref_instruction`。示例不包含需要让模型生搬的 `color of` 属性模板，也不包含旧版 grapes/OLD 内容。
+## 4. 历史对照实验与质量记录（旧 prompt）
 
 同一批 155 条，四数据集、31 个原生类别各 5 条。该批数据已用于开发诊断，**不是独立留出集**。我逐条阅读了两组输出，并将结论保存为 review-4b.jsonl / review-8b.jsonl；这是文本审阅判断，未经独立人工金标验证。没有重新判断原 mask 的准确性。
 
-两个模型分别是 Qwen3-4B-Instruct-2507 和 Qwen3-8B（关闭 thinking），并非同一个发行版仅改变参数量。都使用相同 prompt（按 4B tokenizer 计 397 tokens）、同一 H100 GPU、BF16、TP=1、batch=64、temperature=0、最多三次尝试；依次运行，未相互争抢 GPU。
+两个模型分别是 Qwen3-4B-Instruct-2507 和 Qwen3-8B（关闭 thinking），并非同一个发行版仅改变参数量。当时使用相同的旧 prompt（按 4B tokenizer 计 397 tokens）、同一 H100 GPU、BF16、TP=1、batch=64、temperature=0、最多三次尝试；依次运行，未相互争抢 GPU。
 
 | 指标与分母 | Qwen3-4B-Instruct-2507 | Qwen3-8B |
 |---|---:|---:|
