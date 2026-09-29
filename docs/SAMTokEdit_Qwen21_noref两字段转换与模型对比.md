@@ -1,6 +1,6 @@
 # noref 两字段转换实现与 4B / 8B 对照实验
 
-更新：2026-09-29。本页记录当前实现；四机完整 ARNOLD/W&B 入口仍在[四机运行指南第 7.3 节](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)。
+更新：2026-09-29。本页记录当前实现；四机完整 ARNOLD 入口仍在[四机运行指南第 7.3 节](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)。
 
 ## 1. 总体说明
 
@@ -106,7 +106,7 @@ if mapped in REGION_PHRASES:
 
 ### 2.5 四机行为
 
-[annotation_cluster.py](../samtok_edit21/annotation_cluster.py#L1) 继续采用 4 节点 × 8 个独立副本，按全局行号模 32 分片，沿用 ARNOLD 拓扑、W&B、失败传播和完整汇总。
+[annotation_cluster.py](../samtok_edit21/annotation_cluster.py#L1) 继续采用 4 节点 × 8 个独立副本，按全局行号模 32 分片，沿用 ARNOLD 拓扑、失败传播和完整汇总；当前正式转换不初始化 W&B。
 
 现在区分“任务处理完”和“每条转换通过”：所有行都有 accepted/failed 结果且汇总校验成功，就完成任务并写 SUCCESS；个别转换失败保存在 `failed.jsonl`，不将正常处理完的任务误报成基础设施故障。`CANDIDATES_COMPLETE.json` 仍只在零转换失败时生成。基础设施错误、缺分片、错误归属等仍会令作业失败。SUCCESS 中的 `candidates_complete`、accepted_count、failed_count 必须一起看，不能用 SUCCESS 推断训练数据已全部就绪。
 
@@ -203,7 +203,7 @@ noref：Remove the object in this region {mask_0} and change the color of this r
 
 ### 4.2 工程验证
 
-本地八卡使用完整 155 条对照集，8 个分片均完成；汇总 145 accepted / 10 failed，无缺失、无重复。W&B offline 的进度、最终总数和 finish 已检查。SUCCESS 中 processed_complete=true、candidates_complete=false、semantic_ready=false、training_ready=false，符合“处理完但仍有失败项”的预期。物理四机与 W&B online 尚未在本轮运行。
+本地八卡使用完整 155 条对照集，8 个分片均完成；汇总 145 accepted / 10 failed，无缺失、无重复。移除 W&B 后，以无 `wandb` 包、无 key 的新环境重跑仍是 145/10；145 条的模型输出、标注、检查结果与历史运行逐条相同，10 条失败 ID 相同，且没有 W&B 输出。SUCCESS 中 processed_complete=true、candidates_complete=false、semantic_ready=false、training_ready=false，符合“处理完但仍有失败项”的预期。物理四机尚未在本轮运行。
 
 16 项新后处理检查、5 项合并/损坏/缺失检查、原有 17 项 protocol 测试通过。八卡执行后修正了上述 opaque-ID 关联，再对两模型原始结果做完整后处理重验；没有为这一处文本关联修正重新启动八卡生成。
 
@@ -219,6 +219,7 @@ noref：Remove the object in this region {mask_0} and change the color of this r
   review-summary.json
   binding-revalidation.json         # opaque-ID 修正后的完整重验
   local8-final/                     # 八卡分片、汇总、SUCCESS、W&B offline
+  local8-no-wandb-final/            # 无 W&B 依赖/凭据的当前八卡运行
   unit-tests.log
   protocol-tests.log
 ```
@@ -228,7 +229,7 @@ noref：Remove the object in this region {mask_0} and change the color of this r
 
 ## 5. 使用方式
 
-全量输入继续使用共享盘准备好的 `data/semantic_sources.jsonl`（98,574 条）。四机完整入口、W&B key 占位值和 ARNOLD 环境沿用[运行指南](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)。入口会 git clone 远程分支，因此本地未提交/未推送的修改不会自动进入远程作业。
+全量输入继续使用共享盘准备好的 `data/semantic_sources.jsonl`（98,574 条）。四机完整入口和 ARNOLD 环境沿用[运行指南](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)。入口会 git clone 远程分支，因此本地未提交/未推送的修改不会自动进入远程作业。
 
 选择模型只改这一个变量，其余入口不变；两个模型对照必须使用不同 run ID：
 
@@ -241,4 +242,4 @@ export SAMTOK_ANNOTATION_MODEL=/mnt/bn/strategy-mllm-train/common/models/Qwen3-8
 export SAMTOK_ANNOTATION_RUN_ID=qwen21_noref_8b_simple_001
 ```
 
-旧版多字段标注与本版身份不同，不能直接使用旧结果 resume；须新开输出目录。本文中的本地测试不代表物理四机运行或 W&B online 已验证。
+旧版多字段标注与本版身份不同，不能直接使用旧结果 resume；须新开输出目录。本文中的本地测试不代表物理四机运行。当前正式转换不使用 W&B。

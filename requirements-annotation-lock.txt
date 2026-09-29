@@ -9,7 +9,6 @@ anyio==4.15.1
 astor==0.8.1
 attrs==26.1.0
 blake3==1.0.9
-byted-wandb==0.13.98
 bytedance-metrics==0.5.2
 bytedbackgrounds==0.0.6
 byteddatabus==1.0.8

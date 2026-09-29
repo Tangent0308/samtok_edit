@@ -158,11 +158,9 @@ class AnnotationPipeline(Pipeline):
                   'code': {p.name: file_hash(p) for p in Path(__file__).parent.glob('*.py')},
                   'batch_size': args.batch_size, 'attempts': args.attempts,
                   'max_model_len': args.max_model_len, 'gpu_memory_utilization': args.gpu_memory_utilization,
-                  'wandb_mode': args.wandb_mode, 'wandb_project': args.wandb_project,
-                  'wandb_entity': args.wandb_entity,
                   'resume_from': str(Path(args.resume_from).resolve()) if args.resume_from else None,
                   'packages': {k: importlib.metadata.version(k) for k in
-                               ('vllm', 'torch', 'transformers', 'byted-wandb')}}
+                               ('vllm', 'torch', 'transformers')}}
         atomic_json(self.node / 'topology.json', common)
         self.barrier('topology')
         for rank in range(self.topo['nodes']):
@@ -186,23 +184,8 @@ class AnnotationPipeline(Pipeline):
         visible = [x.strip() for x in visible if x.strip()] or [str(i) for i in range(8)]
         if len(visible) != self.topo['gpus']:
             raise ValueError('Expected eight visible GPUs')
-        tracker = None
-        if self.rank == 0 and args.wandb_mode != 'disabled':
-            if args.wandb_mode == 'online' and not os.environ.get('WANDB_API_KEY'):
-                raise ValueError('WANDB_API_KEY is required for online tracking')
-            import wandb
-            from .tracking import wandb_config
-            config, key_map = wandb_config(common, {})
-            write_json(self.root / 'wandb-config-key-map.json', key_map)
-            tracker = wandb.init(project=args.wandb_project, entity=args.wandb_entity,
-                name=self.root.name, id=row_hash(str(self.root))[:20], resume='never',
-                mode=args.wandb_mode, dir=str(self.root), config=config)
-            write_json(self.root / 'wandb.json', {'id': tracker.id, 'mode': args.wandb_mode,
-                       'url': tracker.url if args.wandb_mode == 'online' else None, 'status': 'initialized'})
-        tracker_finished = False
         handles = []
         try:
-            self.barrier('tracking')
             for gpu in range(self.topo['gpus']):
                 rank = self.rank * self.topo['gpus'] + gpu
                 command = [sys.executable, '-m', 'samtok_edit21.annotate_full', '--sources', str(local_sources),
@@ -232,8 +215,6 @@ class AnnotationPipeline(Pipeline):
                               'failed': sum(p['failed_this_attempt'] for p in progress),
                               'reporting_shards': len(progress)}
                     print(json.dumps(status), flush=True)
-                    if tracker:
-                        tracker.log(status)
                     next_log = time.monotonic() + 30
                 time.sleep(2)
             if any(p.returncode != 0 for p in self.children):
@@ -241,17 +222,8 @@ class AnnotationPipeline(Pipeline):
             self.barrier('annotation')
             if self.rank == 0:
                 report = merge(sources, shards, self.root, self.topo['world_size'])
-                if tracker:
-                    tracker.log({**{k: report[k] for k in ('input_count', 'accepted_count', 'failed_count')},
-                                 'accepted': report['accepted_count'], 'failed': report['failed_count'],
-                                 'reporting_shards': self.topo['world_size']})
-                    tracker.finish()
-                    tracker_finished = True
-                    from .tracking import check_wandb_upload_errors
-                    check_wandb_upload_errors(self.root)
-                    record = json.loads((self.root / 'wandb.json').read_text())
-                    record['status'] = 'finished'
-                    write_json(self.root / 'wandb.json', record)
+                print(json.dumps({k: report[k] for k in
+                      ('input_count', 'accepted_count', 'failed_count', 'candidates_complete')}), flush=True)
             self.barrier('merge')
             if self.rank == 0:
                 atomic_json(self.root / 'SUCCESS.json', {'time': time.time(),
@@ -280,22 +252,12 @@ class AnnotationPipeline(Pipeline):
                     process.wait()
             for stream in handles:
                 stream.close()
-            if tracker is not None and not tracker_finished:
-                try:
-                    tracker.finish(exit_code=1)
-                    write_json(self.root / 'wandb.json', {'id': tracker.id,
-                        'mode': args.wandb_mode, 'status': 'failed'})
-                except Exception as exc:
-                    # Keep the original worker/barrier error as the primary cause.
-                    print('W&B failure cleanup: ' + type(exc).__name__, flush=True)
 
 
 def main():
     def interrupted(signum, frame):
         raise KeyboardInterrupt(f'Received signal {signum}')
     signal.signal(signal.SIGTERM, interrupted)
-    os.environ.setdefault('WANDB_DISABLE_SERVICE', 'true')
-    os.environ.setdefault('WANDB_START_METHOD', 'thread')
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sources', required=True)
     p.add_argument('--prepared-data-root',
@@ -310,9 +272,6 @@ def main():
     p.add_argument('--gpu-memory-utilization', type=float, default=0.75)
     p.add_argument('--timeout', type=int, default=86400)
     p.add_argument('--local', action='store_true')
-    p.add_argument('--wandb-mode', choices=('online', 'offline', 'disabled'), default='online')
-    p.add_argument('--wandb-project', default='samtok-data-conversion')
-    p.add_argument('--wandb-entity', default='2200012743-peking-university')
     args = p.parse_args()
     pipeline = AnnotationPipeline(args)
     try:

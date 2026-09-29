@@ -280,14 +280,14 @@ data/
   assets/{refedit,crispedit,scaleedit}/.../source.img, target.img, mask.png
                          # 已从前三个 Parquet 数据集解码落盘的真实图像与原 mask
   source_shards/*.jsonl    # 物化过程的中间分片/收据，不作为转换输入
-  semantic_runs/<run-id>/  # 本节四机转换的候选输出、失败项、日志与 W&B 记录
+  semantic_runs/<run-id>/  # 本节四机转换的候选输出、失败项、日志与汇总记录
 ```
 
 `semantic_sources.jsonl` 每行的 `edit_image/image` 是 `annotation-only/...` 文本占位符，模型不读图片。`sources.jsonl` 同 ID 行的 `edit_image/image` 是真实源图/目标图**绝对路径**；前三个数据集路径在上面的 `assets/` 下，`dataset_mask` 指向已有 `mask.png`，`instances` 保存原始 instance RLE。Derived 的源图/目标图保持指向原 combined 数据集里的现成文件，原 mask 以 `instances` 的 RLE 保存，`dataset_mask=null`。因此准备目录包含图片与 mask，JSONL 自身主要是路径和元数据，不把图像像素内嵌在每行；转换运行只使用纯文本清单。
 
 [annotation_cluster.py:23](../samtok_edit21/annotation_cluster.py#L23) 在 node 0 启动 GPU 前校验两份 inventory 的 SHA256、最终数量，并逐行核对 ID、数据集、指令和映射类型；校验结果写入 `input_linkage.json`。四个生产分支的字段核对见[全量审计第 9 节](SAMTokEdit_Qwen21_全量数据盘点与转换审计.md#9-构造-pipeline-的交叉核对2026-09-28-补充)。本流程不重新生成或检查 mask。
 
-专用环境由 [setup_annotation_env.sh](../scripts/train/setup_annotation_env.sh#L1) 安装 [requirements-annotation-lock.txt](../requirements-annotation-lock.txt#L1)：Python 3.11、vLLM 0.10.2、torch 2.8.0、transformers 4.55.2、byted-wandb 0.13.98。它与训练环境隔离；不要将这个 transformers 版本装进训练环境。vLLM 的预编译 wheel 与 torch 版本有配套要求，安装方式参考[官方 GPU 安装说明](https://docs.vllm.ai/en/v0.10.2/getting_started/installation/gpu.html)，本入口使用本地验证后的固定依赖。
+专用环境由 [setup_annotation_env.sh](../scripts/train/setup_annotation_env.sh#L1) 安装 [requirements-annotation-lock.txt](../requirements-annotation-lock.txt#L1)：Python 3.11、vLLM 0.10.2、torch 2.8.0、transformers 4.55.2。它与训练环境隔离；不要将这个 transformers 版本装进训练环境。vLLM 的预编译 wheel 与 torch 版本有配套要求，安装方式参考[官方 GPU 安装说明](https://docs.vllm.ai/en/v0.10.2/getting_started/installation/gpu.html)，本入口使用本地验证后的固定依赖。
 
 ### 7.2 转换与校验
 
@@ -297,13 +297,13 @@ data/
 
 单操作使用数据集已有 aggregate mask 的逻辑 ID `union`（Derived 是其单个选中 region）；这只是引用已有 mask，不重算并集。多个独立操作才按已有 instance_id 绑定到各单元，拒绝漏绑、重复绑定或虚构 ID。完整原始来源/实际图像/mask 编码在后续物化时按 source ID 对齐。
 
-[annotation_cluster.py](../samtok_edit21/annotation_cluster.py#L1) 检查所有节点的源码、Git commit、输入 hash、模型内容与依赖版本一致；负责失败传播、子进程清理、W&B 进度、32 片覆盖校验和结果合并。主节点 W&B 记录 accepted、failed、reporting_shards 与最终总数；key 不写入命令行或结果 manifest。
+[annotation_cluster.py](../samtok_edit21/annotation_cluster.py#L1) 检查所有节点的源码、Git commit、输入 hash、模型内容与依赖版本一致；负责失败传播、子进程清理、标准输出进度、32 片覆盖校验和结果合并。每个分片写入 `progress-XX.json`，主节点每 30 秒打印 accepted、failed 和 reporting_shards；最终总数写入 `conversion_report.json`。转换任务不初始化 W&B，也不要求 W&B key。
 
 ### 7.3 完整 ARNOLD 入口
 
-配置 **4 workers × 8 GPUs**。四节点挂载相同共享路径，由 ARNOLD 注入 ARNOLD_WORKER_HOSTS、ARNOLD_WORKER_NUM=4、ARNOLD_WORKER_GPU=8、ARNOLD_ID=0..3。建议通过作业 secret 注入 WANDB_API_KEY；也可在下方替换占位值。
+配置 **4 workers × 8 GPUs**。四节点挂载相同共享路径，由 ARNOLD 注入 ARNOLD_WORKER_HOSTS、ARNOLD_WORKER_NUM=4、ARNOLD_WORKER_GPU=8、ARNOLD_ID=0..3。转换任务不需要 WANDB_API_KEY。
 
-四个 worker 执行同一完整脚本。源码从远端分支 clone 到各节点 /tmp，数据留在共享 /mnt。首次运行默认共同 run ID 为 `qwen21_noref4n_full_001`；重新运行也必须换 ID，续跑来源单独通过 SAMTOK_ANNOTATION_RESUME_FROM 指定。**必须先确保这些新增代码已推送到远程分支，脚本不会执行本地未提交改动。**
+四个 worker 执行同一完整脚本。源码从远端分支 clone 到各节点 /tmp，数据留在共享 /mnt。首次运行默认共同 run ID 为 `qwen21_noref4n_full_001`；重新运行也必须换 ID，续跑来源单独通过 SAMTOK_ANNOTATION_RESUME_FROM 指定。**必须先确保这些新增代码已推送到远程分支，脚本不会执行本地未提交改动。**若 ARNOLD 环境以前设置过 `SAMTOK_EDIT_COMMIT`，应更新为本次最新提交 SHA 或清空，以免检出含 W&B 的旧入口。
 
 ```bash
 #!/usr/bin/env bash
@@ -315,9 +315,6 @@ export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref4n_full
 export SAMTOK_ANNOTATION_SOURCES="${SAMTOK_ANNOTATION_SOURCES:-$SAMTOK_DATA_EXPERIMENT/data/semantic_sources.jsonl}"
 export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507}"
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
-export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
-export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
-export WANDB_PROJECT="${WANDB_PROJECT:-samtok-data-conversion}"
 export SAMTOK_EDIT_REPO_URL="https://github.com/Tangent0308/samtok_edit.git"
 export SAMTOK_EDIT_BRANCH="qwen-image-2.1-dev"
 # Optional: pin a pushed commit or resume unchanged annotations in a NEW run ID.
@@ -332,9 +329,6 @@ export SAMTOK_ANNOTATION_RESUME_FROM="${SAMTOK_ANNOTATION_RESUME_FROM:-}"
   echo 'Expected ARNOLD 4 workers x 8 GPUs' >&2; exit 2;
 }
 [[ "$SAMTOK_ANNOTATION_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid run ID' >&2; exit 2; }
-[[ -n "$WANDB_API_KEY" && "$WANDB_API_KEY" != FILL_IN_WANDB_API_KEY ]] || {
-  echo 'Set WANDB_API_KEY as an ARNOLD secret or replace the placeholder' >&2; exit 2;
-}
 [[ -f "$SAMTOK_ANNOTATION_SOURCES" ]] || { echo 'Semantic source manifest is missing' >&2; exit 2; }
 [[ -f "$SAMTOK_DATA_EXPERIMENT/data/sources.jsonl" && -f "$SAMTOK_DATA_EXPERIMENT/data/source_inventory.json" && -f "$SAMTOK_DATA_EXPERIMENT/data/semantic_inventory.json" ]] || {
   echo 'Prepared image/mask manifest or inventory is missing' >&2; exit 2;
@@ -396,7 +390,6 @@ $SAMTOK_DATA_EXPERIMENT/data/semantic_runs/<run-id>/
   annotations.jsonl                 # accepted 合并结果；不是训练 metadata
   failed.jsonl                      # 每个未解决样本的源字段与尝试/原因
   conversion_report.json
-  wandb.json
   CANDIDATES_COMPLETE.json            # 仅零失败且覆盖完整时发布
   SUCCESS.json                      # 所有行处理完成；查看 accepted_count / failed_count
 ```
@@ -409,6 +402,6 @@ $SAMTOK_DATA_EXPERIMENT/data/semantic_runs/<run-id>/
 
 ### 7.5 当前验证与历史记录
 
-2026-09-29 已切换为两字段生成与规则后处理，当前说明、逐条审阅和速度对比集中在[两字段转换与模型对比](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。本次新入口的本地八卡端到端运行位于 `/tmp/samtok21-noref-simple-20260929/local8-four-node-final/`：155 条全部覆盖并汇总，145 条通过确定性协议检查、10 条保留在 `failed.jsonl`，8/8 分片完成，无 worker failure；`SUCCESS.json` 显示 `processed_complete=true`、`candidates_complete=false`、`training_ready=false`。W&B 离线模式正常完成；线上上传需由 ARNOLD 实际运行验证。对真实全量 `data/` 已在本地执行与四机 node 0 相同的 `verify_prepared_data`：98,574 条逐行对齐，文本和图像清单 SHA256 均与 inventory 一致。完整物理四机链路仍待 ARNOLD 作业验证。
+2026-09-29 已切换为两字段生成与规则后处理，当前说明、逐条审阅和速度对比集中在[两字段转换与模型对比](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。移除 W&B 后，本地新建无 `wandb` 包的转换环境，`uv pip check` 和八卡 CUDA 检查均通过；未设置任何 W&B key 的八卡端到端运行位于 `/tmp/samtok21-noref-simple-20260929/local8-no-wandb-final/`。155 条全部覆盖并汇总，145 条通过确定性协议检查、10 条保留在 `failed.jsonl`，8/8 分片完成，无 worker failure、无 W&B 输出；`SUCCESS.json` 显示 `processed_complete=true`、`candidates_complete=false`、`training_ready=false`。与此前启用 W&B offline 的运行相比，145 条的 `model_output`、`annotation`、`review` 逐条相同，10 个失败 ID 相同。对真实全量 `data/` 已在本地执行与四机 node 0 相同的 `verify_prepared_data`：98,574 条逐行对齐，文本和图像清单 SHA256 均与 inventory 一致。完整物理四机链路仍待 ARNOLD 作业验证。
 
 上一版多字段＋模型自审的开发证据保留在 `/tmp/samtok21-full-build-20260928/`，包括 local8_holdout_v12（130/155 自动通过）与 local8_canary_final2（8/8 工程链路通过）。这些是旧实现的历史结果，不能代表当前质量；自动通过率也不是语义准确率。旧版“存在任何转换失败就让整任务报错”的行为已由第 7.4 节的新行为替代。

@@ -7,9 +7,6 @@ export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref4n_full
 export SAMTOK_ANNOTATION_SOURCES="${SAMTOK_ANNOTATION_SOURCES:-$SAMTOK_DATA_EXPERIMENT/data/semantic_sources.jsonl}"
 export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507}"
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
-export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
-export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
-export WANDB_PROJECT="${WANDB_PROJECT:-samtok-data-conversion}"
 export SAMTOK_EDIT_REPO_URL="https://github.com/Tangent0308/samtok_edit.git"
 export SAMTOK_EDIT_BRANCH="qwen-image-2.1-dev"
 # Optional: pin a pushed commit or resume unchanged annotations in a NEW run ID.
@@ -24,9 +21,6 @@ export SAMTOK_ANNOTATION_RESUME_FROM="${SAMTOK_ANNOTATION_RESUME_FROM:-}"
   echo 'Expected ARNOLD 4 workers x 8 GPUs' >&2; exit 2;
 }
 [[ "$SAMTOK_ANNOTATION_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid run ID' >&2; exit 2; }
-[[ -n "$WANDB_API_KEY" && "$WANDB_API_KEY" != FILL_IN_WANDB_API_KEY ]] || {
-  echo 'Set WANDB_API_KEY as an ARNOLD secret or replace the placeholder' >&2; exit 2;
-}
 [[ -f "$SAMTOK_ANNOTATION_SOURCES" ]] || { echo 'Semantic source manifest is missing' >&2; exit 2; }
 [[ -f "$SAMTOK_DATA_EXPERIMENT/data/sources.jsonl" && -f "$SAMTOK_DATA_EXPERIMENT/data/source_inventory.json" && -f "$SAMTOK_DATA_EXPERIMENT/data/semantic_inventory.json" ]] || {
   echo 'Prepared image/mask manifest or inventory is missing' >&2; exit 2;

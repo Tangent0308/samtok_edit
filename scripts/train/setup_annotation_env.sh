@@ -16,13 +16,12 @@ fi
 "$UV" pip sync --python "$SAMTOK_ENV/bin/python" --index-url "$INDEX" "$REPO/requirements-annotation-lock.txt"
 "$UV" pip check --python "$SAMTOK_ENV/bin/python"
 "$SAMTOK_ENV/bin/python" - <<'PY'
-import sys, torch, transformers, vllm, wandb
+import sys, torch, transformers, vllm
 assert sys.version_info[:2] == (3, 11)
 assert torch.__version__.split('+')[0] == '2.8.0'
 assert transformers.__version__ == '4.55.2'
 assert vllm.__version__ == '0.10.2'
-assert wandb.__version__ == '0.13.98'
-print('Annotation environment validated: Python 3.11 / torch 2.8 / vLLM 0.10.2 / W&B')
+print('Annotation environment validated: Python 3.11 / torch 2.8 / vLLM 0.10.2')
 PY
 PYTHONPATH="$REPO" "$SAMTOK_ENV/bin/python" -m samtok_edit21.cuda_readiness \
   --output "${SAMTOK_CUDA_DIAGNOSTICS:-${SAMTOK_ENV}-cuda}" --expected 8 \

@@ -7,7 +7,6 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export SAMTOK_RUN_ROOT="$SAMTOK_ANNOTATION_RUN_ROOT"
 export SAMTOK_ENV="${SAMTOK_ENV:-/tmp/samtok-noref-${SAMTOK_ANNOTATION_RUN_ID}-node${ARNOLD_ID}-env}"
 export SAMTOK_CUDA_DIAGNOSTICS="$SAMTOK_RUN_ROOT/bootstrap/node${ARNOLD_ID}-cuda"
-export WANDB_DISABLE_SERVICE=true WANDB_START_METHOD=thread
 export VLLM_WORKER_MULTIPROC_METHOD=spawn PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 unset PORT MASTER_ADDR MASTER_PORT NODE_RANK NNODES GPUS_PER_NODE
@@ -21,6 +20,4 @@ fi
   --sources "$SAMTOK_ANNOTATION_SOURCES" --run-root "$SAMTOK_ANNOTATION_RUN_ROOT" \
   --prepared-data-root "$SAMTOK_DATA_EXPERIMENT/data" \
   --model "${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507}" \
-  --batch-size "${SAMTOK_ANNOTATION_BATCH_SIZE:-64}" \
-  --wandb-mode online --wandb-project "${WANDB_PROJECT:-samtok-data-conversion}" \
-  --wandb-entity "${WANDB_ENTITY:-2200012743-peking-university}" "${args[@]}" "$@"
+  --batch-size "${SAMTOK_ANNOTATION_BATCH_SIZE:-64}" "${args[@]}" "$@"
