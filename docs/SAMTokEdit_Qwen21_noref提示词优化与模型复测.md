@@ -1,6 +1,6 @@
 # noref prompt 优化与 Qwen3 / Qwen3.5 对照实验
 
-实验日期：2026-09-29。9B 的全部拒绝与人工式文本审阅漏检实例见[9B 未通过样本审计](SAMTokEdit_Qwen21_9B未通过样本审计.md)。本记录接续[失败分析](SAMTokEdit_Qwen21_noref失败分析与修复.md)，所有模型仅输出 `ref_phrase` 与 `noref_instruction`；不生成类型、mask ID 或自评。继续使用数据集已有 mask，不判断几何准确性。
+实验日期：2026-09-29。本页是上一轮 prompt 和模型选择实验；**当前精简 prompt 与 thinking 开关实测**见[三例与 thinking 对照](SAMTokEdit_Qwen21_noref三例Prompt与Thinking对照.md)，完整当前规则见[两字段转换说明第 3 节](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md#3-当前完整-prompt)。9B 的上一轮拒绝与人工式文本审阅漏检实例见[9B 未通过样本审计](SAMTokEdit_Qwen21_9B未通过样本审计.md)。本记录接续[失败分析](SAMTokEdit_Qwen21_noref失败分析与修复.md)，所有模型仅输出 `ref_phrase` 与 `noref_instruction`；不生成类型、mask ID 或自评。继续使用数据集已有 mask，不判断几何准确性。
 
 ## 1. 方法、比较口径与样本
 

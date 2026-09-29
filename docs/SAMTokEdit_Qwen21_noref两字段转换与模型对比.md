@@ -117,36 +117,29 @@ if mapped in REGION_PHRASES:
 共享规则如下，直接摘自当前代码的 `PROMPT` 常量：
 
 ```text
-Convert the input image-edit instruction into a version located by a mask.
-Return ONLY JSON: {"ref_phrase": ["original phrase"], "noref_instruction": ...}.
-
-ref_phrase is a LIST, one item per edited referent. Copy each complete original
-object/PART description EXACTLY, including old location/identity qualifiers,
-without leading a/an/the. Exclude the action, property operators and replacement.
+Convert the input image-edit instruction into a mask-located version.
+Return ONLY JSON with ref_phrase (a list) and noref_instruction (a string).
+For each edited referent, copy the complete original object/PART phrase EXACTLY
+into ref_phrase, including old identity/location, without leading a/an/the.
+Exclude actions, property operators and replacements; never shorten or paraphrase.
 For addition, copy NEW content plus placement. For text replacement, copy OLD
-quoted text including quotes, or its carrier when no OLD text is supplied.
-For text insertion, reference the carrier/placement, NEVER the NEW text.
-A whole-image edit uses ["this image"]. Do not shorten or paraphrase references.
-
-noref_instruction: replace old edited objects and their locating descriptions
-with "this region". Keep original wording otherwise: actions, new values/content,
-counts, comparisons and keep-unchanged clauses. Do not add property names or expand
-verbs. For addition keep ALL new content, including clothing/appearance/pose;
-replace only placement with "in this
-region" (append it if placement is absent). For text replacement remove OLD text
-and its carrier/location but preserve NEW text and every additional constraint.
-Do not keep a from-OLD clause, repeat NEW as OLD, or write text-on-this-region.
-For text insertion use Add NEW to this region, preserving the exact NEW text.
-Do not generate mask tokens or classify the edit. Independent edited referents
-need separate list items and one "this region" each in original order. A joint
-operation uses one reference. Comparisons and action participants are not separate
-edits: retain the unchanged comparison object/action destination in noref.
-The placeholder denotes the WHOLE selected reference, including its part name.
-Never write "seat of this region" when ref_phrase already selects the seat.
-If correction is provided, revise previous_output to address it; do not repeat it.
+quoted text, or its carrier if no OLD text exists; for insertion use the carrier,
+NEVER NEW text. A whole-image edit uses ["this image"].
+In noref_instruction replace old edited objects AND old locating descriptions
+with "this region". Keep original wording otherwise: actions, NEW values/content,
+counts, comparisons, new destinations and keep-unchanged clauses. For addition,
+keep ALL new content, including appearance/pose, but replace only its placement
+with "in this region" (append if no placement). For text replacement remove OLD
+text and its carrier/location but keep NEW text and every extra constraint; for
+insertion add NEW text to this region. Never keep a from-OLD clause.
+Independent edits need separate refs and one region each in original order; a
+joint edit uses one. Unchanged comparisons and action participants are not edited
+referents. A region denotes the WHOLE selected phrase including its part name;
+do not repeat the part beside it. Do not invent mask tokens or edit types.
+If correction is supplied, fix previous_output. Examples are unrelated to input:
 ```
 
-每次只附本类一个格式示例，模型沿用输入类型、不输出 edit_type。没有匹配示例的 reasoning/count 等粗类别不强加 composite 示例。只有原生 `compositional_editing` 使用复合示例。示例字典如下：
+每次仍只附本类一个格式示例，模型沿用输入类型、不输出 edit_type；测试过所有输入统一附三个示例，质量反而降低，详见[三例与 thinking 对照](SAMTokEdit_Qwen21_noref三例Prompt与Thinking对照.md)。没有匹配示例的 reasoning/count 等粗类别不强加 composite 示例。只有原生 `compositional_editing` 使用复合示例。示例字典如下：
 
 ```python
 {

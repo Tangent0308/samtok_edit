@@ -287,7 +287,7 @@ data/
 
 [annotation_cluster.py:23](../samtok_edit21/annotation_cluster.py#L23) 在 node 0 启动 GPU 前校验两份 inventory 的 SHA256、最终数量，并逐行核对 ID、数据集、指令和映射类型；校验结果写入 `input_linkage.json`。四个生产分支的字段核对见[全量审计第 9 节](SAMTokEdit_Qwen21_全量数据盘点与转换审计.md#9-构造-pipeline-的交叉核对2026-09-28-补充)。本流程不重新生成或检查 mask。
 
-本轮已选择 Qwen3.5-9B 作为 noref 全量转换模型；[9B 复测记录](SAMTokEdit_Qwen21_noref提示词优化与模型复测.md)给出质量、速度与环境实测，[未通过样本审计](SAMTokEdit_Qwen21_9B未通过样本审计.md)列出程序拒绝与文本审阅漏检。四机入口会按模型 config 自动选择专用依赖锁：[requirements-annotation-qwen35-lock.txt](../requirements-annotation-qwen35-lock.txt) 对应 Python 3.11 / torch 2.10.0 / transformers 4.57.6 / vLLM 0.17.1；旧 4B 仍可显式选择模型并使用 [原锁](../requirements-annotation-lock.txt)。[setup_annotation_env.sh](../scripts/train/setup_annotation_env.sh) 同时将虚拟环境 `bin` 放进 PATH，供 9B FlashInfer JIT 调用 ninja。转换环境与图像训练环境隔离，不初始化 W&B。
+本轮已选择 Qwen3.5-9B 作为 noref 全量转换模型；[9B 复测记录](SAMTokEdit_Qwen21_noref提示词优化与模型复测.md)给出前一轮质量、速度与环境实测，[精简 prompt 与 thinking 对照](SAMTokEdit_Qwen21_noref三例Prompt与Thinking对照.md)给出当前 prompt 的结果，[未通过样本审计](SAMTokEdit_Qwen21_9B未通过样本审计.md)列出上一轮程序拒绝与文本审阅漏检。四机入口会按模型 config 自动选择专用依赖锁：[requirements-annotation-qwen35-lock.txt](../requirements-annotation-qwen35-lock.txt) 对应 Python 3.11 / torch 2.10.0 / transformers 4.57.6 / vLLM 0.17.1；旧 4B 仍可显式选择模型并使用 [原锁](../requirements-annotation-lock.txt)。[setup_annotation_env.sh](../scripts/train/setup_annotation_env.sh) 同时将虚拟环境 `bin` 放进 PATH，供 9B FlashInfer JIT 调用 ninja。转换环境与图像训练环境隔离，不初始化 W&B。**四机默认关闭 thinking**；本地对照中打开 thinking 经常在生成 JSON 前耗尽 token。当前 prompt 身份与旧版不同，若旧 9B run 已启动过，必须换新的 `SAMTOK_ANNOTATION_RUN_ID`，不可跨 prompt 续跑。
 
 ### 7.2 转换与校验
 
