@@ -139,8 +139,8 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
                                      height, width)[0]
             entry = (row, key, sources[0], resized, height, width)
             (single if len(spans_in(row['prompt'])) == 1 else multi).append(entry)
-        for offset in range(0, len(single), 16):
-            group = single[offset:offset + 16]
+        for offset in range(0, len(single), 64):
+            group = single[offset:offset + 64]
             decoded = codec.decode_single_batch([(x[2], x[0]['prompt']) for x in group])
             for entry, masks in zip(group, decoded):
                 save_new(entry[0], entry[1], [masks], entry[3], entry[4], entry[5])
@@ -182,7 +182,7 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
                 from_coverage(row, key, torch.load(cached, map_location='cpu', weights_only=True))
             else:
                 pending.append((row, key))
-                if len(pending) >= 16:
+                if len(pending) >= 64:
                     flush(pending)
                     pending = []
         if seen % 100 == 0:
