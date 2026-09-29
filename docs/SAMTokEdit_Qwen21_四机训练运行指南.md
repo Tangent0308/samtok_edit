@@ -307,7 +307,7 @@ data/
 
 配置 **4 workers × 8 GPUs**。四节点挂载相同共享路径，由 ARNOLD 注入 ARNOLD_WORKER_HOSTS、ARNOLD_WORKER_NUM=4、ARNOLD_WORKER_GPU=8、ARNOLD_ID=0..3。转换任务不需要 WANDB_API_KEY。
 
-四个 worker 执行同一脚本；每节点从远端 `qwen-image-2.1-dev` clone 代码到 `/tmp`，从共享 `/mnt` 读取已准备好的四数据集纯文本清单和 9B 权重。每节点把 9B 复制到本机 `/tmp` 一次，八张 H100 分别运行 TP=1 文本标注副本。9B 首次 FlashInfer 内核编译可能显著慢于稳态生成；控制器日志要等 `reporting_shards=32` 与合并报告。旧 4B run 和此前无规则回退的 9B run 均不能续用。本轮 `qwen21_noref9b_rules_4n_full_001` 需要四节点一致，`SAMTOK_ANNOTATION_RESUME_FROM` 留空；如显式设置 `SAMTOK_EDIT_COMMIT`，必须是已推送的当前代码完整 SHA。提交到 ARNOLD 的完整入口如下，无 W&B key：
+四个 worker 执行同一脚本；每节点从远端 `qwen-image-2.1-dev` clone 代码到 `/tmp`，从共享 `/mnt` 读取已准备好的四数据集纯文本清单和 9B 权重。每节点把 9B 复制到本机 `/tmp` 一次，八张 H100 分别运行 TP=1 文本标注副本。9B 首次 FlashInfer 内核编译可能显著慢于稳态生成；控制器日志要等 `reporting_shards=32` 与合并报告。旧 4B run 和此前无规则回退的 9B run 均不能续用。本轮 `qwen21_noref9b_rules_4n_full_002` 需要四节点一致，`SAMTOK_ANNOTATION_RESUME_FROM` 留空；如显式设置 `SAMTOK_EDIT_COMMIT`，必须是已推送的当前代码完整 SHA。提交到 ARNOLD 的完整入口如下，无 W&B key：
 
 ```bash
 #!/usr/bin/env bash
@@ -315,7 +315,7 @@ data/
 set -Eeuo pipefail
 
 export SAMTOK_DATA_EXPERIMENT="${SAMTOK_DATA_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928}"
-export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref9b_rules_4n_full_001}"
+export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref9b_rules_4n_full_002}"
 export SAMTOK_ANNOTATION_SOURCES="${SAMTOK_ANNOTATION_SOURCES:-$SAMTOK_DATA_EXPERIMENT/data/semantic_sources.jsonl}"
 export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B}"
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
@@ -408,7 +408,7 @@ $SAMTOK_DATA_EXPERIMENT/data/semantic_runs/<run-id>/
 
 失败项不会从总数中消失。所有行都有结果并通过完整性检查后，任务成功结束，失败转换仍写入 failed.jsonl；只有零失败才发布 CANDIDATES_COMPLETE。semantic_ready/training_ready 仍为 false。基础设施异常或分片缺失仍会报错。accepted 只表示程序检查通过，实际语义质量见对照实验。
 
-中断续跑时换新 run ID，并把 SAMTOK_ANNOTATION_RESUME_FROM 设为旧 run 的完整目录；当前 `qwen21_noref9b_rules_4n_full_001` 默认从头处理；只允许从使用相同 9B 权重、prompt、依赖版本和代码的中断 run 续跑。新 run 复制各自分片的逐条输出和身份记录，跳过已经接受的 ID，对失败项携带上一轮反馈重试；保留旧日志。输入、模型、分片数或标注代码变化会拒绝复用，以免混入旧协议结果。残缺的末尾 JSONL 行可被隔离后重试，文件中间损坏直接报错。
+中断续跑时换新 run ID，并把 SAMTOK_ANNOTATION_RESUME_FROM 设为旧 run 的完整目录；当前 `qwen21_noref9b_rules_4n_full_002` 默认从头处理；只允许从使用相同 9B 权重、prompt、依赖版本和代码的中断 run 续跑。新 run 复制各自分片的逐条输出和身份记录，跳过已经接受的 ID，对失败项携带上一轮反馈重试；保留旧日志。输入、模型、分片数或标注代码变化会拒绝复用，以免混入旧协议结果。残缺的末尾 JSONL 行可被隔离后重试，文件中间损坏直接报错。
 
 本次正式转换的合并结果固定为 `$SAMTOK_DATA_EXPERIMENT/data/semantic_runs/$SAMTOK_ANNOTATION_RUN_ID/annotations.jsonl`，按 source ID 与同目录上层的 `sources.jsonl` 关联图片和原 mask；失败项固定为同 run 下的 `failed.jsonl`。这是**语义候选输出**，尚未执行真实 SAMTok mask-code 编码，也不是可直接启动 Stage 1/2 的训练 metadata。若存在失败项，必须处理或明确筛除后才可组装最终训练清单。
 
@@ -419,6 +419,14 @@ $SAMTOK_DATA_EXPERIMENT/data/semantic_runs/<run-id>/
 2026-09-29 `qwen21_noref4n_full_001` 首次四机运行：四节点检出同一无 W&B 提交，32 卡 CUDA、输入清单的 98,574 条逐行对齐、四节点 topology、32 个 vLLM worker 加载与生成均通过。生成开始后，node 0 在枚举 `progress-*.json` 与读取之间遇到共享盘瞬时 `FileNotFoundError`，作为控制器错误传播到四节点；并无更早的独立 worker Traceback/OOM。失败前 32 个分片共保存 4,294 条可解析且 ID 唯一的结果：4,061 accepted、233 failed；没有合并结果或 SUCCESS。`progress` 只是进度展示，不决定最终结果完整性。已在 [read_progress_snapshots](../samtok_edit21/annotation_cluster.py#L56) 容忍文件瞬时消失或不可解析，同时最终 merge 仍严格检查每个分片的身份、内容 hash 和输入覆盖。**不可在 `001` 原目录重启**。当时 `002` 从 `001` 恢复后已完成：96,270 accepted、2,304 failed。随后发现示例污染及校验漏洞，当前完整入口已改为 9B 新 run、绝不复用旧 4B 输出；原因、调试与结果见[失败分析与修复](SAMTokEdit_Qwen21_noref失败分析与修复.md)。
 
 
-2026-09-29 已切换为两字段生成与规则后处理，当前说明、逐条审阅和速度对比集中在[两字段转换与模型对比](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。移除 W&B 后，本地新建无 `wandb` 包的转换环境，`uv pip check` 和八卡 CUDA 检查均通过；未设置任何 W&B key 的八卡端到端运行位于 `/tmp/samtok21-noref-simple-20260929/local8-no-wandb-final/`。155 条全部覆盖并汇总，145 条通过确定性协议检查、10 条保留在 `failed.jsonl`，8/8 分片完成，无 worker failure、无 W&B 输出；`SUCCESS.json` 显示 `processed_complete=true`、`candidates_complete=false`、`training_ready=false`。与此前启用 W&B offline 的运行相比，145 条的 `model_output`、`annotation`、`review` 逐条相同，10 个失败 ID 相同。对真实全量 `data/` 已在本地执行与四机 node 0 相同的 `verify_prepared_data`：98,574 条逐行对齐，文本和图像清单 SHA256 均与 inventory 一致。9B 本地八卡已完成端到端 64 条混合数据验证（63 accepted、1 failed、8/8 分片齐全）；物理四机链路仍待 ARNOLD 作业验证。
+2026-09-29 已切换为两字段生成与规则后处理，当前说明、逐条审阅和速度对比集中在[两字段转换与模型对比](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。移除 W&B 后，本地新建无 `wandb` 包的转换环境，`uv pip check` 和八卡 CUDA 检查均通过；未设置任何 W&B key 的八卡端到端运行位于 `/tmp/samtok21-noref-simple-20260929/local8-no-wandb-final/`。155 条全部覆盖并汇总，145 条通过确定性协议检查、10 条保留在 `failed.jsonl`，8/8 分片完成，无 worker failure、无 W&B 输出；`SUCCESS.json` 显示 `processed_complete=true`、`candidates_complete=false`、`training_ready=false`。与此前启用 W&B offline 的运行相比，145 条的 `model_output`、`annotation`、`review` 逐条相同，10 个失败 ID 相同。对真实全量 `data/` 已在本地执行与四机 node 0 相同的 `verify_prepared_data`：98,574 条逐行对齐，文本和图像清单 SHA256 均与 inventory 一致。9B 本地八卡已完成端到端 64 条混合数据验证（63 accepted、1 failed、8/8 分片齐全）；新版物理四机第一次启动于 CUDA 预检失败，见第 7.6 节；转换与合并链路仍待健康节点上的 ARNOLD 作业验证。
 
 上一版多字段＋模型自审的开发证据保留在 `/tmp/samtok21-full-build-20260928/`，包括 local8_holdout_v12（130/155 自动通过）与 local8_canary_final2（8/8 工程链路通过）。这些是旧实现的历史结果，不能代表当前质量；自动通过率也不是语义准确率。旧版“存在任何转换失败就让整任务报错”的行为已由第 7.4 节的新行为替代。
+
+### 7.6 9B 规则回退版本首次 ARNOLD 预检失败与重跑（2026-09-29）
+
+`qwen21_noref9b_rules_4n_full_001` 在 node 1 主机 `n124-253-163` 的 CUDA 初始化阶段失败。`data/semantic_runs/qwen21_noref9b_rules_4n_full_001/bootstrap/node1-cuda/readiness.json` 记录 600 秒内 **13 次独立 Python 进程探测均 exit 1**；每次在 `torch.cuda.init()` 报 `cudaGetDeviceCount Error 802: system not yet initialized`。node 1 的 `nvidia-smi -q` 首次故障和超时快照中，**8/8 GPU 的 Fabric State 均为 `In Progress`、Status 为 `N/A`**，相隔约 9 分钟没有变化。node 0/2/3 的八卡分配、计算与同步均一次通过；它们因 node 1 的失败标记在 topology barrier 中退出。无 shard、无模型生成、无转换结果，后续平台 SIGTERM 是失败后的清理。
+
+这组证据指向 node 1 的 GPU/NVLink Fabric 尚未初始化完成；仅 `nvidia-smi` 能枚举八张 H100 并不足以证明 CUDA 可用。不能通过跳过预检、减少使用 GPU 或仅改 prompt 来修复。应用已用新进程重试满 600 秒，延长等待只有在平台确认 Fabric 会稍后恢复时才有价值。**首选让 ARNOLD 重新分配健康节点，并排除或更换 `n124-253-163`**；如果再次落到同一主机且 Fabric 仍为 `In Progress`，请平台检查该主机的 NVIDIA Fabric Manager/NVSwitch 服务状态并修复或换机。节点上的只读核对是 `nvidia-smi -q` 中每张卡的 Fabric State/Status，然后运行实际 CUDA 分配与同步检查。
+
+从第 7.3 节复制**更新后的完整入口**，四节点使用新的 `SAMTOK_ANNOTATION_RUN_ID=qwen21_noref9b_rules_4n_full_002`，`SAMTOK_ANNOTATION_RESUME_FROM` 留空。旧 `001` 目录已有 `nodes/*/failure.json` 和 bootstrap 占用标记，不能重用，也没有可恢复的成功分片。若 ARNOLD 作业环境显式设置过旧 run ID，请同步改成 `002`；脚本中的默认值不会覆盖已有环境变量。输入仍是已核验的 98,574 条共享数据，无需重新准备。

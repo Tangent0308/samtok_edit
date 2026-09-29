@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 export SAMTOK_DATA_EXPERIMENT="${SAMTOK_DATA_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928}"
-export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref9b_rules_4n_full_001}"
+export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref9b_rules_4n_full_002}"
 export SAMTOK_ANNOTATION_SOURCES="${SAMTOK_ANNOTATION_SOURCES:-$SAMTOK_DATA_EXPERIMENT/data/semantic_sources.jsonl}"
 export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B}"
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"

@@ -170,7 +170,7 @@ assets/                 # 前三个数据集已物化图片和 mask；Derived �
 将[四机指南 §7.3 完整入口](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)复制到 ARNOLD，四节点使用相同的新 ID：
 
 ```bash
-export SAMTOK_ANNOTATION_RUN_ID="qwen21_noref9b_rules_4n_full_001"
+export SAMTOK_ANNOTATION_RUN_ID="qwen21_noref9b_rules_4n_full_002"
 export SAMTOK_ANNOTATION_BATCH_SIZE=64
 export SAMTOK_ANNOTATION_ATTEMPTS=3
 export SAMTOK_ANNOTATION_RESUME_FROM=""
@@ -181,7 +181,10 @@ export SAMTOK_ANNOTATION_RESUME_FROM=""
 最终目录固定为：
 
 ```text
-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/semantic_runs/qwen21_noref9b_rules_4n_full_001/
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/semantic_runs/qwen21_noref9b_rules_4n_full_002/
 ```
 
 `annotations.jsonl` 包含两种方式通过的全部候选；`rule_based.jsonl` 只是其子集，**不能再次拼接**。`failed.jsonl` 保留未解决记录。`SUCCESS.json` 表示所有输入已处理且结果完整，查看其中模型/规则通过数与失败数；只有失败为零才发布 `CANDIDATES_COMPLETE.json`。这些仍是语义转换候选，`semantic_ready` 和 `training_ready` 均为 false，后续需处理剩余失败与语义抽查、执行真实 SAMTok 编码并组装训练 metadata。
+
+
+2026-09-29 首次 9B 规则回退四机启动使用 `qwen21_noref9b_rules_4n_full_001`，node 1 因 CUDA 802 与八卡 Fabric 持续 `In Progress` 在预检失败，未开始转换。详情及新的 `002` 入口见[四机指南 §7.6](SAMTokEdit_Qwen21_四机训练运行指南.md#76-9b-规则回退版本首次-arnold-预检失败与重跑2026-09-29)。
