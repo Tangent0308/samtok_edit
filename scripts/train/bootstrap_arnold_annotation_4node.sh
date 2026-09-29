@@ -3,15 +3,16 @@
 set -Eeuo pipefail
 
 export SAMTOK_DATA_EXPERIMENT="${SAMTOK_DATA_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928}"
-export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref4n_full_001}"
+export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref4n_full_002}"
 export SAMTOK_ANNOTATION_SOURCES="${SAMTOK_ANNOTATION_SOURCES:-$SAMTOK_DATA_EXPERIMENT/data/semantic_sources.jsonl}"
 export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507}"
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
 export SAMTOK_EDIT_REPO_URL="https://github.com/Tangent0308/samtok_edit.git"
 export SAMTOK_EDIT_BRANCH="qwen-image-2.1-dev"
-# Optional: pin a pushed commit or resume unchanged annotations in a NEW run ID.
+# Optional: pin a pushed commit. This default resumes the failed 001 run;
+# set SAMTOK_ANNOTATION_RESUME_FROM='' for an unrelated new experiment.
 export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"
-export SAMTOK_ANNOTATION_RESUME_FROM="${SAMTOK_ANNOTATION_RESUME_FROM:-}"
+export SAMTOK_ANNOTATION_RESUME_FROM="${SAMTOK_ANNOTATION_RESUME_FROM-$SAMTOK_DATA_EXPERIMENT/data/semantic_runs/qwen21_noref4n_full_001}"
 
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the common worker host list}"
 : "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM=4}"
@@ -22,6 +23,11 @@ export SAMTOK_ANNOTATION_RESUME_FROM="${SAMTOK_ANNOTATION_RESUME_FROM:-}"
 }
 [[ "$SAMTOK_ANNOTATION_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid run ID' >&2; exit 2; }
 [[ -f "$SAMTOK_ANNOTATION_SOURCES" ]] || { echo 'Semantic source manifest is missing' >&2; exit 2; }
+if [[ -n "$SAMTOK_ANNOTATION_RESUME_FROM" ]]; then
+  [[ -d "$SAMTOK_ANNOTATION_RESUME_FROM/shards" ]] || {
+    echo 'Resume run has no shards directory' >&2; exit 2;
+  }
+fi
 [[ -f "$SAMTOK_DATA_EXPERIMENT/data/sources.jsonl" && -f "$SAMTOK_DATA_EXPERIMENT/data/source_inventory.json" && -f "$SAMTOK_DATA_EXPERIMENT/data/semantic_inventory.json" ]] || {
   echo 'Prepared image/mask manifest or inventory is missing' >&2; exit 2;
 }

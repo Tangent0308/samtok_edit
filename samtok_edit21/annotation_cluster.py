@@ -53,6 +53,17 @@ def verify_prepared_data(data_root, semantic_sources, semantic_sha256):
             'image_and_mask_assets': 'referenced by sources.jsonl', 'training_ready': False}
 
 
+def read_progress_snapshots(shards):
+    """Progress is advisory; a shared-FS listing may race with a shard update."""
+    snapshots = []
+    for path in shards.glob('progress-*.json'):
+        try:
+            snapshots.append(json.loads(path.read_text()))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            print(f'Transient progress snapshot {path.name}: {type(exc).__name__}', flush=True)
+    return snapshots
+
+
 def merge(sources, shards, output, world_size):
     """Join by immutable IDs; incomplete/duplicate shard ownership is an error."""
     output, shards = Path(output), Path(shards)
@@ -210,7 +221,7 @@ class AnnotationPipeline(Pipeline):
                 if time.monotonic() > deadline:
                     raise TimeoutError('Annotation phase timed out')
                 if self.rank == 0 and time.monotonic() >= next_log:
-                    progress = [json.loads(p.read_text()) for p in shards.glob('progress-*.json')]
+                    progress = read_progress_snapshots(shards)
                     status = {'accepted': sum(p['accepted'] for p in progress),
                               'failed': sum(p['failed_this_attempt'] for p in progress),
                               'reporting_shards': len(progress)}
