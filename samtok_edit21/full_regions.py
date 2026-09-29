@@ -84,7 +84,6 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels,
             records[key] = {'eligible': False, 'reason': value['reason']}
 
     def save_new(row, key, masks, resized, height, width):
-        path = output / f'{key}.pt'
         spans = spans_in(row['prompt'])
         if len(masks) != len(spans):
             raise ValueError('Decoded mask/span count mismatch')
