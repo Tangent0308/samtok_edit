@@ -81,3 +81,9 @@ python -m samtok_edit21.cli infer --image /path/source.png \
 For the complete implementation notes and code references, read [`docs/SAMTokEdit_Qwen21_代码实现与使用.md`](docs/SAMTokEdit_Qwen21_代码实现与使用.md). Smoke commands and results are recorded in [`docs/SAMTokEdit_Qwen21_实验记录.md`](docs/SAMTokEdit_Qwen21_实验记录.md).
 
 The attention supervision and regional flow-matching loss are implemented. See [the four-node training guide](docs/SAMTokEdit_Qwen21_四机训练运行指南.md) for the multi-node runner, W&B setup, and debug launch.
+
+The [full dataset inventory and conversion audit](docs/SAMTokEdit_Qwen21_全量数据盘点与转换审计.md) documents final quality filters, all four datasets' type mappings, and the semantic review required before exporting no-reference instructions.
+
+四数据集的 Qwen3-4B + vLLM 候选转换入口、八卡验证及质量限制见[四机指南第 7 节](docs/SAMTokEdit_Qwen21_四机训练运行指南.md#7-全量-noref-语义转换qwen3-4b--vllm)。
+
+当前精简版的 prompt、程序后处理、逐条审阅口径和速度对比见[noref 两字段转换与 4B/8B 对比](docs/SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。

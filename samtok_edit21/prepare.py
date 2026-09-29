@@ -74,6 +74,14 @@ def canonical_reference(phrase, edit_type):
         raise ValueError("Missing unit reference")
     phrase = re.sub(r"^(?:the|a|an)\s+", "", phrase.strip(), flags=re.I)
     if edit_type == "text":
+        # An already quoted reference can itself contain an apostrophe or inch
+        # mark, e.g. '5\'6"'. Preserve its complete outer-delimited spelling.
+        pairs = {'"': '"', "'": "'", '“': '”', '‘': '’'}
+        if len(phrase) > 1 and phrase[0] in pairs and phrase[-1] == pairs[phrase[0]]:
+            # Internal apostrophes/inch marks are literal; a closing quote
+            # followed by whitespace denotes multiple separately quoted spans.
+            if not re.search(re.escape(pairs[phrase[0]]) + r'\s', phrase[1:-1]):
+                return phrase
         quoted = re.findall(r'''"[^"\n]+"|'[^'\n]+'|“[^”\n]+”|‘[^’\n]+’''', phrase)
         if len(quoted) > 1:
             raise ValueError("Text unit must identify one original quoted string")
