@@ -84,6 +84,6 @@ The attention supervision and regional flow-matching loss are implemented. See [
 
 The [full dataset inventory and conversion audit](docs/SAMTokEdit_Qwen21_全量数据盘点与转换审计.md) documents final quality filters, all four datasets' type mappings, and the semantic review required before exporting no-reference instructions.
 
-四数据集的 Qwen3-4B + vLLM 候选转换入口、八卡验证及质量限制见[四机指南第 7 节](docs/SAMTokEdit_Qwen21_四机训练运行指南.md#7-全量-noref-语义转换qwen3-4b--vllm)。该转换独立于训练的 W&B 记录，无需 W&B key。
+四数据集当前采用 Qwen3.5-9B + vLLM，关闭 thinking，模型重试失败后做规则回退。完整 ARNOLD 入口见[四机指南第 7.3 节](docs/SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)，实现、清理范围、436 条本地验证与输出路径见[规则回退与四机复跑](docs/SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)。该转换独立于训练的 W&B 记录，无需 W&B key。
 
 当前精简版的 prompt、程序后处理、逐条审阅口径和速度对比见[noref 两字段转换与 4B/8B 对比](docs/SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。

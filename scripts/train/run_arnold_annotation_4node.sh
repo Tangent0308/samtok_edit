@@ -21,4 +21,5 @@ fi
   --sources "$SAMTOK_ANNOTATION_SOURCES" --run-root "$SAMTOK_ANNOTATION_RUN_ROOT" \
   --prepared-data-root "$SAMTOK_DATA_EXPERIMENT/data" \
   --model "${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B}" \
-  --batch-size "${SAMTOK_ANNOTATION_BATCH_SIZE:-64}" "${args[@]}" "$@"
+  --batch-size "${SAMTOK_ANNOTATION_BATCH_SIZE:-64}" \
+  --attempts "${SAMTOK_ANNOTATION_ATTEMPTS:-3}" "${args[@]}" "$@"

@@ -6,7 +6,7 @@
 
 ## 1. 总体说明
 
-模型只完成语义任务：从原始 instruction 提取 `ref_phrase`，并写出 `noref_instruction`。模型输出严格只有这两个字段，不再输出 edit_type、add anchor、mask ID、审核结论，也不生成 `{mask_i}`。每条正常记录只需要一次 vLLM 生成；程序检查不通过才带错误原因重试，最多三次。没有同一个模型的重复抽取/自审调用。
+模型只完成语义任务：从原始 instruction 提取 `ref_phrase`，并写出 `noref_instruction`。模型输出严格只有这两个字段，不再输出 edit_type、add anchor、mask ID、审核结论，也不生成 `{mask_i}`。每条正常记录只需要一次 vLLM 生成；程序检查不通过才带错误原因重试，最多三次。没有同一个模型的重复抽取/自审调用。三次失败后新增源指令规则回退，同样经过既有协议检查；详见[当前规则实现与实测](SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)。
 
 noref 的中间文本统一使用 `this region`，add 使用 `in this region`。程序按已有类型改成训练协议要求的 region 短语并插入占位符。这样，类型、mask 索引与格式控制由程序处理，模型只负责保留编辑语义、消去旧定位描述。
 
@@ -17,6 +17,9 @@ flowchart LR
     C --> D[绑定原数据集 mask；协议校验]
     D --> E[accepted 候选]
     D --> F[失败原因与原始输出；有限重试]
+    F --> G[重试耗尽：原文规则回退并检查]
+    G --> E
+    G --> H[仍不通过：保留 failed]
 ```
 
 只使用数据集原 mask；单操作引用已有 aggregate，复合操作按已有描述绑定实例 ID。不重新计算 mask 或检查其几何准确性。后续真实 codec 编码仍是独立数据物化步骤，本脚本不导出诊断 mask code。
@@ -52,7 +55,7 @@ flowchart LR
 }
 ```
 
-模型使用 JSON schema 约束输出，禁止额外字段。原始两字段结果写入 `model_output`；下游所需信息由程序写入 `annotation.units`，两者并存便于追溯。
+模型使用 JSON schema 约束输出，禁止额外字段。模型通过的原始两字段结果写入 `model_output`；规则回退通过的原始两字段结果写入 `rule_output` 并保留模型失败尝试，`conversion_method` 区分来源；下游所需信息由程序写入 `annotation.units`，两者并存便于追溯。
 
 ### 2.2 类型沿用与粗类别细化
 

@@ -27,27 +27,15 @@
 
 真实例子说明改善与边界：`The person lifts the kitten closer to their face.` 旧版把未编辑的 kitten 也列成 region，精简版只引用 `person`，动作与 kitten 仍留在 noref。`Remove the middle lunch box from the stack...` 精简版把 `from the stack` 纳入旧 reference 并从 noref 移除。`Draw a frowning face ... in the bottom right square` 精简版保留新增脸的细节并引用新增内容加位置。反例也存在：`Add more liquid to the left test tube ... with the right test tube` 在 312 条中把不变的右试管额外列成编辑目标；`The person in the center lowers the rifle...` 仍留下 `in the center`。程序会接受这种文本问题，不能把 273/312 当成真实准确率。
 
-尝试的三个**所有输入统一附三个示例**版本，在同一 312 条上分别通过 266、267、249 条；另一版以更简短措辞附 add/action/text 三例，通过 261 条。它们都未被采用。各候选的代码快照、输出和对照脚本保存在 `/tmp/samtok21-threecase-thinking-20260929/`；旧版输出在 `/tmp/samtok21-qwen35-compare/`。最终精简版原始结果为 `benchmark_off_v5/`、`holdout_off_v5/`，逐条审阅为 `reviewed_v5.jsonl`。
+尝试的三个**所有输入统一附三个示例**版本，在同一 312 条上分别通过 266、267、249 条；另一版以更简短措辞附 add/action/text 三例，通过 261 条。它们都未被采用。未采用候选的临时代码及输出已清理，本页保留对照结论；采用版本的证据保留在 `/tmp/samtok21-threecase-thinking-20260929/`，旧版 9B 基线输出保留在 `/tmp/samtok21-qwen35-compare/`。最终精简版原始结果为 `benchmark_off_v5/`、`holdout_off_v5/`，逐条审阅为 `reviewed_v5.jsonl`。
 
 ## thinking 开关：同 prompt、同 16 条四数据集样本
 
-[生成路径](../samtok_edit21/annotate_full.py#L501)默认 `enable_thinking=False`、`max_tokens=512`。调试时可加 `--thinking --thinking-max-tokens 3072`，只支持已测试的 Qwen3.5-9B / vLLM 0.17.1；启用 `qwen3` reasoning parser。Qwen3.5 的 `<think>` 开始标记由 chat 模板放入输入，因此原始生成文本可能直接从推理正文开始，[parse_output](../samtok_edit21/annotate_full.py#L257)只取 `</think>` 后的 JSON。没有结束标记或 JSON 时保留失败记录，不把推理文本当作标注。[输出解析回归检查](../tests/test_annotation_output.py#L1)覆盖这个边界。
+以下是历史对照。当前生产代码固定 `enable_thinking=False`、`max_tokens=512`；未采用的 thinking 参数、reasoning parser 分支及专用解析测试已经删除。历史试验曾使用 3072-token 推理预算并只解析推理结束后的 JSON；不完整输出保留为失败。新版入口与规则回退见[当前实现](SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)。
 
 从留出集中预先固定 16 条、每个数据集 4 条，两个开关都只尝试一次，temperature=0、BF16、TP=1、batch=16、同一 JSON schema、同一个精简 prompt。关闭 thinking 用生产的 512-token 输出上限；打开 thinking 给 3072 tokens，以容纳推理和答案。模型初始化不计时。
 
-```bash
-cd /opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev
-export PATH="/tmp/samtok21-qwen35-compare-env/bin:$PATH"
-export OMP_NUM_THREADS=4 TOKENIZERS_PARALLELISM=false
-MODEL=/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B
-SOURCE=/tmp/samtok21-threecase-thinking-20260929/balanced16.jsonl
-CUDA_VISIBLE_DEVICES=5 python -m samtok_edit21.annotate_full \
-  --sources "$SOURCE" --output /tmp/samtok21-threecase-thinking-20260929/reproduce_off \
-  --model "$MODEL" --batch-size 16 --attempts 1
-CUDA_VISIBLE_DEVICES=4 python -m samtok_edit21.annotate_full \
-  --sources "$SOURCE" --output /tmp/samtok21-threecase-thinking-20260929/reproduce_on \
-  --model "$MODEL" --batch-size 16 --attempts 1 --thinking --thinking-max-tokens 3072
-```
+
 
 | 指标 | thinking 关 | thinking 开 |
 |---|---:|---:|
@@ -56,6 +44,6 @@ CUDA_VISIBLE_DEVICES=4 python -m samtok_edit21.annotate_full \
 | 生成 tokens | 686 | 46,968 |
 | 生成/检查时间 | 2.68 秒 | 53.67 秒 |
 
-打开后 11 条输出恰好达到 3072-token 上限，全部停留在推理正文，没有 `</think>` 或 JSON；剩余 5 条的两字段结果与关闭时语义相同，没有观察到新纠正的案例。较低的 1536-token 预算也曾在另一三例候选上试跑四数据集 32 条，三次重试后仅 2 条通过，耗时 162.98 秒。**这只是本模型、本 prompt 与 vLLM 结构化输出配置的结果**；不能推断所有 thinking 模式都无益。以现有配置开展 98,574 条全量转换时不应打开 thinking。四机入口没有传 `--thinking`，仍用默认关闭。
+打开后 11 条输出恰好达到 3072-token 上限，全部停留在推理正文，没有 `</think>` 或 JSON；剩余 5 条的两字段结果与关闭时语义相同，没有观察到新纠正的案例。较低的 1536-token 预算也曾在另一三例候选上试跑四数据集 32 条，三次重试后仅 2 条通过，耗时 162.98 秒。**这只是本模型、本 prompt 与 vLLM 结构化输出配置的结果**；不能推断所有 thinking 模式都无益。以现有配置开展 98,574 条全量转换时不应打开 thinking。当前四机版本固定关闭 thinking，不再提供该实验开关。
 
 本次没有改变训练数据协议、原 mask、类型映射、语义校验或四机分片逻辑。生产新 prompt 的身份哈希与旧 prompt 不同；[四机指南](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)要求使用新的 run ID，不可把旧 prompt 的 accepted 记录混入同一续跑。实际输出仍落在 `$SAMTOK_DATA_EXPERIMENT/data/semantic_runs/$SAMTOK_ANNOTATION_RUN_ID/`。

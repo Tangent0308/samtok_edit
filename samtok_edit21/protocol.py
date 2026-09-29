@@ -379,7 +379,8 @@ def validate_inline(prompt, variant, edit_type):
         # exact source-span matching; a last-word heuristic cannot reject it.
         forbidden = (r"the|a|an" if variant == "ref" else
                      r"the|a|an|to|of|on|in|at|with|from|near|under|over|behind|beside")
-        if re.search(r"(?:^|\s)(?:" + forbidden + r") $", before, re.I):
+        named_a = variant == 'ref' and re.search(r'\b(?:[Mm]odel|labeled|labelled|label) A $', before)
+        if re.search(r"(?:^|\s)(?:" + forbidden + r") $", before, re.I) and not named_a:
             raise ValueError("Mask group cannot directly follow an article/preposition")
         if after and (after.startswith("  ") or (after[0].isalnum()) or re.match(r"\s+[.,;:!?]", after)):
             raise ValueError("Invalid spacing after mask group")

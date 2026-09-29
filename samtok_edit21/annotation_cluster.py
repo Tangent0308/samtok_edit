@@ -102,9 +102,11 @@ def merge(sources, shards, output, world_size):
     if identities[0]['sources_sha256'] != file_hash(sources):
         raise ValueError('Merge sources differ from worker input')
     accepted_counts, failures, kinds = Counter(), [], Counter()
+    methods, rule_datasets, rules = Counter(), Counter(), Counter()
     output.mkdir(parents=True, exist_ok=True)
     destination = output / 'annotations.jsonl'
-    with destination.with_suffix('.tmp').open('w') as stream:
+    rule_destination = output / 'rule_based.jsonl'
+    with destination.with_suffix('.tmp').open('w') as stream, rule_destination.with_suffix('.tmp').open('w') as rule_stream:
         for source in inputs:
             value = results[source['id']]
             if value['status'] != 'accepted':
@@ -116,20 +118,35 @@ def merge(sources, shards, output, world_size):
             if value['review'].get('valid') is not True:
                 raise ValueError('Accepted annotation has no positive protocol checks')
             verify_semantic_review(source, value['annotation'], value['review'])
+            method = value.get('conversion_method')
+            if method not in {'llm', 'rule_based'}:
+                raise ValueError('Accepted annotation has no conversion provenance')
+            methods[method] += 1
+            if method == 'rule_based':
+                if value['fallback']['version'] != identities[0]['fallback_version']:
+                    raise ValueError('Rule fallback version differs from worker identity')
+                rule_datasets[source['dataset']] += 1
+                rules[value['fallback']['rule']] += 1
+                rule_stream.write(json.dumps(value, ensure_ascii=False) + '\n')
             accepted_counts[source['dataset']] += 1
             kinds['composite' if len(value['annotation']['units']) > 1 else
                   value['annotation']['units'][0]['edit_type']] += 1
             stream.write(json.dumps(value, ensure_ascii=False) + '\n')
     destination.with_suffix('.tmp').replace(destination)
+    rule_destination.with_suffix('.tmp').replace(rule_destination)
     with (output / 'failed.jsonl').open('w') as stream:
         for value in failures:
             stream.write(json.dumps(value, ensure_ascii=False) + '\n')
     report = {'input_count': len(inputs), 'accepted_count': sum(accepted_counts.values()),
               'accepted_by_dataset': dict(accepted_counts), 'failed_count': len(failures),
+              'llm_accepted_count': methods['llm'], 'rule_based_accepted_count': methods['rule_based'],
+              'rule_based_by_dataset': dict(rule_datasets), 'rule_based_rules': dict(rules),
+              'failed_by_dataset': dict(Counter(x['source']['dataset'] for x in failures)),
+              'rule_based_sha256': file_hash(rule_destination),
               'edit_types': dict(kinds), 'identity': identities[0],
               'annotations_sha256': file_hash(destination), 'candidates_complete': not failures,
               'semantic_ready': False,
-              'training_ready': False, 'review_kind': 'two-field-generation-plus-deterministic-protocol-checks'}
+              'training_ready': False, 'review_kind': 'llm-with-rule-fallback-and-deterministic-protocol-checks'}
     write_json(output / 'conversion_report.json', report)
     if not failures:
         write_json(output / 'CANDIDATES_COMPLETE.json', report)
@@ -223,6 +240,8 @@ class AnnotationPipeline(Pipeline):
                 if self.rank == 0 and time.monotonic() >= next_log:
                     progress = read_progress_snapshots(shards)
                     status = {'accepted': sum(p['accepted'] for p in progress),
+                              'llm_accepted': sum(p.get('llm_accepted', 0) for p in progress),
+                              'rule_based_accepted': sum(p.get('rule_based_accepted', 0) for p in progress),
                               'failed': sum(p['failed_this_attempt'] for p in progress),
                               'reporting_shards': len(progress)}
                     print(json.dumps(status), flush=True)
@@ -241,6 +260,8 @@ class AnnotationPipeline(Pipeline):
                                                         'processed_complete': True,
                                                         'input_count': report['input_count'],
                                                         'accepted_count': report['accepted_count'],
+                                                        'llm_accepted_count': report['llm_accepted_count'],
+                                                        'rule_based_accepted_count': report['rule_based_accepted_count'],
                                                         'failed_count': report['failed_count'],
                                                         'candidates_complete': report['candidates_complete'],
                                                         'semantic_ready': False,

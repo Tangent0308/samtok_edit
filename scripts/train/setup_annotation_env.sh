@@ -15,13 +15,9 @@ if [[ ! -f "$SAMTOK_ENV/pyvenv.cfg" ]]; then
 fi
 MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B}"
 MODEL_TYPE="$($PYTHON_BIN -c 'import json,sys; print(json.load(open(sys.argv[1]))["model_type"])' "$MODEL/config.json")"
-if [[ "$MODEL_TYPE" == qwen3_5 || "$MODEL_TYPE" == qwen3_5_moe ]]; then
-  LOCK="$REPO/requirements-annotation-qwen35-lock.txt"
-  EXPECT_TORCH=2.10.0 EXPECT_TRANSFORMERS=4.57.6 EXPECT_VLLM=0.17.1
-else
-  LOCK="$REPO/requirements-annotation-lock.txt"
-  EXPECT_TORCH=2.8.0 EXPECT_TRANSFORMERS=4.55.2 EXPECT_VLLM=0.10.2
-fi
+[[ "$MODEL_TYPE" == qwen3_5 ]] || { echo 'Use the selected Qwen3.5-9B annotation model' >&2; exit 2; }
+LOCK="$REPO/requirements-annotation-qwen35-lock.txt"
+EXPECT_TORCH=2.10.0 EXPECT_TRANSFORMERS=4.57.6 EXPECT_VLLM=0.17.1
 "$UV" pip sync --python "$SAMTOK_ENV/bin/python" --index-url "$INDEX" "$LOCK"
 "$UV" pip check --python "$SAMTOK_ENV/bin/python"
 EXPECT_TORCH="$EXPECT_TORCH" EXPECT_TRANSFORMERS="$EXPECT_TRANSFORMERS" EXPECT_VLLM="$EXPECT_VLLM" "$SAMTOK_ENV/bin/python" - <<'PY'
