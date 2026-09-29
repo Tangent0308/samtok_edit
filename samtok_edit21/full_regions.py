@@ -97,7 +97,7 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
                 image_hashes[name] = file_hash(name)
         value['images'] = {name: image_hashes[name] for name in [*names, row['image']]}
         coverage = coverage_path(row)
-        if not coverage.exists():
+        if value['eligible'] and not coverage.exists():
             temporary_coverage = coverage.with_suffix('.tmp')
             torch.save({'spans': spans, 'coverage_source': value.get('coverage_source'),
                         'coverage_target': value.get('coverage_target'),
@@ -179,7 +179,12 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
         else:
             cached = coverage_path(row)
             if cached.exists():
-                from_coverage(row, key, torch.load(cached, map_location='cpu', weights_only=True))
+                cached_value = torch.load(cached, map_location='cpu', weights_only=True)
+                if cached_value.get('coverage_source') is None or cached_value.get('coverage_target') is None:
+                    cached.unlink()
+                    pending.append((row, key))
+                else:
+                    from_coverage(row, key, cached_value)
             else:
                 pending.append((row, key))
                 if len(pending) >= 64:
