@@ -110,7 +110,7 @@ bash scripts/train/bootstrap_arnold_4node.sh \
   --wandb-mode online
 ```
 
-`3081` 是按全量 plain pool 和当前全局 batch 计算的一轮调度长度：Stage 1 的 global batch 是 256，比例为 NTP:ref:noref:plain = 3:2:2:1；Stage 2 的 global batch 是 128，比例为 ref:noref:plain = 1:2:1。训练会按 edit type 池有放回采样并严格满足每个 optimizer update 的比例；NTP/ref/noref 池在这一轮都会覆盖全部源行，plain 池是约一轮的随机采样（多出的 18 个位置仍按同一规则抽样，个别 plain 行可能留到下一轮）。`stage1_steps` 和 `stage2_steps` 仍是 optimizer updates，不是 microsteps。
+`3081` 是按全量 plain pool 和当前全局 batch 计算的一轮近似调度长度：Stage 1 的 global batch 是 256，比例为 NTP:ref:noref:plain = 3:2:2:1；Stage 2 的 global batch 是 128，比例为 ref:noref:plain = 1:2:1。训练会按 edit type 池有放回采样并严格满足每个 optimizer update 的比例；它保证所有类型池都参与训练，但加权随机采样不承诺每一行在单轮内都出现。每阶段的 `schedule_report.json` 会记录 `source_rows`、`draws`、`unique_rows` 和 `unseen_rows`，如果实验目标要求严格逐行覆盖，应据此增加 steps 后再启动。`stage1_steps` 和 `stage2_steps` 仍是 optimizer updates，不是 microsteps。
 
 训练输出位于：
 
