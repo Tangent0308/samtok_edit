@@ -148,6 +148,11 @@ class RegionStore:
         record = self.manifest["rows"].get(key)
         if record is None:
             raise ValueError("Missing row in region cache")
+        if record.get("reason") == "task" and record.get("eligible") is False and "file" not in record:
+            value = {"schema": SCHEMA, "identity": self.identity, "row_hash": key,
+                     "eligible": False, "reason": "task"}
+            validate_supervision(value, row=row)
+            return value
         from .provenance import cache_path
         path = cache_path(self.directory, record["file"])
         if file_hash(path) != record["sha256"]:

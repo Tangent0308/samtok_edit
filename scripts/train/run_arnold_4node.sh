@@ -30,7 +30,8 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" NCCL_DEBUG="${NCCL_DEBUG:-WARN}"
 export PYTHONPATH="$REPO:$REPO/DiffSynth-Studio${PYTHONPATH:+:$PYTHONPATH}"
 cd "$REPO"
 bash scripts/train/setup_cluster_env.sh
+SAMTOK_TRAIN_DATA="${SAMTOK_TRAIN_DATA:-$SAMTOK_EXPERIMENT/data}"
 "$SAMTOK_ENV/bin/python" -m samtok_edit21.cluster \
-  --run-root "$RUN" --data "$SAMTOK_EXPERIMENT/data" \
+  --run-root "$RUN" --data "$SAMTOK_TRAIN_DATA" \
   --wandb-mode online --wandb-project "${WANDB_PROJECT:-samtok-edit}" \
   --wandb-entity "${WANDB_ENTITY:-2200012743-peking-university}" "$@"

@@ -92,6 +92,7 @@ class Pipeline:
         ).strip()
         self.inference_script = self.repo / "scripts/train/debug_inference8.py"
         self.audit_script = self.repo / "scripts/train/audit_debug_run.py"
+        self.full_audit_script = self.repo / "scripts/train/audit_full_training.py"
         self.node = self.root / "nodes" / str(self.rank)
         # Never consume stale success markers from a previous attempt.
         try:
@@ -187,7 +188,7 @@ class Pipeline:
                   "source_sha256": source_digest(self.repo), "packages": packages,
                   "debug_scripts": {str(p.relative_to(self.repo)):
                       hashlib.sha256(p.read_bytes()).hexdigest()
-                      for p in (self.inference_script, self.audit_script)},
+                      for p in (self.inference_script, self.audit_script, self.full_audit_script)},
                   "data": {n:hashlib.sha256((data/n).read_bytes()).hexdigest() for n in
                            ("stage1.jsonl", "stage2.jsonl", "regions/manifest.json")}}
         atomic_json(self.node / "topology.json", {"common": common, "hostname": socket.gethostname(),
@@ -220,17 +221,32 @@ class Pipeline:
             "--te-adapter", str(self.root/"stage1/adapter"), "--output", str(self.root/"cache"), *shared])
         self.distributed("stage2", ["-m", "samtok_edit21.train", "train", "--stage", "stage2",
             "--cache", str(self.root/"cache"), "--region-weight", str(a.region_weight),
-            "--attention-weight", str(a.attention_weight), "--attention-warmup-steps", "1",
+            "--attention-weight", str(a.attention_weight), "--attention-warmup-steps", str(a.attention_warmup_steps),
             "--steps", str(a.stage2_steps), "--save-steps", "4", "--accumulation", "4",
             "--rank", str(a.stage2_rank), "--output", str(self.root/"stage2"), *shared, *tracking("stage2")])
-        if self.rank == 0:
-            self.command("inference", [sys.executable, "-m", "torch.distributed.run", "--standalone",
-                         "--nproc_per_node", "8", "--max_restarts", "0", str(self.inference_script),
-                         "--run-root", str(self.root), "--data", str(data), "--qwen", a.qwen, "--samtok", a.samtok])
-        self.barrier("inference")
-        if self.rank == 0:
-            self.command("audit", [sys.executable, str(self.audit_script), "--run-root", str(self.root)])
-        self.barrier("audit")
+        if a.full_training:
+            # The debug inference harness assumes the 18-row smoke manifest and
+            # intentionally is not run on the full corpus. Training itself has
+            # rank-gradient, cache, W&B and parameter-consistency checks.
+            if self.rank == 0:
+                self.command("audit_full", [sys.executable, str(self.full_audit_script),
+                             "--run-root", str(self.root), "--data", str(data)])
+            self.barrier("audit_full")
+            if self.rank == 0:
+                atomic_json(self.root / "TRAINING_COMPLETE.json",
+                            {"time": time.time(), "world_size": self.topo["world_size"],
+                             "data": str(data), "stage1_steps": a.stage1_steps,
+                             "stage2_steps": a.stage2_steps})
+            self.barrier("training_complete")
+        else:
+            if self.rank == 0:
+                self.command("inference", [sys.executable, "-m", "torch.distributed.run", "--standalone",
+                             "--nproc_per_node", "8", "--max_restarts", "0", str(self.inference_script),
+                             "--run-root", str(self.root), "--data", str(data), "--qwen", a.qwen, "--samtok", a.samtok])
+            self.barrier("inference")
+            if self.rank == 0:
+                self.command("audit", [sys.executable, str(self.audit_script), "--run-root", str(self.root)])
+            self.barrier("audit")
         if self.rank == 0:
             atomic_json(self.root / "SUCCESS.json", {"time": time.time(), "world_size": self.topo["world_size"]})
 
@@ -252,6 +268,8 @@ def main():
     p.add_argument("--max-pixels", type=int, default=65536)
     p.add_argument("--region-weight", type=float, default=0.5)
     p.add_argument("--attention-weight", type=float, default=0.1, help="Smoke coefficient only; calibrate for real training")
+    p.add_argument("--attention-warmup-steps", type=int, default=500)
+    p.add_argument("--full-training", action="store_true", help="Run full metadata without the 18-row debug inference/audit harness")
     p.add_argument("--seed", type=int, default=20260928)
     p.add_argument("--timeout", type=int, default=7200, help="Per-phase and barrier timeout in seconds")
     args = p.parse_args()

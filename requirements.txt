@@ -3,6 +3,7 @@
 mmengine==0.10.7
 ijson
 pyarrow
+pycocotools==2.0.11
 hydra-core
 opencv-python
 scipy
