@@ -141,6 +141,7 @@ class RegionStore:
         if self.manifest.get("identity_hash") != self.identity:
             raise ValueError("Region identity hash mismatch")
         self._verified_files = set()
+        self._verified_coverages = set()
 
     def load(self, row, base_path):
         row = original_row(row)
@@ -148,10 +149,31 @@ class RegionStore:
         record = self.manifest["rows"].get(key)
         if record is None:
             raise ValueError("Missing row in region cache")
-        if record.get("reason") == "task" and record.get("eligible") is False and "file" not in record:
+        if record.get("reason") in {"task", "empty_region"} and record.get("eligible") is False and "file" not in record and "coverage_file" not in record:
             value = {"schema": SCHEMA, "identity": self.identity, "row_hash": key,
-                     "eligible": False, "reason": "task"}
+                     "eligible": False, "reason": record["reason"]}
             validate_supervision(value, row=row)
+            return value
+        if record.get("coverage_file"):
+            from .provenance import cache_path
+            path = cache_path(self.directory, record["coverage_file"])
+            coverage_key = str(path.resolve())
+            if coverage_key not in self._verified_coverages:
+                if file_hash(path) != record.get("sha256"):
+                    raise ValueError("Region coverage checksum mismatch")
+                self._verified_coverages.add(coverage_key)
+            cached = torch.load(path, map_location="cpu", weights_only=True)
+            value = {"schema": SCHEMA, "identity": self.identity, "row_hash": key,
+                     "eligible": record["eligible"], "reason": record["reason"],
+                     **cached}
+            validate_supervision(value, row=row)
+            for name, digest in value.get("images", {}).items():
+                source = Path(base_path) / name
+                signature = (str(source.resolve()), digest)
+                if signature not in self._verified_files:
+                    if file_hash(source) != digest:
+                        raise ValueError("Region source/target image content changed")
+                    self._verified_files.add(signature)
             return value
         from .provenance import cache_path
         path = cache_path(self.directory, record["file"])

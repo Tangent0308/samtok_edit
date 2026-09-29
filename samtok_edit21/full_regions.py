@@ -38,7 +38,8 @@ def identity_for(metadata, qwen, samtok, max_pixels, processor):
     return identity
 
 
-def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
+def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels,
+           decode_batch_size=16):
     from .codec import SamtokCodec
     from .model import build_processor, resize_sources
 
@@ -55,6 +56,7 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
     codec = SamtokCodec(model / 'sam2.1_hiera_large.pt', model / 'mask_tokenizer_256x2.pth',
                         device=device)
     records, seen, image_hashes = {}, 0, {}
+    coverage_hashes = {}
     counts = Counter()
     coverage_dir = output / 'coverage'
     coverage_dir.mkdir(exist_ok=True)
@@ -65,14 +67,21 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
                                  'codec': identity['codec']}, sort_keys=True).encode()
         return coverage_dir / (hashlib.sha256(digest_key).hexdigest() + '.pt')
 
-    def register(row, key, value, path=None):
+    def register(row, key, value):
         nonlocal seen
         counts['eligible' if value.get('eligible') else value['reason']] += 1
-        if path is None:
-            records[key] = {'eligible': False, 'reason': value['reason']}
+        if value.get('eligible'):
+            coverage = coverage_path(row)
+            if not coverage.is_file():
+                raise ValueError(f'Missing shared region coverage: {coverage}')
+            coverage_key = str(coverage)
+            if coverage_key not in coverage_hashes:
+                coverage_hashes[coverage_key] = file_hash(coverage)
+            records[key] = {'coverage_file': str(coverage.relative_to(output)),
+                            'sha256': coverage_hashes[coverage_key],
+                            'eligible': True, 'reason': ''}
         else:
-            records[key] = {'file': path.name, 'sha256': file_hash(path),
-                            'eligible': value['eligible'], 'reason': value['reason']}
+            records[key] = {'eligible': False, 'reason': value['reason']}
 
     def save_new(row, key, masks, resized, height, width):
         path = output / f'{key}.pt'
@@ -98,7 +107,7 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
         value['images'] = {name: image_hashes[name] for name in [*names, row['image']]}
         coverage = coverage_path(row)
         if value['eligible'] and not coverage.exists():
-            temporary_coverage = coverage.with_suffix('.tmp')
+            temporary_coverage = coverage.with_name(f'{coverage.name}.{rank}.tmp')
             torch.save({'spans': spans, 'coverage_source': value.get('coverage_source'),
                         'coverage_target': value.get('coverage_target'),
                         'images': value.get('images', {})}, temporary_coverage)
@@ -110,22 +119,15 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
                 if not coverage.exists():
                     raise
         validate_supervision(value, row=row)
-        temporary = output / f'{key}.{rank}.tmp'
-        torch.save(value, temporary)
-        temporary.replace(path)
-        register(row, key, value, path)
+        register(row, key, value)
 
     def from_coverage(row, key, cached):
-        path = output / f'{key}.pt'
         value = {'schema': SCHEMA, 'identity': digest, 'row_hash': key,
                  'eligible': True, 'reason': '', 'spans': cached['spans'],
                  'coverage_source': cached['coverage_source'],
                  'coverage_target': cached['coverage_target'], 'images': cached['images']}
         validate_supervision(value, row=row)
-        temporary = path.with_suffix('.tmp')
-        torch.save(value, temporary)
-        temporary.replace(path)
-        register(row, key, value, path)
+        register(row, key, value)
 
     def flush(batch):
         if not batch:
@@ -139,8 +141,10 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
                                      height, width)[0]
             entry = (row, key, sources[0], resized, height, width)
             (single if len(spans_in(row['prompt'])) == 1 else multi).append(entry)
-        for offset in range(0, len(single), 64):
-            group = single[offset:offset + 64]
+        if decode_batch_size < 1:
+            raise ValueError('decode_batch_size must be positive')
+        for offset in range(0, len(single), decode_batch_size):
+            group = single[offset:offset + decode_batch_size]
             decoded = codec.decode_single_batch([(x[2], x[0]['prompt']) for x in group])
             for entry, masks in zip(group, decoded):
                 save_new(entry[0], entry[1], [masks], entry[3], entry[4], entry[5])
@@ -166,7 +170,7 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
             validate_supervision(value, row=row)
             if value.get('eligible') and not coverage_path(row).exists():
                 coverage = coverage_path(row)
-                temporary = coverage.with_suffix('.tmp')
+                temporary = coverage.with_name(f'{coverage.name}.{rank}.tmp')
                 torch.save({'spans': value['spans'], 'coverage_source': value['coverage_source'],
                             'coverage_target': value['coverage_target'], 'images': value.get('images', {})},
                            temporary)
@@ -175,7 +179,7 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
                 except FileNotFoundError:
                     if not coverage.exists():
                         raise
-            register(row, key, value, path)
+            register(row, key, value)
         else:
             cached = coverage_path(row)
             if cached.exists():
@@ -208,6 +212,7 @@ def worker(metadata, output, qwen, samtok, rank, shards, device, max_pixels):
 def merge(metadata, output, shards):
     metadata, output = Path(metadata).resolve(), Path(output).resolve()
     all_rows, identities, counts = {}, [], Counter()
+    verified_coverages = set()
     for rank in range(shards):
         value = json.loads((output / f'shard-{rank:02d}.json').read_text())
         if value['rank'] != rank or value['shards'] != shards:
@@ -216,10 +221,19 @@ def merge(metadata, output, shards):
         for key, record in value['rows'].items():
             if key in all_rows:
                 raise ValueError('Duplicate region row across shards')
-            if 'file' in record and not (output / record['file']).is_file():
-                raise ValueError('Missing region tensor file')
-            if 'file' not in record and record != {'eligible': False, 'reason': 'task'}:
-                raise ValueError('Only task-ineligible rows may omit a tensor file')
+            if 'coverage_file' in record:
+                coverage = output / record['coverage_file']
+                coverage_key = str(coverage)
+                if coverage_key not in verified_coverages:
+                    if not isinstance(record.get('sha256'), str) or len(record['sha256']) != 64:
+                        raise ValueError('Missing shared region coverage checksum')
+                    # Each worker computed this checksum when it published the
+                    # immutable coverage file. RegionStore checks file existence
+                    # and checksum lazily on first training read; avoid touching
+                    # ~97k NFS files here.
+                    verified_coverages.add(coverage_key)
+            elif record.get('eligible') is not False or record.get('reason') not in {'task', 'empty_region'}:
+                raise ValueError('Only task/empty-region rows may omit region coverage')
             all_rows[key] = record
         counts.update(value['counts'])
     if any(x != identities[0] for x in identities):
@@ -260,6 +274,7 @@ def main(argv=None):
     worker_parser.add_argument('--shards', type=int, required=True)
     worker_parser.add_argument('--device', default='cuda:0')
     worker_parser.add_argument('--max-pixels', type=int, default=1048576)
+    worker_parser.add_argument('--decode-batch-size', type=int, default=16)
     merge_parser = sub.add_parser('merge')
     merge_parser.add_argument('--metadata', required=True)
     merge_parser.add_argument('--output', required=True)
@@ -267,7 +282,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.command == 'worker':
         worker(args.metadata, args.output, args.qwen, args.samtok,
-               args.rank, args.shards, args.device, args.max_pixels)
+               args.rank, args.shards, args.device, args.max_pixels,
+               args.decode_batch_size)
     else:
         merge(args.metadata, args.output, args.shards)
 

@@ -16,7 +16,7 @@ data/train_full_9b_rules_003/
   stage2.jsonl             # plain + UMT-ref + UMT-noref
   provenance.jsonl         # 每行 metadata 到源 ID/数据集/转换方式的绑定
   metadata_report.json     # 行数、各来源统计、SHA256
-  regions/                 # stage1 对应的冻结区域 coverage cache
+  regions/                 # stage1 对应的冻结区域 coverage cache（按内容去重）
 ```
 
 ## 数据筛选与字段
@@ -62,19 +62,29 @@ CUDA_VISIBLE_DEVICES=0 python -m samtok_edit21.full_training_data encode-worker 
 python -m samtok_edit21.full_training_data merge --output "$TRAIN_DATA"
 ```
 
-区域监督缓存使用 stage1 的 metadata 和同一 codec：
+区域监督缓存使用 stage1 的 metadata 和同一 codec。这里使用 16 个本地预处理 shard，轮流复用 8 张 GPU（`rank % 8`）；它们只负责生成训练前的冻结 coverage，不改变正式训练的 4 机 × 8 卡拓扑：
 
 ```bash
-python -m samtok_edit21.full_regions worker \
-  --metadata "$TRAIN_DATA/stage1.jsonl" --output "$TRAIN_DATA/regions" \
-  --qwen /mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1 \
-  --samtok "$SAMTOK_CODEC" --rank 0 --shards 8 --device cuda:0
-
-python -m samtok_edit21.full_regions merge \
-  --metadata "$TRAIN_DATA/stage1.jsonl" --output "$TRAIN_DATA/regions" --shards 8
+for rank in $(seq 0 15); do
+  gpu=$((rank % 8))
+  CUDA_VISIBLE_DEVICES="$gpu" python -m samtok_edit21.full_regions worker \
+    --metadata "$TRAIN_DATA/stage1.jsonl" --output "$TRAIN_DATA/regions" \
+    --qwen /mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1 \
+    --samtok "$SAMTOK_CODEC" --rank "$rank" --shards 16 --device cuda:0 \
+    --decode-batch-size 16 \
+    > "$TRAIN_DATA/regions_logs/worker-$rank.log" 2>&1 &
+done
+wait
 ```
 
-`full_training_data.py` 和 `full_regions.py` 都是可恢复的：编码 chunk、tensor 文件、sha256 收据和 row hash 不一致时会直接失败。合并前必须覆盖全部 source ID；区域 manifest 必须覆盖 stage1 的全部 row hash，任务不适用的 plain/NTP 行以 `reason=task` 显式记录。
+所有 worker 产生 `shard-00.json` 到 `shard-15.json` 后执行：
+
+```bash
+python -m samtok_edit21.full_regions merge \
+  --metadata "$TRAIN_DATA/stage1.jsonl" --output "$TRAIN_DATA/regions" --shards 16
+```
+
+`full_training_data.py` 和 `full_regions.py` 都是可恢复的：编码 chunk、tensor 文件、sha256 收据和 row hash 不一致时会直接失败。合并前必须覆盖全部 source ID；区域 manifest 必须覆盖 stage1 的全部 row hash，任务不适用的 plain/NTP 行以 `reason=task` 显式记录。区域任务的 tensor 保存在 `regions/coverage/*.pt`，同一 source/target/span 组合的 ref 和 noref 行共享一份文件；manifest 对每行记录 coverage 相对路径和 SHA256，并在训练读取时重新校验源图哈希。
 
 ## 正式四机入口
 
@@ -100,7 +110,7 @@ bash scripts/train/bootstrap_arnold_4node.sh \
   --wandb-mode online
 ```
 
-`3081` 是按全量 plain pool 和当前全局 batch 计算的一轮调度长度：Stage 1 的 global batch 是 256，比例为 NTP:ref:noref:plain = 3:2:2:1；Stage 2 的 global batch 是 128，比例为 ref:noref:plain = 1:2:1。训练会按类型池有放回采样，满足固定比例并覆盖全部源行；`stage1_steps` 和 `stage2_steps` 仍是 optimizer updates，不是 microsteps。
+`3081` 是按全量 plain pool 和当前全局 batch 计算的一轮调度长度：Stage 1 的 global batch 是 256，比例为 NTP:ref:noref:plain = 3:2:2:1；Stage 2 的 global batch 是 128，比例为 ref:noref:plain = 1:2:1。训练会按 edit type 池有放回采样并严格满足每个 optimizer update 的比例；NTP/ref/noref 池在这一轮都会覆盖全部源行，plain 池是约一轮的随机采样（多出的 18 个位置仍按同一规则抽样，个别 plain 行可能留到下一轮）。`stage1_steps` 和 `stage2_steps` 仍是 optimizer updates，不是 microsteps。
 
 训练输出位于：
 
