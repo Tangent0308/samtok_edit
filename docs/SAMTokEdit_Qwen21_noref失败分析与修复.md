@@ -1,5 +1,7 @@
 # noref 转换失败分析与修复（2026-09-29）
 
+最新 prompt 优化及 4B / 8B / Qwen3.5-9B 复测见[模型复测记录](SAMTokEdit_Qwen21_noref提示词优化与模型复测.md)。本页历史实验数字保留原口径。
+
 ## 1. 结论与范围
 
 **已证实旧 prompt 的 color 示例会污染输出；同时存在 reference 校验误判和语义校验漏检。** 本次修改了 prompt、纠错反馈和确定性检查，使用本地 Qwen3-4B-Instruct-2507 + vLLM 0.10.2 完成实际生成、八卡分片与严格汇总验证。模型输出仍只有 ref_phrase 和 noref_instruction；不输出编辑类型、anchor、mask ID。
@@ -49,7 +51,7 @@
 
 方法要求模型提取完整原文指代并消除旧定位，保持操作和新内容。类型来自数据集；模型不重新分类。
 
-[annotate_full.py:19](../samtok_edit21/annotate_full.py#L19)、[task_prompt](../samtok_edit21/annotate_full.py#L58)：共享规则 + 仅本类一个格式示例。属性示例改为木碗变光滑，不再给每条请求套 `color of`。reasoning/count 粗类别不默认展示 composite 示例。ref_phrase 的生成 schema 统一为列表，历史字符串读取仍兼容。
+[annotate_full.py:19](../samtok_edit21/annotate_full.py#L19)、[task_prompt](../samtok_edit21/annotate_full.py#L59)：共享规则 + 仅本类一个格式示例。属性示例改为木碗变光滑，不再给每条请求套 `color of`。reasoning/count 粗类别不默认展示 composite 示例。ref_phrase 的生成 schema 统一为列表，历史字符串读取仍兼容。
 
 ```json
 {"ref_phrase": ["middle vase"], "noref_instruction": "Change this region from glass to ceramic"}
@@ -66,9 +68,9 @@ model_input(source, {
 
 ### 3.2 程序规范化与原 mask 沿用
 
-[normalize_annotation](../samtok_edit21/annotate_full.py#L178)：原文唯一连续片段匹配、顺序与 region 数量检查仍保留。text 外层引号只有在原文确实存在精确匹配的一对时才补回；不猜测文字。去掉 region 前重复冠词，非 add 的 `in this region` 保留语法介词。
+[normalize_annotation](../samtok_edit21/annotate_full.py#L179)：原文唯一连续片段匹配、顺序与 region 数量检查仍保留。text 外层引号只有在原文确实存在精确匹配的一对时才补回；不猜测文字。去掉 region 前重复冠词，非 add 的 `in this region` 保留语法介词。
 
-[bind_masks](../samtok_edit21/annotate_full.py#L145)：单操作仍用原 `union`；复合操作仍只绑定已有 instance IDs，歧义保持失败。本轮不生成 mask，不检查原 mask 几何准确性，也不放宽复合实例绑定。
+[bind_masks](../samtok_edit21/annotate_full.py#L146)：单操作仍用原 `union`；复合操作仍只绑定已有 instance IDs，歧义保持失败。本轮不生成 mask，不检查原 mask 几何准确性，也不放宽复合实例绑定。
 
 例如实际 material 样本转换为：
 
@@ -96,7 +98,7 @@ if matched not in choices and not grammatical_in:
 
 ### 3.4 校验加强及边界
 
-[verify_semantic_review](../samtok_edit21/annotate_full.py#L321) 新增：编辑动作吞入 ref、原词遗漏、text 附加约束丢失、重复 part-of、OLD text 残留及 NEW 被填入 from-OLD 子句、add 缺少新内容等检查。发生问题反馈给模型；三次仍未通过则显式保存失败。
+[verify_semantic_review](../samtok_edit21/annotate_full.py#L322) 新增：编辑动作吞入 ref、原词遗漏、text 附加约束丢失、重复 part-of、OLD text 残留及 NEW 被填入 from-OLD 子句、add 缺少新内容等检查。发生问题反馈给模型；三次仍未通过则显式保存失败。
 
 这些是保守的词项/结构检查，**不是语义等价证明**。例如原文 `wear blue clothing` 改为 `blue clothing` 可能被词项守恒拒绝；另一方面，错误地把旧属性搬成新属性，词都还在，也可能逃过检查。代码与报告继续写 `semantic_quality_verified=false`。
 

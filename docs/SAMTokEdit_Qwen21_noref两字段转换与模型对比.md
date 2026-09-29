@@ -1,5 +1,7 @@
 # noref 两字段转换实现与 4B / 8B 对照实验
 
+现已选择 Qwen3.5-9B 做全量转换；失败分类见[9B 样本审计](SAMTokEdit_Qwen21_9B未通过样本审计.md)。最新 prompt 优化及 4B / 8B / Qwen3.5-9B 复测见[模型复测记录](SAMTokEdit_Qwen21_noref提示词优化与模型复测.md)。本页历史实验数字保留原口径。
+
 更新：2026-09-29。当前 prompt/校验已修订；第 4 节保留旧版模型对比结果，不能当作新版准确率。最新失败分析与验证见[修复记录](SAMTokEdit_Qwen21_noref失败分析与修复.md)。四机完整 ARNOLD 入口仍在[四机运行指南第 7.3 节](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)。
 
 ## 1. 总体说明
@@ -23,7 +25,7 @@ flowchart LR
 
 ### 2.1 输入与模型输出
 
-[annotate_full.py:82](../samtok_edit21/annotate_full.py#L82)：输入原指令及已有的协议类型；只有类型尚未映射时才传原生粗类别。源记录仍完整保留 dataset、native_type、instances 与 ID；这些字段不需要模型重复生成。重试请求额外携带上一条错误原因与 previous_output，使模型可以针对实际答案纠错。
+[annotate_full.py:83](../samtok_edit21/annotate_full.py#L83)：输入原指令及已有的协议类型；只有类型尚未映射时才传原生粗类别。源记录仍完整保留 dataset、native_type、instances 与 ID；这些字段不需要模型重复生成。重试请求额外携带上一条错误原因与 previous_output，使模型可以针对实际答案纠错。
 
 ```json
 {
@@ -54,7 +56,7 @@ flowchart LR
 
 ### 2.2 类型沿用与粗类别细化
 
-[annotate_full.py:90](../samtok_edit21/annotate_full.py#L90)：RefEdit、CrispEdit、ScaleEdit、Derived 中已有明确映射的类型直接沿用，模型没有重新分类权限。原生类别到协议类型的基础映射沿用 [prepare.py:TYPE_MAP](../samtok_edit21/prepare.py#L32)。
+[annotate_full.py:91](../samtok_edit21/annotate_full.py#L91)：RefEdit、CrispEdit、ScaleEdit、Derived 中已有明确映射的类型直接沿用，模型没有重新分类权限。原生类别到协议类型的基础映射沿用 [prepare.py:TYPE_MAP](../samtok_edit21/prepare.py#L32)。
 
 ```python
 mapped = source.get('provisional_type')
@@ -68,7 +70,7 @@ if mapped in REGION_PHRASES:
 
 ### 2.3 程序生成协议字段
 
-[annotate_full.py:178](../samtok_edit21/annotate_full.py#L178)：检查 reference 是原文唯一连续片段，按原文顺序对应 region；将中间文本规范成下表的训练短语，再插入 `{mask_i}`。
+[annotate_full.py:179](../samtok_edit21/annotate_full.py#L179)：检查 reference 是原文唯一连续片段，按原文顺序对应 region；将中间文本规范成下表的训练短语，再插入 `{mask_i}`。
 
 | 训练类型 | 程序生成的片段 |
 |---|---|
@@ -98,11 +100,11 @@ if mapped in REGION_PHRASES:
 
 ### 2.4 原 mask 绑定、检查与失败记录
 
-[annotate_full.py:145](../samtok_edit21/annotate_full.py#L145)：一个语义单元直接引用已有 `union`；多个单元按 reference 与已有 instance/observation 描述的词项重合绑定 ID，覆盖每个实例一次。词项匹配只是保守的文本关联，不能当作语义证明；存在歧义就保留失败，绝不生成新 mask。
+[annotate_full.py:146](../samtok_edit21/annotate_full.py#L146)：一个语义单元直接引用已有 `union`；多个单元按 reference 与已有 instance/observation 描述的词项重合绑定 ID，覆盖每个实例一次。词项匹配只是保守的文本关联，不能当作语义证明；存在歧义就保留失败，绝不生成新 mask。
 
-[annotate_full.py:274](../samtok_edit21/annotate_full.py#L274)：复用原 `convert_record` 验证 NTP/ref/noref 结构、引用顺序和占位符。[annotate_full.py:321](../samtok_edit21/annotate_full.py#L321) 现在只有确定性检查：新词异常、add 丢失新增内容、text 的 OLD/NEW 混淆、属性操作词被吞入引用等。输出明确记录 `semantic_quality_verified=false`；没有用模型的自评充当准确率。
+[annotate_full.py:275](../samtok_edit21/annotate_full.py#L275)：复用原 `convert_record` 验证 NTP/ref/noref 结构、引用顺序和占位符。[annotate_full.py:322](../samtok_edit21/annotate_full.py#L322) 现在只有确定性检查：新词异常、add 丢失新增内容、text 的 OLD/NEW 混淆、属性操作词被吞入引用等。输出明确记录 `semantic_quality_verified=false`；没有用模型的自评充当准确率。
 
-[annotate_full.py:408](../samtok_edit21/annotate_full.py#L408)：每卡一个 TP=1 副本，BF16、temperature=0、max_tokens=512、max_model_len=8192、batch_size=64。Qwen3-8B 使用 `enable_thinking=False`，与 4B 的直接输出方式一致。续跑身份包括输入、模型、prompt、schema、转换实现以及 prepare/protocol 的 SHA256。
+[annotate_full.py:409](../samtok_edit21/annotate_full.py#L409)：每卡一个 TP=1 副本，BF16、temperature=0、max_tokens=512、max_model_len=8192、batch_size=64。Qwen3-8B 使用 `enable_thinking=False`，与 4B 的直接输出方式一致。续跑身份包括输入、模型、prompt、schema、转换实现以及 prepare/protocol 的 SHA256；本轮新增推理依赖版本与 engine_options，防止跨环境续写。
 
 ### 2.5 四机行为
 
@@ -129,7 +131,8 @@ A whole-image edit uses ["this image"]. Do not shorten or paraphrase references.
 noref_instruction: replace old edited objects and their locating descriptions
 with "this region". Keep original wording otherwise: actions, new values/content,
 counts, comparisons and keep-unchanged clauses. Do not add property names or expand
-verbs. For addition keep ALL new content; replace only placement with "in this
+verbs. For addition keep ALL new content, including clothing/appearance/pose;
+replace only placement with "in this
 region" (append it if placement is absent). For text replacement remove OLD text
 and its carrier/location but preserve NEW text and every additional constraint.
 Do not keep a from-OLD clause, repeat NEW as OLD, or write text-on-this-region.
@@ -149,9 +152,9 @@ If correction is provided, revise previous_output to address it; do not repeat i
 {
     'attribute': ('Make the rough wooden bowl smooth.', ['rough wooden bowl'], 'Make this region smooth.'),
     'remove': ('Remove the broken clock on the wall.', ['broken clock on the wall'], 'Remove this region.'),
-    'replace': ('Replace the cracked plate with a glass bowl.', ['cracked plate'], 'Replace this region with a glass bowl.'),
+    'replace': ('Replace the house with a tiled roof on the left with a glass tower.', ['house with a tiled roof on the left'], 'Replace this region with a glass tower.'),
     'action': ('A person jumps off the ledge.', ['person'], 'This region jumps off the ledge.'),
-    'add': ('Add a small lamp on the desk.', ['small lamp on the desk'], 'Add a small lamp in this region.'),
+    'add': ('Add a woman in a green coat and white boots beside the bus.', ['woman in a green coat and white boots beside the bus'], 'Add a woman in a green coat and white boots in this region.'),
     'text': ("Replace the text 'Exit' with 'Open' on the sign.", ["'Exit'"], "Replace this region with 'Open'."),
     'composite': ('Remove the chair and make the old desk smooth.', ['chair', 'old desk'], 'Remove this region and make this region smooth.'),
 }

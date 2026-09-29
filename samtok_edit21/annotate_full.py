@@ -30,7 +30,8 @@ A whole-image edit uses ["this image"]. Do not shorten or paraphrase references.
 noref_instruction: replace old edited objects and their locating descriptions
 with "this region". Keep original wording otherwise: actions, new values/content,
 counts, comparisons and keep-unchanged clauses. Do not add property names or expand
-verbs. For addition keep ALL new content; replace only placement with "in this
+verbs. For addition keep ALL new content, including clothing/appearance/pose;
+replace only placement with "in this
 region" (append it if placement is absent). For text replacement remove OLD text
 and its carrier/location but preserve NEW text and every additional constraint.
 Do not keep a from-OLD clause, repeat NEW as OLD, or write text-on-this-region.
@@ -47,9 +48,9 @@ If correction is provided, revise previous_output to address it; do not repeat i
 PROMPT_EXAMPLES = {
     'attribute': ('Make the rough wooden bowl smooth.', ['rough wooden bowl'], 'Make this region smooth.'),
     'remove': ('Remove the broken clock on the wall.', ['broken clock on the wall'], 'Remove this region.'),
-    'replace': ('Replace the cracked plate with a glass bowl.', ['cracked plate'], 'Replace this region with a glass bowl.'),
+    'replace': ('Replace the house with a tiled roof on the left with a glass tower.', ['house with a tiled roof on the left'], 'Replace this region with a glass tower.'),
     'action': ('A person jumps off the ledge.', ['person'], 'This region jumps off the ledge.'),
-    'add': ('Add a small lamp on the desk.', ['small lamp on the desk'], 'Add a small lamp in this region.'),
+    'add': ('Add a woman in a green coat and white boots beside the bus.', ['woman in a green coat and white boots beside the bus'], 'Add a woman in a green coat and white boots in this region.'),
     'text': ("Replace the text 'Exit' with 'Open' on the sign.", ["'Exit'"], "Replace this region with 'Open'."),
     'composite': ('Remove the chair and make the old desk smooth.', ['chair', 'old desk'], 'Remove this region and make this region smooth.'),
 }
@@ -406,12 +407,19 @@ def verify_semantic_review(source, annotation, review):
 
 
 def main():
+    from importlib.metadata import version
     from vllm import LLM, SamplingParams
-    from vllm.sampling_params import GuidedDecodingParams
+    # vLLM 0.17 uses structured_outputs; retain the 0.10.2 cluster API.
+    if 'structured_outputs' in SamplingParams.__struct_fields__:
+        from vllm.sampling_params import StructuredOutputsParams
+        json_decoding = {'structured_outputs': StructuredOutputsParams(json=OUTPUT_SCHEMA)}
+    else:
+        from vllm.sampling_params import GuidedDecodingParams
+        json_decoding = {'guided_decoding': GuidedDecodingParams(json=OUTPUT_SCHEMA)}
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--sources', required=True)
     p.add_argument('--output', required=True)
-    p.add_argument('--model', default='/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507')
+    p.add_argument('--model', default='/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B')
     p.add_argument('--shard', type=int, default=0)
     p.add_argument('--shards', type=int, default=1)
     p.add_argument('--batch-size', type=int, default=64)
@@ -426,6 +434,13 @@ def main():
     path = out / f'annotations-{args.shard:02d}.jsonl'
     if not 0 <= args.shard < args.shards or args.batch_size < 1 or args.attempts < 1:
         raise ValueError('Invalid sharding or generation settings')
+    model_config = json.loads((Path(args.model) / 'config.json').read_text())
+    engine_options = {}
+    if model_config.get('model_type') in {'qwen3_5', 'qwen3_5_moe'}:
+        from vllm.engine.arg_utils import EngineArgs
+        if 'language_model_only' not in EngineArgs.__dataclass_fields__:
+            raise ValueError('Qwen3.5 annotation requires a compatible vLLM environment (tested: 0.17.1)')
+        engine_options['language_model_only'] = True
     if args.model_identity:
         model_identity = json.loads(Path(args.model_identity).read_text())
     else:
@@ -436,6 +451,8 @@ def main():
                 'implementation': file_hash(__file__),
                 'protocol_dependencies': {name: file_hash(Path(__file__).with_name(name))
                                           for name in ('prepare.py', 'protocol.py')}, 'shard': args.shard, 'shards': args.shards,
+                'runtime': {name: version(name) for name in ('vllm', 'torch', 'transformers')},
+                'engine_options': engine_options,
                 'max_model_len': args.max_model_len, 'attempts': args.attempts}
     identity_path = out / f'identity-{args.shard:02d}.json'
     if identity_path.exists() and json.loads(identity_path.read_text()) != identity:
@@ -471,7 +488,8 @@ def main():
     model = LLM(model=args.model, dtype='bfloat16', tensor_parallel_size=1,
                 gpu_memory_utilization=args.gpu_memory_utilization,
                 max_model_len=args.max_model_len, max_num_seqs=args.batch_size,
-                enable_prefix_caching=True, disable_log_stats=True, seed=20260928)
+                enable_prefix_caching=True, disable_log_stats=True, seed=20260928,
+                **engine_options)
     tok = model.get_tokenizer()
     model_init_seconds = time.monotonic() - model_started
     generation_stats = {'calls': 0, 'requests': 0, 'output_tokens': 0, 'seconds': 0.0}
@@ -488,7 +506,7 @@ def main():
             generation_started = time.monotonic()
             generated = model.generate([texts[i] for i in valid],
                         SamplingParams(temperature=0, max_tokens=tokens,
-                            guided_decoding=GuidedDecodingParams(json=OUTPUT_SCHEMA)), use_tqdm=False)
+                            **json_decoding), use_tqdm=False)
             generation_stats['seconds'] += time.monotonic() - generation_started
             generation_stats['calls'] += 1
             generation_stats['requests'] += len(valid)

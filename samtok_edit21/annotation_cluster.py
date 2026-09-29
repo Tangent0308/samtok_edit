@@ -274,7 +274,7 @@ def main():
     p.add_argument('--prepared-data-root',
                    help='Prepared data directory with aligned semantic_sources.jsonl and sources.jsonl')
     p.add_argument('--run-root', required=True)
-    p.add_argument('--model', default='/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507')
+    p.add_argument('--model', default='/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B')
     p.add_argument('--local-root', default='/tmp/samtok-annotation')
     p.add_argument('--resume-from', help='Previous run directory; must have identical code/model/input/sharding')
     p.add_argument('--batch-size', type=int, default=64)

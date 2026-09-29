@@ -12,6 +12,7 @@ export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 unset PORT MASTER_ADDR MASTER_PORT NODE_RANK NNODES GPUS_PER_NODE
 cd "$REPO"
 bash scripts/train/setup_annotation_env.sh
+export PATH="$SAMTOK_ENV/bin:$PATH"
 args=()
 if [[ -n "${SAMTOK_ANNOTATION_RESUME_FROM:-}" ]]; then
   args+=(--resume-from "$SAMTOK_ANNOTATION_RESUME_FROM")
@@ -19,5 +20,5 @@ fi
 "$SAMTOK_ENV/bin/python" -m samtok_edit21.annotation_cluster \
   --sources "$SAMTOK_ANNOTATION_SOURCES" --run-root "$SAMTOK_ANNOTATION_RUN_ROOT" \
   --prepared-data-root "$SAMTOK_DATA_EXPERIMENT/data" \
-  --model "${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/common/models/Qwen3-4B-Instruct-2507}" \
+  --model "${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B}" \
   --batch-size "${SAMTOK_ANNOTATION_BATCH_SIZE:-64}" "${args[@]}" "$@"

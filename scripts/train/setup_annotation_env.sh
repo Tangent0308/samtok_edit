@@ -13,16 +13,27 @@ fi
 if [[ ! -f "$SAMTOK_ENV/pyvenv.cfg" ]]; then
   "$UV" venv --python "$PYTHON_BIN" --no-python-downloads "$SAMTOK_ENV"
 fi
-"$UV" pip sync --python "$SAMTOK_ENV/bin/python" --index-url "$INDEX" "$REPO/requirements-annotation-lock.txt"
+MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B}"
+MODEL_TYPE="$($PYTHON_BIN -c 'import json,sys; print(json.load(open(sys.argv[1]))["model_type"])' "$MODEL/config.json")"
+if [[ "$MODEL_TYPE" == qwen3_5 || "$MODEL_TYPE" == qwen3_5_moe ]]; then
+  LOCK="$REPO/requirements-annotation-qwen35-lock.txt"
+  EXPECT_TORCH=2.10.0 EXPECT_TRANSFORMERS=4.57.6 EXPECT_VLLM=0.17.1
+else
+  LOCK="$REPO/requirements-annotation-lock.txt"
+  EXPECT_TORCH=2.8.0 EXPECT_TRANSFORMERS=4.55.2 EXPECT_VLLM=0.10.2
+fi
+"$UV" pip sync --python "$SAMTOK_ENV/bin/python" --index-url "$INDEX" "$LOCK"
 "$UV" pip check --python "$SAMTOK_ENV/bin/python"
-"$SAMTOK_ENV/bin/python" - <<'PY'
+EXPECT_TORCH="$EXPECT_TORCH" EXPECT_TRANSFORMERS="$EXPECT_TRANSFORMERS" EXPECT_VLLM="$EXPECT_VLLM" "$SAMTOK_ENV/bin/python" - <<'PY'
+import os
 import sys, torch, transformers, vllm
 assert sys.version_info[:2] == (3, 11)
-assert torch.__version__.split('+')[0] == '2.8.0'
-assert transformers.__version__ == '4.55.2'
-assert vllm.__version__ == '0.10.2'
-print('Annotation environment validated: Python 3.11 / torch 2.8 / vLLM 0.10.2')
+assert torch.__version__.split('+')[0] == os.environ['EXPECT_TORCH']
+assert transformers.__version__ == os.environ['EXPECT_TRANSFORMERS']
+assert vllm.__version__ == os.environ['EXPECT_VLLM']
+print(f'Annotation environment validated: Python 3.11 / torch {torch.__version__} / vLLM {vllm.__version__}')
 PY
+export PATH="$SAMTOK_ENV/bin:$PATH"
 PYTHONPATH="$REPO" "$SAMTOK_ENV/bin/python" -m samtok_edit21.cuda_readiness \
   --output "${SAMTOK_CUDA_DIAGNOSTICS:-${SAMTOK_ENV}-cuda}" --expected 8 \
   --timeout "${SAMTOK_CUDA_READY_TIMEOUT:-600}" --interval 15
