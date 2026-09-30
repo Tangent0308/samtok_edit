@@ -1,10 +1,12 @@
+> 历史归档：保留当时的实验与命令；当前启动入口及数据状态以 [四份主文档](../README.md) 为准。旧 run ID 不应直接重用。
+
 # Qwen3.5-9B noref 未通过样本审计
 
 记录日期：2026-09-29。与[三模型对照实验](SAMTokEdit_Qwen21_noref提示词优化与模型复测.md)使用同一 prompt、温度 0、最多三次重试。本页引用的是逐条保存的原始两字段输出，mask 仅沿用数据集现有标注，不核对几何准确性。
 
 ## 1. 两种检查及其分母
 
-程序检查在[validate_annotation](../samtok_edit21/annotate_full.py#L275)和[verify_semantic_review](../samtok_edit21/annotate_full.py#L322)内执行：ref 必须是原文唯一片段，ref 与 this region 数量对应，编辑类型/占位符符合协议，多实例只能绑定已有 mask ID，并检查若干明确的 OLD/NEW 词项约束。正常输出失败后最多重试三次；三次仍不合格才标记 `failed`。它**没有**逐条理解图像编辑语义。
+程序检查在[validate_annotation](../../samtok_edit21/annotation/annotate_full.py#L275)和[verify_semantic_review](../../samtok_edit21/annotation/annotate_full.py#L322)内执行：ref 必须是原文唯一片段，ref 与 this region 数量对应，编辑类型/占位符符合协议，多实例只能绑定已有 mask ID，并检查若干明确的 OLD/NEW 词项约束。正常输出失败后最多重试三次；三次仍不合格才标记 `failed`。它**没有**逐条理解图像编辑语义。
 
 我另对预先固定的 62 条对照样本与独立 60 条留出样本逐条阅读 `ref_phrase` 和 `noref_instruction`：审查旧定位是否消失、新内容与约束是否保留、引用对象/部件是否正确、是否把未编辑的比较对象当成额外 region。这是助手文本审阅，**不是独立人工金标，也不能代表全量准确率**。
 

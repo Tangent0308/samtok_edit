@@ -4,20 +4,20 @@ import json
 import sys
 from pathlib import Path
 
-from .data import EXPERIMENT_ROOT, read_rows, write_json, write_rows, row_hash, file_hash
-from .model import DEFAULT_QWEN, DEFAULT_SAMTOK
+from .schema.data import EXPERIMENT_ROOT, read_rows, write_json, write_rows, row_hash, file_hash
+from .models.model import DEFAULT_QWEN, DEFAULT_SAMTOK
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "prepare-regions":
-        from .region_supervision import main as region_main
+        from .region.supervision import main as region_main
         return region_main(argv[1:])
     if argv and argv[0] == "calibrate-attention":
-        from .calibrate_attention import main as calibration_main
+        from .training_core.calibrate_attention import main as calibration_main
         return calibration_main(argv[1:])
     if argv and argv[0] in {"train", "cache"}:
-        from .train import main as training_main
+        from .training_core.train import main as training_main
         return training_main(argv)
     parser = argparse.ArgumentParser(description="SAMTok + Qwen-Image-2.1")
     subs = parser.add_subparsers(dest="command", required=True)
@@ -112,13 +112,13 @@ def main(argv=None):
                 p.add_argument("--decode-masks", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "build-debug":
-        from .prepare import build_debug
+        from .annotation.prepare import build_debug
 
         build_debug(args)
     elif args.command == "regions":
         from PIL import Image
-        from .codec import SamtokCodec
-        from .regions import segment, save_candidates
+        from .models.codec import SamtokCodec
+        from .region.selection import segment, save_candidates
 
         codec = SamtokCodec(
             str(Path(args.samtok) / "sam2.1_hiera_large.pt"),
@@ -135,7 +135,7 @@ def main(argv=None):
             )
         )
     elif args.command == "convert":
-        from .prepare import convert_record
+        from .annotation.prepare import convert_record
 
         checksum = file_hash(Path(args.samtok) / "mask_tokenizer_256x2.pth")
         if args.mask_tokenizer_sha256 != checksum:
@@ -179,7 +179,7 @@ def main(argv=None):
 
         rows = read_rows(args.metadata)
         if args.check_bindings:
-            from .protocol import grouped_units, parse_cot, render_units
+            from .schema.protocol import grouped_units, parse_cot, render_units
             failures = []
             for index, row in enumerate(rows):
                 if row["sample_type"] == "edit_ntp":
@@ -213,13 +213,13 @@ def inference(args):
     import numpy as np
     import torch
     from PIL import Image
-    from .model import load_pipeline, edit, localize
-    from .training import load_adapter
+    from .models.model import load_pipeline, edit, localize
+    from .training_core.training import load_adapter
 
     if args.command == "localize" and args.candidates < 1:
         raise ValueError("candidates must be positive")
     from accelerate.utils import set_seed
-    from .protocol import spans_in
+    from .schema.protocol import spans_in
     set_seed(args.seed)
     masks = spans_in(args.prompt)
     mode = getattr(args, "mode", None)
@@ -245,7 +245,7 @@ def inference(args):
             raise ValueError("Invalid reference image index")
     reviewed = json.loads(Path(args.units_file).read_text()) if args.units_file else None
     if getattr(args, "dit_adapter", None):
-        from .provenance import assert_inference_identity
+        from .schema.provenance import assert_inference_identity
         config = json.loads((Path(args.dit_adapter) / "adapter.json").read_text())
         if config["stage"] != "stage2":
             raise ValueError("--dit-adapter must belong to Stage 2")
@@ -286,8 +286,8 @@ def inference(args):
             for _ in range(args.candidates)
         ]
         if args.decode_masks:
-            from .codec import SamtokCodec
-            from .regions import decode_localizations
+            from .models.codec import SamtokCodec
+            from .region.selection import decode_localizations
 
             codec = SamtokCodec(
                 str(Path(args.samtok) / "sam2.1_hiera_large.pt"),
@@ -305,8 +305,8 @@ def inference(args):
     prompt = args.prompt
     mode = "direct" if stock else args.mode
     if mode == "interactive":
-        from .codec import SamtokCodec
-        from .protocol import interactive_prompt
+        from .models.codec import SamtokCodec
+        from .schema.protocol import interactive_prompt
 
         if len(images) != 1 or not args.mask:
             raise ValueError("Interactive mode requires one source image and --mask")

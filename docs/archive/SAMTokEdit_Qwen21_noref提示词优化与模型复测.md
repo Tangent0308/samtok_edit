@@ -1,3 +1,5 @@
+> 历史归档：保留当时的实验与命令；当前启动入口及数据状态以 [四份主文档](../README.md) 为准。旧 run ID 不应直接重用。
+
 # noref prompt 优化与 Qwen3 / Qwen3.5 对照实验
 
 实验日期：2026-09-29。本页是上一轮 prompt 和模型选择实验；**当前精简 prompt 与 thinking 开关实测**见[三例与 thinking 对照](SAMTokEdit_Qwen21_noref三例Prompt与Thinking对照.md)，完整当前规则见[两字段转换说明第 3 节](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md#3-当前完整-prompt)。9B 的上一轮拒绝与人工式文本审阅漏检实例见[9B 未通过样本审计](SAMTokEdit_Qwen21_9B未通过样本审计.md)。本记录接续[失败分析](SAMTokEdit_Qwen21_noref失败分析与修复.md)，所有模型仅输出 `ref_phrase` 与 `noref_instruction`；不生成类型、mask ID 或自评。继续使用数据集已有 mask，不判断几何准确性。
@@ -26,14 +28,14 @@
 
 ### 2.2 详细实现
 
-方法要求 add 的 NEW 内容仍出现在 noref，而 OLD 位置由 region 代替；replace 要分清描述旧物体的 `with` 与引出替换物的 `with`。[annotate_full.py:19](../samtok_edit21/annotate_full.py#L19) 的共享规则新增：
+方法要求 add 的 NEW 内容仍出现在 noref，而 OLD 位置由 region 代替；replace 要分清描述旧物体的 `with` 与引出替换物的 `with`。[annotate_full.py:19](../../samtok_edit21/annotation/annotate_full.py#L19) 的共享规则新增：
 
 ```text
 For addition keep ALL new content, including clothing/appearance/pose;
 replace only placement with "in this region".
 ```
 
-[annotate_full.py:48](../samtok_edit21/annotate_full.py#L48) 中仅改 add / replace 示例：
+[annotate_full.py:48](../../samtok_edit21/annotation/annotate_full.py#L48) 中仅改 add / replace 示例：
 
 ```text
 Add a woman in a green coat and white boots beside the bus.
@@ -80,7 +82,7 @@ noref_instruction = "Replace this region with a glass tower."
 
 新建隔离环境 `/tmp/samtok21-qwen35-compare-env`，vLLM 0.17.1 / torch 2.10.0+cu128 / transformers 4.57.6。训练与原四机标注环境不在此处升级。环境锁定清单保存在实验目录 `requirements.lock.txt`。项目另需 pyarrow；启动必须将该环境的 bin 加入 PATH，让 FlashInfer 能找到 ninja。首次测试分别暴露缺 pyarrow 与 PATH 未包含 ninja，补齐后重新完整运行；失败启动不计入正式吞吐。
 
-[annotate_full.py:409](../samtok_edit21/annotate_full.py#L409) 兼容新版 JSON 约束 API，同时保留原 vLLM 0.10.2 路径：
+[annotate_full.py:409](../../samtok_edit21/annotation/annotate_full.py#L409) 兼容新版 JSON 约束 API，同时保留原 vLLM 0.10.2 路径：
 
 ```python
 if 'structured_outputs' in SamplingParams.__struct_fields__:
@@ -90,7 +92,7 @@ else:
 # 同一个 OUTPUT_SCHEMA，仍只有 ref_phrase 与 noref_instruction。
 ```
 
-[模型识别](../samtok_edit21/annotate_full.py#L437)根据 config 的 `model_type` 识别 Qwen3.5，传入 `language_model_only=True`；若环境不支持，提前报清晰错误。模型初始化参数保持一致。[运行身份](../samtok_edit21/annotate_full.py#L454)增加 vLLM / torch / transformers 版本与纯文本模式，避免跨环境结果被无提示续写到同一目录。
+[模型识别](../../samtok_edit21/annotation/annotate_full.py#L437)根据 config 的 `model_type` 识别 Qwen3.5，传入 `language_model_only=True`；若环境不支持，提前报清晰错误。模型初始化参数保持一致。[运行身份](../../samtok_edit21/annotation/annotate_full.py#L454)增加 vLLM / torch / transformers 版本与纯文本模式，避免跨环境结果被无提示续写到同一目录。
 
 ```python
 if model_config.get('model_type') in {'qwen3_5', 'qwen3_5_moe'}:

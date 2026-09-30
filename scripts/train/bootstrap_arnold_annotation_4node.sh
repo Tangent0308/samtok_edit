@@ -3,13 +3,13 @@
 set -Eeuo pipefail
 
 export SAMTOK_DATA_EXPERIMENT="${SAMTOK_DATA_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928}"
-export SAMTOK_ANNOTATION_RUN_ID="${SAMTOK_ANNOTATION_RUN_ID:-qwen21_noref9b_rules_4n_full_002}"
+: "${SAMTOK_ANNOTATION_RUN_ID:?Set a fresh common annotation run ID}"
 export SAMTOK_ANNOTATION_SOURCES="${SAMTOK_ANNOTATION_SOURCES:-$SAMTOK_DATA_EXPERIMENT/data/semantic_sources.jsonl}"
 export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B}"
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
 export SAMTOK_ANNOTATION_ATTEMPTS="${SAMTOK_ANNOTATION_ATTEMPTS:-3}"
-export SAMTOK_EDIT_REPO_URL="https://github.com/Tangent0308/samtok_edit.git"
-export SAMTOK_EDIT_BRANCH="qwen-image-2.1-dev"
+export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
 # Optional: pin a pushed commit. The revised prompt/protocol needs a fresh run.
 # Resume only a run made with identical code, model, input and sharding.
 export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"

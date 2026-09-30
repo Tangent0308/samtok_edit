@@ -1,6 +1,8 @@
+> 历史归档：保留当时的实验与命令；当前启动入口及数据状态以 [四份主文档](../README.md) 为准。旧 run ID 不应直接重用。
+
 # noref 当前采用版本、规则回退与四机复跑
 
-更新：2026-09-29。完整可复制的 ARNOLD 入口在[四机指南 §7.3](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)，对应仓库脚本 [bootstrap_arnold_annotation_4node.sh](../scripts/train/bootstrap_arnold_annotation_4node.sh#L1)。本轮没有启动远端作业；代码从已推送的 `qwen-image-2.1-dev` 分支 clone，每机八卡、四机共 32 个独立文本转换副本，不使用 W&B。
+更新：2026-09-29。完整可复制的 ARNOLD 入口在[四机指南 §7.3](SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)，对应仓库脚本 [bootstrap_arnold_annotation_4node.sh](../../scripts/train/bootstrap_arnold_annotation_4node.sh#L1)。本轮没有启动远端作业；代码从已推送的 `qwen-image-2.1-dev` 分支 clone，每机八卡、四机共 32 个独立文本转换副本，不使用 W&B。
 
 ## 1. 总体说明
 
@@ -29,13 +31,13 @@ flowchart TD
 
 ### 2.1 保留采用版本，移除实验分支
 
-[共享 prompt](../samtok_edit21/annotate_full.py#L20)与[按类型示例](../samtok_edit21/annotate_full.py#L41)保持上一轮选定版本。[生成路径](../samtok_edit21/annotate_full.py#L511)固定 `enable_thinking=False`、512-token 输出预算；BF16、temperature=0、prefix caching、TP=1、batch=64。生产 CLI 已删除 thinking 参数和相应解析路径，删除仅测试该路径的测试文件；旧 4B/8B vLLM 0.10.2 兼容分支和旧依赖锁也已移除。环境只使用 [9B 专用锁](../requirements-annotation-qwen35-lock.txt)。
+[共享 prompt](../../samtok_edit21/annotation/annotate_full.py#L20)与[按类型示例](../../samtok_edit21/annotation/annotate_full.py#L41)保持上一轮选定版本。[生成路径](../../samtok_edit21/annotation/annotate_full.py#L511)固定 `enable_thinking=False`、512-token 输出预算；BF16、temperature=0、prefix caching、TP=1、batch=64。生产 CLI 已删除 thinking 参数和相应解析路径，删除仅测试该路径的测试文件；旧 4B/8B vLLM 0.10.2 兼容分支和旧依赖锁也已移除。环境只使用 [9B 专用锁](../requirements-annotation-qwen35-lock.txt)。
 
 未采用的本地 prompt 变体、代码快照、thinking 试跑输出按明确路径清单清理；保留采用版本的输出、基线指标与历史实验结论。清理清单为 `/tmp/samtok21-rule-fallback-20260929/cleanup_manifest.json`，本次记录 96 个文件或目录。模型权重和可用环境保留，未删除训练数据或正式实验输出。
 
 ### 2.2 原文规则和边界
 
-新增 [rule_fallback.py](../samtok_edit21/rule_fallback.py#L1)，版本 `source-grammar-v1`。[_atomic](../samtok_edit21/rule_fallback.py#L57)处理明确的 add/remove/replace、属性变化、比较尺寸、部分动作与带引号文字替换句式；[candidates](../samtok_edit21/rule_fallback.py#L171)识别由操作动词分隔的复合子句。引用必须来自原始指令，不从失败模型答案猜测。
+新增 [rule_fallback.py](../../samtok_edit21/annotation/rule_fallback.py#L1)，版本 `source-grammar-v1`。[_atomic](../../samtok_edit21/annotation/rule_fallback.py#L57)处理明确的 add/remove/replace、属性变化、比较尺寸、部分动作与带引号文字替换句式；[candidates](../../samtok_edit21/annotation/rule_fallback.py#L171)识别由操作动词分隔的复合子句。引用必须来自原始指令，不从失败模型答案猜测。
 
 | 情况 | 规则行为 |
 |---|---|
@@ -48,11 +50,11 @@ flowchart TD
 | 多操作的 mask ID 无法唯一对应 | 保留失败，附绑定错误 |
 | 原生 add 标签与指令操作矛盾 | 不擅自修改类型，保留失败 |
 
-两处校验误拒也已修正：[add 内容词检查](../samtok_edit21/annotate_full.py#L367)把 `introduce` 计为操作词；[inline 检查](../samtok_edit21/protocol.py#L382)允许 `Model A`、`labeled A` 这类名称结尾，仍禁止 mask 紧跟普通冠词。没有把整体校验改成宽松通过。
+两处校验误拒也已修正：[add 内容词检查](../../samtok_edit21/annotation/annotate_full.py#L367)把 `introduce` 计为操作词；[inline 检查](../../samtok_edit21/schema/protocol.py#L382)允许 `Model A`、`labeled A` 这类名称结尾，仍禁止 mask 紧跟普通冠词。没有把整体校验改成宽松通过。
 
 ### 2.3 回退调用与来源记录
 
-[fallback_result](../samtok_edit21/annotate_full.py#L402)中的关键路径：
+[fallback_result](../../samtok_edit21/annotation/annotate_full.py#L402)中的关键路径：
 
 ```python
 for name, output in rule_candidates(source):
@@ -61,7 +63,7 @@ for name, output in rule_candidates(source):
     review = verify_semantic_review(source, annotation, {'valid': True})
 ```
 
-任一步校验异常就保留失败原因；上述片段省略了异常处理和结果封装。模型三次耗尽后，[worker 调用回退](../samtok_edit21/annotate_full.py#L567)。通过记录包含：
+任一步校验异常就保留失败原因；上述片段省略了异常处理和结果封装。模型三次耗尽后，[worker 调用回退](../../samtok_edit21/annotation/annotate_full.py#L567)。通过记录包含：
 
 ```json
 {
@@ -81,7 +83,7 @@ for name, output in rule_candidates(source):
 
 这是关键字段摘录。完整记录另含 `id`、三次失败 `attempts`、`annotation`、`review` 和 `source_sha256`；不伪装为 `model_output`。`review.semantic_quality_verified=false` 明确表示确定性检查不等于语义金标。
 
-[merge](../samtok_edit21/annotation_cluster.py#L67)校验 ID 覆盖、输入 hash、分片身份、校验结果和转换来源；规则版本必须与 worker identity 一致。新增 `llm_accepted_count`、`rule_based_accepted_count`、按数据集/规则统计和 `rule_based_sha256`。身份包含规则源码 hash，旧版本输出不能混入续跑。
+[merge](../../samtok_edit21/annotation/annotation_cluster.py#L67)校验 ID 覆盖、输入 hash、分片身份、校验结果和转换来源；规则版本必须与 worker identity 一致。新增 `llm_accepted_count`、`rule_based_accepted_count`、按数据集/规则统计和 `rule_based_sha256`。身份包含规则源码 hash，旧版本输出不能混入续跑。
 
 ### 2.4 最终本地结果中的真实例子
 

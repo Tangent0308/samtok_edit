@@ -13,7 +13,7 @@ pip install -r requirements.txt
 export PYTHONPATH=$PWD:DiffSynth-Studio
 ```
 
-Set local model paths with `--qwen` and `--samtok`, or use the defaults in `samtok_edit21/model.py`.
+Set local model paths with `--qwen` and `--samtok`, or use the defaults in `samtok_edit21/models/model.py`.
 
 ## Data validation
 
@@ -78,12 +78,11 @@ python -m samtok_edit21.cli infer --image /path/source.png \
   --dit-adapter /path/stage2/adapter --output /path/result.png
 ```
 
-For the complete implementation notes and code references, read [`docs/SAMTokEdit_Qwen21_代码实现与使用.md`](docs/SAMTokEdit_Qwen21_代码实现与使用.md). Smoke commands and results are recorded in [`docs/SAMTokEdit_Qwen21_实验记录.md`](docs/SAMTokEdit_Qwen21_实验记录.md).
+## Documentation
 
-The attention supervision and regional flow-matching loss are implemented. See [the four-node training guide](docs/SAMTokEdit_Qwen21_四机训练运行指南.md) for the multi-node runner, W&B setup, and debug launch.
+- [Implementation and code references](docs/01_SAMTokEdit_Qwen21_代码实现说明.md): method, official components, project changes, training, inference, and A/C supervision.
+- [Experiment history](docs/02_SAMTokEdit_Qwen21_实验记录.md): debug results, model/prompt comparisons, failures, fixes, and validation limits.
+- [Four-node run guide](docs/03_SAMTokEdit_Qwen21_四机实验运行指南.md): complete ARNOLD scripts for full training, debug training, and noref conversion.
+- [Training data inventory](docs/04_SAMTokEdit_Qwen21_训练数据盘点.md): source filters, final paths, counts, fields, examples, and sampling ratios.
 
-The [full dataset inventory and conversion audit](docs/SAMTokEdit_Qwen21_全量数据盘点与转换审计.md) documents final quality filters, all four datasets' type mappings, and the semantic review required before exporting no-reference instructions.
-
-四数据集当前采用 Qwen3.5-9B + vLLM，关闭 thinking，模型重试失败后做规则回退。完整 ARNOLD 入口见[四机指南第 7.3 节](docs/SAMTokEdit_Qwen21_四机训练运行指南.md#73-完整-arnold-入口)，实现、清理范围、436 条本地验证与输出路径见[规则回退与四机复跑](docs/SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)。该转换独立于训练的 W&B 记录，无需 W&B key。
-
-当前精简版的 prompt、程序后处理、逐条审阅口径和速度对比见[noref 两字段转换与 4B/8B 对比](docs/SAMTokEdit_Qwen21_noref两字段转换与模型对比.md)。
+Implementation lives in `samtok_edit21/{schema,models,annotation,training_core,region,distributed}`. The original flat module names remain compatibility entry points. Noref conversion uses Qwen3.5-9B with vLLM, thinking disabled, and validated rule fallback; it does not use W&B. Two-stage training uses W&B online.

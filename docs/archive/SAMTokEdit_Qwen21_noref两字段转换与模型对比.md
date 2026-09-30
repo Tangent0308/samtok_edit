@@ -1,3 +1,5 @@
+> 历史归档：保留当时的实验与命令；当前启动入口及数据状态以 [四份主文档](../README.md) 为准。旧 run ID 不应直接重用。
+
 # noref 两字段转换实现与 4B / 8B 对照实验
 
 现已选择 Qwen3.5-9B 做全量转换；失败分类见[9B 样本审计](SAMTokEdit_Qwen21_9B未通过样本审计.md)。最新 prompt 优化及 4B / 8B / Qwen3.5-9B 复测见[模型复测记录](SAMTokEdit_Qwen21_noref提示词优化与模型复测.md)。本页历史实验数字保留原口径。
@@ -28,7 +30,7 @@ flowchart LR
 
 ### 2.1 输入与模型输出
 
-[annotate_full.py:83](../samtok_edit21/annotate_full.py#L83)：输入原指令及已有的协议类型；只有类型尚未映射时才传原生粗类别。源记录仍完整保留 dataset、native_type、instances 与 ID；这些字段不需要模型重复生成。重试请求额外携带上一条错误原因与 previous_output，使模型可以针对实际答案纠错。
+[annotate_full.py:83](../../samtok_edit21/annotation/annotate_full.py#L83)：输入原指令及已有的协议类型；只有类型尚未映射时才传原生粗类别。源记录仍完整保留 dataset、native_type、instances 与 ID；这些字段不需要模型重复生成。重试请求额外携带上一条错误原因与 previous_output，使模型可以针对实际答案纠错。
 
 ```json
 {
@@ -59,7 +61,7 @@ flowchart LR
 
 ### 2.2 类型沿用与粗类别细化
 
-[annotate_full.py:91](../samtok_edit21/annotate_full.py#L91)：RefEdit、CrispEdit、ScaleEdit、Derived 中已有明确映射的类型直接沿用，模型没有重新分类权限。原生类别到协议类型的基础映射沿用 [prepare.py:TYPE_MAP](../samtok_edit21/prepare.py#L32)。
+[annotate_full.py:91](../../samtok_edit21/annotation/annotate_full.py#L91)：RefEdit、CrispEdit、ScaleEdit、Derived 中已有明确映射的类型直接沿用，模型没有重新分类权限。原生类别到协议类型的基础映射沿用 [prepare.py:TYPE_MAP](../../samtok_edit21/annotation/prepare.py#L32)。
 
 ```python
 mapped = source.get('provisional_type')
@@ -73,7 +75,7 @@ if mapped in REGION_PHRASES:
 
 ### 2.3 程序生成协议字段
 
-[annotate_full.py:179](../samtok_edit21/annotate_full.py#L179)：检查 reference 是原文唯一连续片段，按原文顺序对应 region；将中间文本规范成下表的训练短语，再插入 `{mask_i}`。
+[annotate_full.py:179](../../samtok_edit21/annotation/annotate_full.py#L179)：检查 reference 是原文唯一连续片段，按原文顺序对应 region；将中间文本规范成下表的训练短语，再插入 `{mask_i}`。
 
 | 训练类型 | 程序生成的片段 |
 |---|---|
@@ -97,21 +99,21 @@ if mapped in REGION_PHRASES:
 }
 ```
 
-不需要 `anchor_phrase`：现有 [prepare.py:reviewed_noref](../samtok_edit21/prepare.py#L142) 已支持完整显式 noref，ref/NTP 路径只需要 reference 与 mask codes。这里复用该路径，不再让规则根据 anchor 从头生成 noref。
+不需要 `anchor_phrase`：现有 [prepare.py:reviewed_noref](../../samtok_edit21/annotation/prepare.py#L142) 已支持完整显式 noref，ref/NTP 路径只需要 reference 与 mask codes。这里复用该路径，不再让规则根据 anchor 从头生成 noref。
 
-本轮还修复了 [prepare.py:canonical_reference](../samtok_edit21/prepare.py#L70) 中引号截断的问题：已完整加引号的文字如 `'5'6"'` 保留整体，避免英寸/撇号使 OLD 文本被截短。Unicode 连字符差异仅在唯一匹配时回填原文拼写，不猜测或改写指代。
+本轮还修复了 [prepare.py:canonical_reference](../../samtok_edit21/annotation/prepare.py#L70) 中引号截断的问题：已完整加引号的文字如 `'5'6"'` 保留整体，避免英寸/撇号使 OLD 文本被截短。Unicode 连字符差异仅在唯一匹配时回填原文拼写，不猜测或改写指代。
 
 ### 2.4 原 mask 绑定、检查与失败记录
 
-[annotate_full.py:146](../samtok_edit21/annotate_full.py#L146)：一个语义单元直接引用已有 `union`；多个单元按 reference 与已有 instance/observation 描述的词项重合绑定 ID，覆盖每个实例一次。词项匹配只是保守的文本关联，不能当作语义证明；存在歧义就保留失败，绝不生成新 mask。
+[annotate_full.py:146](../../samtok_edit21/annotation/annotate_full.py#L146)：一个语义单元直接引用已有 `union`；多个单元按 reference 与已有 instance/observation 描述的词项重合绑定 ID，覆盖每个实例一次。词项匹配只是保守的文本关联，不能当作语义证明；存在歧义就保留失败，绝不生成新 mask。
 
-[annotate_full.py:275](../samtok_edit21/annotate_full.py#L275)：复用原 `convert_record` 验证 NTP/ref/noref 结构、引用顺序和占位符。[annotate_full.py:322](../samtok_edit21/annotate_full.py#L322) 现在只有确定性检查：新词异常、add 丢失新增内容、text 的 OLD/NEW 混淆、属性操作词被吞入引用等。输出明确记录 `semantic_quality_verified=false`；没有用模型的自评充当准确率。
+[annotate_full.py:275](../../samtok_edit21/annotation/annotate_full.py#L275)：复用原 `convert_record` 验证 NTP/ref/noref 结构、引用顺序和占位符。[annotate_full.py:322](../../samtok_edit21/annotation/annotate_full.py#L322) 现在只有确定性检查：新词异常、add 丢失新增内容、text 的 OLD/NEW 混淆、属性操作词被吞入引用等。输出明确记录 `semantic_quality_verified=false`；没有用模型的自评充当准确率。
 
-[annotate_full.py:409](../samtok_edit21/annotate_full.py#L409)：每卡一个 TP=1 副本，BF16、temperature=0、max_tokens=512、max_model_len=8192、batch_size=64。Qwen3-8B 使用 `enable_thinking=False`，与 4B 的直接输出方式一致。续跑身份包括输入、模型、prompt、schema、转换实现以及 prepare/protocol 的 SHA256；本轮新增推理依赖版本与 engine_options，防止跨环境续写。
+[annotate_full.py:409](../../samtok_edit21/annotation/annotate_full.py#L409)：每卡一个 TP=1 副本，BF16、temperature=0、max_tokens=512、max_model_len=8192、batch_size=64。Qwen3-8B 使用 `enable_thinking=False`，与 4B 的直接输出方式一致。续跑身份包括输入、模型、prompt、schema、转换实现以及 prepare/protocol 的 SHA256；本轮新增推理依赖版本与 engine_options，防止跨环境续写。
 
 ### 2.5 四机行为
 
-[annotation_cluster.py](../samtok_edit21/annotation_cluster.py#L1) 继续采用 4 节点 × 8 个独立副本，按全局行号模 32 分片，沿用 ARNOLD 拓扑、失败传播和完整汇总；当前正式转换不初始化 W&B。
+[annotation_cluster.py](../../samtok_edit21/annotation/annotation_cluster.py#L1) 继续采用 4 节点 × 8 个独立副本，按全局行号模 32 分片，沿用 ARNOLD 拓扑、失败传播和完整汇总；当前正式转换不初始化 W&B。
 
 现在区分“任务处理完”和“每条转换通过”：所有行都有 accepted/failed 结果且汇总校验成功，就完成任务并写 SUCCESS；个别转换失败保存在 `failed.jsonl`，不将正常处理完的任务误报成基础设施故障。`CANDIDATES_COMPLETE.json` 仍只在零转换失败时生成。基础设施错误、缺分片、错误归属等仍会令作业失败。SUCCESS 中的 `candidates_complete`、accepted_count、failed_count 必须一起看，不能用 SUCCESS 推断训练数据已全部就绪。
 

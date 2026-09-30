@@ -1,3 +1,5 @@
+> 历史归档：保留当时的实验与命令；当前启动入口及数据状态以 [四份主文档](../README.md) 为准。旧 run ID 不应直接重用。
+
 # SAMTokEdit Qwen-Image-2.1 实验记录
 
 2026-09-29 最新 noref 数据转换记录见[9B 规则回退与四机复跑](SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)：最终本地四卡 436 条，398 条模型通过、24 条规则回退通过、14 条仍失败；全量 98,574 条输入关联检查通过。此项是文本数据转换验证，不是两阶段训练结果。
@@ -742,7 +744,7 @@ CUDA_VISIBLE_DEVICES=0 $PY "$OUT/integration.py"
 | 区域 C 系数 / n_min | 0.5 / 16 | 0.5 / 16 |
 | attention A 系数 | 0 | 0 → 0.1 → 0.1 |
 
-用原 seed=20260928 重新生成 [make_schedule](../samtok_edit21/data.py#L101)，与 `schedule.json` 全部内容一致；再将全局序列按 `[rank::32]` 切片，**逐 microstep** 对比每个 rank 的实际梯度日志 branch，全部一致。证据不止是最终分支计数相同。background/global/composite 未包含在本批数据中，本次不声称覆盖这些类型。
+用原 seed=20260928 重新生成 [make_schedule](../../samtok_edit21/schema/data.py#L101)，与 `schedule.json` 全部内容一致；再将全局序列按 `[rank::32]` 切片，**逐 microstep** 对比每个 rank 的实际梯度日志 branch，全部一致。证据不止是最终分支计数相同。background/global/composite 未包含在本批数据中，本次不声称覆盖这些类型。
 
 节点 0 的阶段完成时间如下，全部为 UTC（北京时间需 +8 小时）：
 
@@ -760,7 +762,7 @@ Stage 1 阶段包含基座身份哈希、权重读取、DDP 初始化和训练�
 
 ### 13.3 更新对象、梯度同步与权重落盘
 
-实现入口是 [SamtokTrainingModule](../samtok_edit21/train.py#L121)：Stage 1 挂载 TE language model LoRA，DiT/VAE/visual 保持冻结；Stage 2 只加载 DiT，用固定 cache 训练 DiT LoRA。反传、累积和同步仍走 [DiffSynth runner](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L150)，在完整 accumulation 窗口末尾才同步、裁剪并完成 optimizer update。
+实现入口是 [SamtokTrainingModule](../../samtok_edit21/training_core/train.py#L121)：Stage 1 挂载 TE language model LoRA，DiT/VAE/visual 保持冻结；Stage 2 只加载 DiT，用固定 cache 训练 DiT LoRA。反传、累积和同步仍走 [DiffSynth runner](../../DiffSynth-Studio/diffsynth/diffusion/runner.py#L150)，在完整 accumulation 窗口末尾才同步、裁剪并完成 optimizer update。
 
 | 检查 | Stage 1 | Stage 2 |
 |---|---:|---:|
@@ -775,13 +777,13 @@ Stage 1 阶段包含基座身份哈希、权重读取、DDP 初始化和训练�
 
 32 个 rank 在每个同步窗口末端的梯度范数完全一致。所有 backward 均有当前这一次反传的非零梯度峰值，避免只检查先前累积留下的梯度。初始化时部分 LoRA-A 梯度为零符合 LoRA-B 零初始化；最终全部 A/B 张量都已更新。某些未同步 microstep 的累积梯度范数高于 1，并不表示 clipping 失效：当前实现仅在同步窗口末端裁剪。
 
-除了读取运行自带的 [verify_rank_parameters](../samtok_edit21/train.py#L304) 结果，本轮独立从 `adapter.safetensors` 重算包含参数名的 SHA256，与 32 个 rank 的记录逐项相等。最终 step checkpoint 与导出的 adapter 所有 tensor 逐元素相同；首末 checkpoint 全部 LoRA-A/B tensor 均发生变化，全部 fp32 且有限。Stage 2 的当前实测为 224 个模块，不能套用历史其他 recipe 中的 232 模块计数。
+除了读取运行自带的 [verify_rank_parameters](../../samtok_edit21/training_core/train.py#L304) 结果，本轮独立从 `adapter.safetensors` 重算包含参数名的 SHA256，与 32 个 rank 的记录逐项相等。最终 step checkpoint 与导出的 adapter 所有 tensor 逐元素相同；首末 checkpoint 全部 LoRA-A/B tensor 均发生变化，全部 fp32 且有限。Stage 2 的当前实测为 224 个模块，不能套用历史其他 recipe 中的 232 模块计数。
 
 Stage 1 的 cosine 设置在这次仅 2 updates 的 smoke 中实际 LR 为 `[4e-5, 4e-5]`：`ceil(2 × 0.04)=1`，唯一 warmup update 已达到基础 LR，第二次 update 处于 cosine 起点；最后 scheduler 下降发生在最后一次更新之后。这符合当前定义，不是 scheduler 没调用。Stage 2 constant 的实际 LR 为 `[1e-4, 1e-4, 1e-4]`，两阶段无 skipped update。
 
 ### 13.4 Loss 的分母、A/C 生效与数值复算
 
-[on_optimizer_step](../samtok_edit21/train.py#L194) 按「每个指标实际出现的样本数」聚合，不能把所有列默认看成同一个分母。Stage 1 每 update：NTP 指标 96 条、FM 指标 160 条、区域指标 128 条；Stage 2：FM 指标 128 条、A/C 指标 96 条，plain skip=32。
+[on_optimizer_step](../../samtok_edit21/training_core/train.py#L194) 按「每个指标实际出现的样本数」聚合，不能把所有列默认看成同一个分母。Stage 1 每 update：NTP 指标 96 条、FM 指标 160 条、区域指标 128 条；Stage 2：FM 指标 128 条、A/C 指标 96 条，plain skip=32。
 
 | 阶段 / update | 基础 FM 均值 | C/FM 均值 | raw NTP 均值 | A 主项 / read 均值 | 实际混合 weighted_total |
 |---|---:|---:|---:|---:|---:|
@@ -791,7 +793,7 @@ Stage 1 的 cosine 设置在这次仅 2 updates 的 smoke 中实际 LR 为 `[4e-
 | S2 / 2 | 0.1345494780 | 0.1445377344 | — | 0.6799390195 / 0.5888725960 | 0.2176158855 |
 | S2 / 3 | 0.1410368418 | 0.1504116481 | — | 0.6772213553 / 0.6011615066 | 0.2237468078 |
 
-Stage 1 的 `loss_total` 只对 FM 子集有定义；**完整混合训练应看 `weighted_total`**。具体计算与 [forward](../samtok_edit21/train.py#L225) 一致：
+Stage 1 的 `loss_total` 只对 FM 子集有定义；**完整混合训练应看 `weighted_total`**。具体计算与 [forward](../../samtok_edit21/training_core/train.py#L225) 一致：
 
 ```python
 # 指标均值按各自 counts 计算；下面复算的是全局 accumulation 窗口。
@@ -802,9 +804,9 @@ stage2_total = mean_fm + effective_A * (mean_attn_main + 0.5 * mean_attn_read) *
 # = 0.2176158879，日志值 0.2176158855，差约 2.34e-9。
 ```
 
-五条日志的独立复算误差最大为 **2.35e-9**，符合 FP32 舍入。Stage 2 首 update 的 A 系数为 0，但仍计算 A 统计；本次显式 `attention_warmup_steps=1`，第二个 update 起系数为 0.1，[`completed_updates` 控制系数](../samtok_edit21/train.py#L185) 与记录一致。正式默认 500 不被本实验覆盖。
+五条日志的独立复算误差最大为 **2.35e-9**，符合 FP32 舍入。Stage 2 首 update 的 A 系数为 0，但仍计算 A 统计；本次显式 `attention_warmup_steps=1`，第二个 update 起系数为 0.1，[`completed_updates` 控制系数](../../samtok_edit21/training_core/train.py#L185) 与记录一致。正式默认 500 不被本实验覆盖。
 
-区域损失在 [region_fm_loss](../samtok_edit21/region_supervision.py#L53) 使用 soft coverage 和 `n_min=16` 下界，并将最终位置权重归一化。每一步 `region_weight_sum` 约等于 1，最大误差小于 7e-9；区域面积不足 16 tokens 的样本占比约 37.5%–43.0%，因此 `region_inside_clamped>0` 是本次小分辨率下的预期行为，不是 mask 被清空。
+区域损失在 [region_fm_loss](../../samtok_edit21/region/supervision.py#L53) 使用 soft coverage 和 `n_min=16` 下界，并将最终位置权重归一化。每一步 `region_weight_sum` 约等于 1，最大误差小于 7e-9；区域面积不足 16 tokens 的样本占比约 37.5%–43.0%，因此 `region_inside_clamped>0` 是本次小分辨率下的预期行为，不是 mask 被清空。
 
 ### 13.5 用本次实际权重追加的独立梯度实验
 
@@ -817,11 +819,11 @@ stage2_total = mean_fm + effective_A * (mean_attn_main + 0.5 * mean_attn_read) *
 | 单独 A（未乘 0.1） | 0.9318551421 | 1.9064254019 | 0.0772805139 |
 | C/FM + 0.1 A | 0.2507328391 | 0.3118189128 | 0.0127874445 |
 
-四种模式的 `loss_fm_basic` 完全一致；与相同 RNG 下官方 [FlowMatchSFTLoss](../DiffSynth-Studio/diffsynth/diffusion/loss.py#L5) 的差为 **0**，组合目标与 `C + 0.1 A` 的差为 **1.49e-8**。各次梯度有限且非零，冻结参数无梯度。证明本次保存权重可重载，A 本身具有有效的反传路径，读取 A 统计没有改变基础 FM 预测。
+四种模式的 `loss_fm_basic` 完全一致；与相同 RNG 下官方 [FlowMatchSFTLoss](../../DiffSynth-Studio/diffsynth/diffusion/loss.py#L5) 的差为 **0**，组合目标与 `C + 0.1 A` 的差为 **1.49e-8**。各次梯度有限且非零，冻结参数无梯度。证明本次保存权重可重载，A 本身具有有效的反传路径，读取 A 统计没有改变基础 FM 预测。
 
 该样本上 `0.1 × ||grad(A)|| / ||grad(C)|| = 1.39726`。这不是实现错误，但说明 **debug 系数 0.1 未经正式分支校准**；本次实测不支持将它直接当正式训练推荐值，也不支持从 2/3 次更新判断收敛或方法增益。此处各梯度范数来自单样本独立反传，不与已经 accumulation 缩放、跨 32 ranks 平均的训练日志范数直接比较。
 
-证据：临时目录 `check_actual_losses.py`、`actual_losses.log`、`actual_losses.json`；模型端使用 [flow_loss](../samtok_edit21/training.py#L250)、[attention_loss](../samtok_edit21/attention_supervision.py#L102)。
+证据：临时目录 `check_actual_losses.py`、`actual_losses.log`、`actual_losses.json`；模型端使用 [flow_loss](../../samtok_edit21/training_core/training.py#L250)、[attention_loss](../../samtok_edit21/training_core/attention_supervision.py#L102)。
 
 ### 13.6 阶段身份链、cache 几何与推理结果
 
@@ -834,7 +836,7 @@ flowchart LR
     S2 --> I
 ```
 
-独立重跑 [verify_cache](../samtok_edit21/provenance.py#L99)：所有 payload/sidecar/manifest 的 hash、row index、内容身份、张量形状、有限性、区域监督与 span 位置检查通过。cache 中的 Stage 1 权重 hash 与配置 hash 均对应本次最终 adapter；Stage 2 adapter 保存的 `conditioning_identity` 与本次 cache 完全一致，两阶段 base model identity 相同；区域身份链也一致。54 行由 32 ranks 不补齐地分片：rank 0–21 各 2 行，rank 22–31 各 1 行，没有重复补样本。
+独立重跑 [verify_cache](../../samtok_edit21/schema/provenance.py#L99)：所有 payload/sidecar/manifest 的 hash、row index、内容身份、张量形状、有限性、区域监督与 span 位置检查通过。cache 中的 Stage 1 权重 hash 与配置 hash 均对应本次最终 adapter；Stage 2 adapter 保存的 `conditioning_identity` 与本次 cache 完全一致，两阶段 base model identity 相同；区域身份链也一致。54 行由 32 ranks 不补齐地分片：rank 0–21 各 2 行，rank 22–31 各 1 行，没有重复补样本。
 
 训练 `max_pixels=65536` 不表示所有图都是 256×256。实际 target latent `[1,64,H/16,W/16]` 分布如下：
 
@@ -848,7 +850,7 @@ flowchart LR
 
 32 倍数取整后实际像素数可能略高于 65536，这符合现有尺寸函数定义。所有 36 条 UMT cache 的 span tensor 为 `[1,4]`，即本批 K=1；Qwen3 image-pad 数量 ×4 与 VAE source 网格数量相符。没有重新编码全量 TE/VAE 与 cache 做逐元素对照；本轮针对已保存结果检查身份与内部一致性，不能冒充新的全量重编码实验。
 
-[debug_inference8.py](../scripts/train/debug_inference8.py#L1) 显式固定 256×256、4 inference steps、CFG=1、KV cache 开启。8 张 PNG 均能重新打开，RGBA、RGB 非常数、alpha 最大值为 255，没有全透明输出：
+[debug_inference8.py](../../scripts/train/debug_inference8.py#L1) 显式固定 256×256、4 inference steps、CFG=1、KV cache 开启。8 张 PNG 均能重新打开，RGBA、RGB 非常数、alpha 最大值为 255，没有全透明输出：
 
 | rank | 数据集 | 模式 / actual variant | fallback |
 |---|---|---|---|
@@ -877,10 +879,10 @@ plan.pool_exposure.edit_umt:ref.by_edit_type.action.max_draws_per_row
 
 检查本地 `.wandb` 二进制 history：Stage 1 恰有 step 1、2；Stage 2 恰有 step 1、2、3。**每一步所有 `train/*`、`count/*`、`branch/*` 与 `training_metrics.jsonl` 完全一致**；最终 `wandb-summary.json` 和 LR 也对应末步。指标被正确交给本地 SDK；日志扫描没有发现指标上传 HTTP ERROR，但本轮未读取远端数据库/API，不能据此保证服务器已完整接收。
 
-本轮只修改 [tracking.py](../samtok_edit21/tracking.py#L13)，修复方式：
+本轮只修改 [tracking.py](../../samtok_edit21/training_core/tracking.py#L13)，修复方式：
 
 1. 提前将配置展开；≤64 字符的 key 保留，长 key 使用稳定摘要缩短，避免不同类型计数的同前缀冲突。每阶段将完整路径写入 `tracking/config-key-map.json`；原始 run/schedule 参数完整保留。
-2. [finish](../samtok_edit21/tracking.py#L110) 在 SDK 收尾后检查本次 `debug-internal.log`；对已记录的 HTTP 拒绝抛出错误并广播到其他 rank，阻止写出成功 tracking 状态。异常只包含日志位置，不输出请求 body。
+2. [finish](../../samtok_edit21/training_core/tracking.py#L110) 在 SDK 收尾后检查本次 `debug-internal.log`；对已记录的 HTTP 拒绝抛出错误并广播到其他 rank，阻止写出成功 tracking 状态。异常只包含日志位置，不输出请求 body。
 
 ```python
 # tracking.py:wandb_config，完整实现另检查重复 key。

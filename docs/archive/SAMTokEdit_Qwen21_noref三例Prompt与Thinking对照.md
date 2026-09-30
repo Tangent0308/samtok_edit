@@ -1,10 +1,12 @@
+> 历史归档：保留当时的实验与命令；当前启动入口及数据状态以 [四份主文档](../README.md) 为准。旧 run ID 不应直接重用。
+
 # noref 精简 prompt 与 Qwen3.5-9B thinking 对照
 
 实验日期：2026-09-29。结论：保留**关闭 thinking**作为四机默认；采用较短的共享规则，每条只附其类型对应的一个示例。向每条输入统一附三个示例的候选已实际测试，但在本批样本上比按类型附一个示例差，因此没有进入默认配置。模型始终只输出 `ref_phrase` 与 `noref_instruction`；编辑类型、mask ID 与已有 mask 均由原有程序处理，没有重算或核对 mask。
 
 ## Prompt 与三个直观例子
 
-[共享规则](../samtok_edit21/annotate_full.py#L19)保留原版有效的边界：reference 必须是原文完整对象或部件（add 为完整新对象加摆放位置）；noref 消去旧定位，但保留新内容、数量、约束和未编辑的比较对象。[task_prompt](../samtok_edit21/annotate_full.py#L51)只附当前类型的一个示例，避免把其他类型的模式带入答案。**共享规则全文**和全部类型示例见[两字段转换说明第 3 节](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md#3-当前完整-prompt)。典型三例：
+[共享规则](../../samtok_edit21/annotation/annotate_full.py#L19)保留原版有效的边界：reference 必须是原文完整对象或部件（add 为完整新对象加摆放位置）；noref 消去旧定位，但保留新内容、数量、约束和未编辑的比较对象。[task_prompt](../../samtok_edit21/annotation/annotate_full.py#L51)只附当前类型的一个示例，避免把其他类型的模式带入答案。**共享规则全文**和全部类型示例见[两字段转换说明第 3 节](SAMTokEdit_Qwen21_noref两字段转换与模型对比.md#3-当前完整-prompt)。典型三例：
 
 | 输入 | `ref_phrase` | `noref_instruction` |
 |---|---|---|
@@ -12,7 +14,7 @@
 | `Replace the house with a tiled roof on the left with a glass tower.` | `["house with a tiled roof on the left"]` | `Replace this region with a glass tower.` |
 | `Replace the text 'Exit' with 'Open' on the sign.` | `["'Exit'"]` | `Replace this region with 'Open'.` |
 
-与上一版相同的七个类型示例仍存放于[示例映射](../samtok_edit21/annotate_full.py#L40)中，每次请求仅选一个；粗类别没有可靠映射时不强加示例。使用 Qwen3.5-9B tokenizer，含单个示例的规则由 451–475 tokens 缩至 373–397 tokens，**各类型恰少 78 tokens**（约 16%–17%）。这是 prompt token 数，不包括输入 instruction、chat 模板和重试反馈。
+与上一版相同的七个类型示例仍存放于[示例映射](../../samtok_edit21/annotation/annotate_full.py#L40)中，每次请求仅选一个；粗类别没有可靠映射时不强加示例。使用 Qwen3.5-9B tokenizer，含单个示例的规则由 451–475 tokens 缩至 373–397 tokens，**各类型恰少 78 tokens**（约 16%–17%）。这是 prompt token 数，不包括输入 instruction、chat 模板和重试反馈。
 
 ## 数据、判断口径与 prompt 选择
 

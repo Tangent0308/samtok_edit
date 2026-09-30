@@ -1,3 +1,5 @@
+> 历史归档：保留当时的实验与命令；当前启动入口及数据状态以 [四份主文档](../README.md) 为准。旧 run ID 不应直接重用。
+
 # SAMTokEdit Qwen-Image-2.1 全量数据盘点与转换审计
 
 日期：2026-09-28，2026-09-29 补充准备状态。基于实际全量行扫描，不以文件夹中的“39k/25k”或 README 数字代替过滤。源数据只读；不重新审核或计算 mask。后续已经物化图像编辑对与原 mask 来源清单（见第 10 节），但尚未执行 GPU SAMTok mask 编码或生成正式训练 metadata；四机 noref 语义转换入口见[运行指南第 7 节](SAMTokEdit_Qwen21_四机训练运行指南.md#7-全量-noref-语义转换qwen3-4b--vllm)。
@@ -85,7 +87,7 @@ reference_binding.status：bound_mention=12,562、bound_label=6,149、bound_shar
 | text | 0 | 0 | 2,053 | 0 | 2,053 |
 | 暂未映射 | 0 | 0 | 1,267 | 0 | 1,267 |
 
-现有原生类别没有直接映射到 background/global；这不是将它们自动并入 attribute。类型采样权重见 [protocol.py:59](../samtok_edit21/protocol.py#L59)；全量转换完成后应按**每个分支、每个类型的实际合格行数**重做 sampling plan，避免 plain/ref 有数据而同类 noref 被规则耗尽。
+现有原生类别没有直接映射到 background/global；这不是将它们自动并入 attribute。类型采样权重见 [protocol.py:59](../../samtok_edit21/schema/protocol.py#L59)；全量转换完成后应按**每个分支、每个类型的实际合格行数**重做 sampling plan，避免 plain/ref 有数据而同类 noref 被规则耗尽。
 
 ### 3.1 每个原生类别的计数与规则探针
 
@@ -131,7 +133,7 @@ reference_binding.status：bound_mention=12,562、bound_label=6,149、bound_shar
 - **ScaleEdit** 用 final_task、final_instruction。保留行中 **3,932** 条 edit_task 与 final_task 不同，**9,669** 条 original_instruction 与 final_instruction 不同。sample_id 的目录可能仍叫 building_surface_text_editing，最终类别却已改成 object_surface_text_editing；必须以最终字段为准。
 - **ScaleEdit 未映射 1,267 条**：compositional_editing=741、count_change=53、symbolic_reasoning=262、scientific_reasoning=169、perceptual_reasoning=29、social_reasoning=13。count_change 可能 add/remove；reasoning 是任务来源，不能等同 global/composite；按实际操作落到原子类型或 composite。741 条 composite 候选需要单位划分与 mask 关联，不能只改一个标签字符串。
 - **RefEdit** 的 final_task 是推断结果，不是不可更改的原生真值。1,270 条 object_replacement 中 **789** 条 reason 为 fallback_local_object_change，481 条为 leading_replacement_verb。反例 `refedit:0`：`Change the leftmost bird's feathers to soft down feathers` 被兜底放进 replace；按协议的纹理变化定义应复核为 attribute。不能把这些推断标签作为硬 native constraint 阻止修正。
-- **Derived** 用 task_type，attribute 已是协议名称。当前 [native_edit_type](../samtok_edit21/prepare.py#L59) 不读取 task_type，也不直接映射字符串 attribute；adapter 应显式设置单位 edit_type，并将原生标签放在 provenance，不依赖路径名兜底。
+- **Derived** 用 task_type，attribute 已是协议名称。当前 [native_edit_type](../../samtok_edit21/annotation/prepare.py#L59) 不读取 task_type，也不直接映射字符串 attribute；adapter 应显式设置单位 edit_type，并将原生标签放在 provenance，不依赖路径名兜底。
 
 CrispEdit 2,344 条、ScaleEdit 1,604 条的 observation 有多个 edit_id。这是**多单位/连带变化的候选信号**，不能直接等同 composite：多个分割实例可能仍是一条操作，也可能是新旧两侧同一对象。复合编辑与单短语多实例必须分别处理。
 
@@ -178,7 +180,7 @@ flowchart TD
 
 ### 4.2 中间格式与四种输出
 
-[convert_record](../samtok_edit21/prepare.py#L161) 需要中间格式。下述“真实 mask span”是说明占位，不能原样写入训练：
+[convert_record](../../samtok_edit21/annotation/prepare.py#L161) 需要中间格式。下述“真实 mask span”是说明占位，不能原样写入训练：
 
 ```json
 {
@@ -209,9 +211,9 @@ flowchart TD
 
 ### 5.1 正规渲染器与上游短语规则的分工
 
-[render_units](../samtok_edit21/protocol.py#L230) 依照已提供单位做字符串替换，不理解整句语义；[phrase_span](../samtok_edit21/protocol.py#L138) 检查唯一匹配；[validate_row](../samtok_edit21/protocol.py#L389) 检查字段/token 结构。这些通过不能证明删掉的是正确 referring expression。
+[render_units](../../samtok_edit21/schema/protocol.py#L230) 依照已提供单位做字符串替换，不理解整句语义；[phrase_span](../../samtok_edit21/schema/protocol.py#L138) 检查唯一匹配；[validate_row](../../samtok_edit21/schema/protocol.py#L389) 检查字段/token 结构。这些通过不能证明删掉的是正确 referring expression。
 
-[debug_reference](../samtok_edit21/prepare.py#L345) 明确仅用于小样本调试。[convert_sample](../samtok_edit21/prepare.py#L294) 另有 legacy edit_mt 的 add-anchor 猜测规则，两者的介词集合不完全相同。四个发布数据集并不是已标好单位的 edit_mt 格式，不能把任一 helper 当成全量 adapter。
+[debug_reference](../../samtok_edit21/annotation/prepare.py#L345) 明确仅用于小样本调试。[convert_sample](../../samtok_edit21/annotation/prepare.py#L294) 另有 legacy edit_mt 的 add-anchor 猜测规则，两者的介词集合不完全相同。四个发布数据集并不是已标好单位的 edit_mt 格式，不能把任一 helper 当成全量 adapter。
 
 | 数据集 | 质量通过对数 | 至少一个已有 ref 候选可精确匹配 | debug 规则能生成结构合法 noref |
 |---|---:|---:|---:|
@@ -260,7 +262,7 @@ ScaleEdit `Change the logo text on the mobile interface from 'Big Spice' to 'Spi
 {"noref_instruction": "Change the text in this region {mask_0} to 'Spi Bite'."}
 ```
 
-[reviewed_noref](../samtok_edit21/prepare.py#L137) 检查每个单位占位恰好一次，并紧跟类型要求的区域短语，然后填入真实 code。编号遵循单位存储顺序，不能随文本排序擅自重编号。它仍只验证结构，不证明语义；应另存原指令 hash、单位、保留目标内容与审阅状态。
+[reviewed_noref](../../samtok_edit21/annotation/prepare.py#L137) 检查每个单位占位恰好一次，并紧跟类型要求的区域短语，然后填入真实 code。编号遵循单位存储顺序，不能随文本排序擅自重编号。它仍只验证结构，不证明语义；应另存原指令 hash、单位、保留目标内容与审阅状态。
 
 ## 6. 全部已出现原生类型的真实指令示例
 
@@ -360,7 +362,7 @@ $PY "$REVIEW/build_indices.py"
 $PY "$REVIEW/reviewed_examples.py"
 ```
 
-源码：[原生映射](../samtok_edit21/prepare.py#L59)、[正规单位转换](../samtok_edit21/prepare.py#L161)、[显式 noref 改写](../samtok_edit21/prepare.py#L137)、[legacy 转换](../samtok_edit21/prepare.py#L294)、[debug-only 规则](../samtok_edit21/prepare.py#L345)、[渲染](../samtok_edit21/protocol.py#L230)、[行结构校验](../samtok_edit21/protocol.py#L389)。
+源码：[原生映射](../../samtok_edit21/annotation/prepare.py#L59)、[正规单位转换](../../samtok_edit21/annotation/prepare.py#L161)、[显式 noref 改写](../../samtok_edit21/annotation/prepare.py#L137)、[legacy 转换](../../samtok_edit21/annotation/prepare.py#L294)、[debug-only 规则](../../samtok_edit21/annotation/prepare.py#L345)、[渲染](../../samtok_edit21/schema/protocol.py#L230)、[行结构校验](../../samtok_edit21/schema/protocol.py#L389)。
 
 第 1–8 节盘点阶段没有修改转换代码：已证实的风险需要正确的上游语义单位，不能用未经验证的新正则掩盖。后续新增的 vLLM 候选转换及其质量限制见四机指南第 7 节。源数据集提供的 mask 仍按用户约定可信。
 
