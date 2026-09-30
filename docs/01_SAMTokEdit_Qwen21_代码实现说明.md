@@ -24,7 +24,7 @@
   → 从 PromptEmbedder 开始，跳过定位
 ~~~
 
-训练不在每条样本上运行上述离散生成链。Stage 1 将已标注的 NTP 行和 FM 行混合：NTP 学习从指令生成区域 JSON，FM 用已编码的 mask prompt 学习编辑条件，并通过冻结 DiT 把梯度传回 **TE LoRA**。Stage 2 先冻结 Stage 1 TE 构建条件缓存，再只训练 **DiT LoRA** 的 FM。可选的区域加权 C 作用于两阶段的合格局部 FM 行；可选的注意力监督 A 仅作用于 Stage 2。分支入口见 [SamtokTrainingModule.forward](../samtok_edit21/training_core/train.py#L225)，A/C 的计算式和开关见第 10 节。
+训练不在每条样本上运行上述离散生成链。Stage 1 将已标注的 NTP 行和 FM 行混合：NTP 学习从指令生成区域 JSON，FM 用已编码的 mask prompt 学习编辑条件，并通过冻结 DiT 把梯度传回 **TE LoRA**。Stage 2 先冻结 Stage 1 TE 构建条件缓存，再只训练 **DiT LoRA** 的 FM。可选的区域加权 C 作用于两阶段的合格局部 FM 行；可选的注意力监督 A 仅作用于 Stage 2。分支入口见 [SamtokTrainingModule.forward](../samtok_edit21/training_core/train.py#L228)，A/C 的计算式和开关见第 10 节。
 
 | 部分 | 官方现有能力 | 本项目新增或修改 |
 |---|---|---|
@@ -37,7 +37,7 @@
 
 ### 1.2 读代码的顺序
 
-先看 [model.py](../samtok_edit21/models/model.py#L71) 如何装配官方 pipeline 与 SAMTok TE，再看 [protocol.py](../samtok_edit21/schema/protocol.py#L62) 的 mask span/指令绑定；训练从 [train.py](../samtok_edit21/training_core/train.py#L121) 进入 [training.py](../samtok_edit21/training_core/training.py#L227)。需要追 A/C 时，先读 [region_supervision.py](../samtok_edit21/region/supervision.py#L32) 和 [attention_supervision.py](../samtok_edit21/training_core/attention_supervision.py#L21)，最后查看 vendored DiffSynth 的可选统计接口。下文按这条运行路径说明每个模块的需求、官方起点和实际改动；代码块只摘关键行，链接指向完整实现。
+先看 [model.py](../samtok_edit21/models/model.py#L71) 如何装配官方 pipeline 与 SAMTok TE，再看 [protocol.py](../samtok_edit21/schema/protocol.py#L62) 的 mask span/指令绑定；训练从 [train.py](../samtok_edit21/training_core/train.py#L123) 进入 [training.py](../samtok_edit21/training_core/training.py#L227)。需要追 A/C 时，先读 [region_supervision.py](../samtok_edit21/region/supervision.py#L32) 和 [attention_supervision.py](../samtok_edit21/training_core/attention_supervision.py#L21)，最后查看 vendored DiffSynth 的可选统计接口。下文按这条运行路径说明每个模块的需求、官方起点和实际改动；代码块只摘关键行，链接指向完整实现。
 
 ### 1.3 当前目录组织（2026-09-30）
 
@@ -175,7 +175,7 @@ with torch.enable_grad() if te_grad else torch.no_grad():
 
 **方法与需求。** Stage 1 混合 edit_ntp、局部 UMT 与普通 edit；只训练 TE attention/MLP LoRA。Stage 2 冻结 TE，从同一 Stage 1 adapter 生成缓存，只训练 DiT LoRA。Stage 1 的 NTP/ref/noref/plain 采样份额为 3/2/2/1，Stage 2 的 ref/noref/plain 为 1/2/1；这是不同样本行的混采，不是每行同时计算 NTP+FM。
 
-**官方起点与项目改动。** 官方 DiffSynth 提供 runner、自动 DiT target 检测和训练模块接口；SAMTok 的原生 SFT 不包含扩散 FM。项目 [add_adapter](../samtok_edit21/training_core/training.py#L57) 只放开 LoRA 参数并转 FP32，Stage 2 的 [target 检测](../samtok_edit21/training_core/training.py#L49) 调用 DiffSynth 的自动检测；[SamtokTrainingModule](../samtok_edit21/training_core/train.py#L121) 根据阶段只加载所需组件。[make_schedule](../samtok_edit21/schema/data.py#L101) 实现上述配比，[forward](../samtok_edit21/training_core/train.py#L225) 按行选择目标。
+**官方起点与项目改动。** 官方 DiffSynth 提供 runner、自动 DiT target 检测和训练模块接口；SAMTok 的原生 SFT 不包含扩散 FM。项目 [add_adapter](../samtok_edit21/training_core/training.py#L57) 只放开 LoRA 参数并转 FP32，Stage 2 的 [target 检测](../samtok_edit21/training_core/training.py#L49) 调用 DiffSynth 的自动检测；[SamtokTrainingModule](../samtok_edit21/training_core/train.py#L123) 根据阶段只加载所需组件。[make_schedule](../samtok_edit21/schema/data.py#L101) 实现上述配比，[forward](../samtok_edit21/training_core/train.py#L228) 按行选择目标。
 
 ~~~python
 # 摘自 samtok_edit21/training_core/train.py：SamtokTrainingModule.forward
@@ -193,7 +193,7 @@ elif data["sample_type"] == "edit_ntp":
     loss = loss * self.args.ntp_weight
 ~~~
 
-同一 [forward 分支](../samtok_edit21/training_core/train.py#L252) 中，其余 Stage 1 FM 行保留 TE 的梯度连接：
+同一 [forward 分支](../samtok_edit21/training_core/train.py#L256) 中，其余 Stage 1 FM 行保留 TE 的梯度连接：
 
 ~~~python
 else:
@@ -207,7 +207,7 @@ else:
     loss = loss * self.args.fm_weight
 ~~~
 
-缓存由 [run_cache](../samtok_edit21/training_core/train.py#L580) 用冻结 TE+adapter 和 VAE 调用 prepare_fm(te_grad=False)，保存 prompt_embeds、source/target latents 与可选 region_supervision；噪声和 timestep 不保存，Stage 2 的 [flow_loss](../samtok_edit21/training_core/training.py#L261) 每次重新采样。缓存发布前，[cache manifest](../samtok_edit21/training_core/train.py#L552) 和 [verify_cache](../samtok_edit21/schema/provenance.py#L99) 核对 row hash、文件 checksum、模型/TE adapter/预处理身份和覆盖的样本行。最终 adapter 的 recipe 与 conditioning identity 由 [save_adapter](../samtok_edit21/training_core/training.py#L102) 和 [run_train](../samtok_edit21/training_core/train.py#L536) 保存；产物字段见第 6 节。
+缓存由 [run_cache](../samtok_edit21/training_core/train.py#L564) 用冻结 TE+adapter 和 VAE 调用 prepare_fm(te_grad=False)，保存 prompt_embeds、source/target latents 与可选 region_supervision；噪声和 timestep 不保存，Stage 2 的 [flow_loss](../samtok_edit21/training_core/training.py#L261) 每次重新采样。缓存发布前，[cache manifest](../samtok_edit21/training_core/train.py#L536) 和 [verify_cache](../samtok_edit21/schema/provenance.py#L99) 核对 row hash、文件 checksum、模型/TE adapter/预处理身份和覆盖的样本行。最终 adapter 的 recipe 与 conditioning identity 由 [save_adapter](../samtok_edit21/training_core/training.py#L102) 和 [run_train](../samtok_edit21/training_core/train.py#L520) 保存；产物字段见第 6 节。
 
 ### 2.6 推理入口、两次调用与分辨率
 
@@ -241,7 +241,7 @@ mode = "inline"
 
 **方法与需求。** C 希望把 FM 误差的部分权重移到局部编辑区域及其补区域，同时按实际权重总和归一，维持基础 loss 的量级。A/C 使用的区域先冻结为 source/target 两份 latent 网格覆盖率；输入来自 metadata 中已经编码的 SAMTok codes，转换到网格是训练目标所需的坐标映射，不重新标注数据集。
 
-**官方起点与项目改动。** DiffSynth 的 [FlowMatchSFTLoss](../DiffSynth-Studio/diffsynth/diffusion/loss.py) 是全画布均匀 MSE，没有区域标签。项目新增 [prepare-regions](../samtok_edit21/region/supervision.py#L171)，在原始 source 上 [decode_strict](../samtok_edit21/models/codec.py#L180)，再用 [coverage_grid](../samtok_edit21/region/supervision.py#L32) 分别生成 source 和 target 覆盖率；[RegionStore](../samtok_edit21/region/supervision.py#L131) 固定这些监督数据。[region_fm_loss](../samtok_edit21/region/supervision.py#L53) 用各组 target coverage 的逐格最大值作区域联合权重，仅在合格局部 UMT 且 region_weight>0 时由 [flow_loss](../samtok_edit21/training_core/training.py#L301) 调用。
+**官方起点与项目改动。** DiffSynth 的 [FlowMatchSFTLoss](../DiffSynth-Studio/diffsynth/diffusion/loss.py) 是全画布均匀 MSE，没有区域标签。项目新增 [prepare-regions](../samtok_edit21/region/supervision.py#L171)，在原始 source 上 [decode_strict](../samtok_edit21/models/codec.py#L180)，再用 [coverage_grid](../samtok_edit21/region/supervision.py#L32) 分别生成 source 和 target 覆盖率；[RegionStore](../samtok_edit21/region/supervision.py#L131) 固定这些监督数据。[region_fm_loss](../samtok_edit21/region/supervision.py#L53) 用各组 target coverage 的逐格最大值作区域联合权重，仅在合格局部 UMT 且 region_weight>0 时由 [flow_loss](../samtok_edit21/training_core/training.py#L302) 调用。
 
 ~~~python
 # 摘自 samtok_edit21/region/supervision.py：coverage_grid
@@ -261,7 +261,7 @@ z = 1 + weight * (si / di + so / do)
 loss = ((e.mean(dims) + weight * (inside + outside)) / z).mean()
 ~~~
 
-具体的适用性、alignment、空区域处理与完整公式在第 10.2、10.4 节。不开 C 时 [flow_loss](../samtok_edit21/training_core/training.py#L296) 保留官方全画布 FM。
+具体的适用性、alignment、空区域处理与完整公式在第 10.2、10.4 节。不开 C 时 [flow_loss](../samtok_edit21/training_core/training.py#L297) 保留官方全画布 FM。
 
 ### 2.8 训练注意力监督（A）及 DiffSynth 的可选接口
 
@@ -301,13 +301,13 @@ ds = torch.logsumexp(log_s.flatten(1), 1)
 return torch.stack((nt, dt, ns, ds), -1)
 ~~~
 
-[flow_loss](../samtok_edit21/training_core/training.py#L313) 将 A 作为不乘 timestep weight 的辅助项加到 FM；[SamtokTrainingModule._flow](../samtok_edit21/training_core/train.py#L185) 根据成功 optimizer updates 做独立 warmup。A 需要 PyTorch ≥2.8、可微 FlexAttention LSE、无 KV cache 和 non-reentrant checkpoint；不满足时显式报错。计算方向、数学式、默认层和校准见第 10.3–10.5 节。
+[flow_loss](../samtok_edit21/training_core/training.py#L314) 将 A 作为不乘 timestep weight 的辅助项加到 FM；[SamtokTrainingModule._flow](../samtok_edit21/training_core/train.py#L187) 根据成功 optimizer updates 做独立 warmup。A 需要 PyTorch ≥2.8、可微 FlexAttention LSE、无 KV cache 和 non-reentrant checkpoint；不满足时显式报错。计算方向、数学式、默认层和校准见第 10.3–10.5 节。
 
 ### 2.9 官方 runner 的最小扩展与产物链
 
 **方法与需求。** 精确混采、梯度累积与 A warmup 必须依照真实 optimizer update，而不是 microstep 计数。训练输出要能证明 Stage 2 cache 来自哪份 Stage 1 adapter，推理应拒绝错配的 TE/DiT 条件。
 
-**官方起点与项目改动。** 项目继续使用 DiffSynth [runner](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L53) 和 [ModelLogger](../DiffSynth-Studio/diffsynth/diffusion/logger.py#L71) 的 optimizer/DDP/checkpoint 生命周期；没有另起一套训练循环。vendored runner 增加按 [schedule_sampler](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L96) 取样、同步 update 时裁剪梯度及推进项目 LR scheduler、backward 审计，并在累积窗口结束调用可选回调。项目 [on_optimizer_step](../samtok_edit21/training_core/train.py#L194) 用完成的 update 数驱动 A warmup 和监督指标汇总。
+**官方起点与项目改动。** 项目继续使用 DiffSynth [runner](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L53) 和 [ModelLogger](../DiffSynth-Studio/diffsynth/diffusion/logger.py#L71) 的 optimizer/DDP/checkpoint 生命周期；没有另起一套训练循环。vendored runner 增加按 [schedule_sampler](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L96) 取样、同步 update 时裁剪梯度及推进项目 LR scheduler、backward 审计，并在累积窗口结束调用可选回调。项目 [on_optimizer_step](../samtok_edit21/training_core/train.py#L196) 用完成的 update 数驱动 A warmup 和监督指标汇总。
 
 ~~~python
 # 摘自 DiffSynth-Studio/diffsynth/diffusion/runner.py
@@ -473,7 +473,7 @@ cache 也相同；`--save-every` 是 `--save-steps` 的别名。正式训练必�
 
 adapter 初始化前所有 rank 使用共同 seed；DDP prepare 后使用 seed+rank 控制 Python/NumPy/torch/CUDA 随机流；schedule 用独立共享 seed。固定设备数、版本和 seed 的短运行可复验，不保证跨硬件 bitwise deterministic。
 
-每次 backward 的参数 hook 单独观察当前分支梯度，避免旧 accumulation 梯度掩盖断链；审计拒绝当前分支全零/无梯度、非有限或冻结参数有梯度。**不要求每个张量每步非零**，初始 LoRA A 零梯度正常。裁剪只发生在同步更新前。
+每次 backward 的参数 hook 单独观察当前分支梯度，避免旧 accumulation 梯度掩盖断链；审计接受已连接且有限的零梯度，拒绝当前 backward 未触达可训练参数、非有限梯度或冻结参数有梯度。初始 LoRA A 零梯度、官方 FM timestep 权重为零均正常；判定与日志详见第 14 节。裁剪只发生在同步更新前。
 
 ## 5. 训练与推理超参数：当前项目和官方实现对照
 
@@ -853,7 +853,7 @@ $$
 
 分母是实际位置权重之和，触发 `n_min` 截断时也不能固定成 $1+2\lambda_C$。FP32 计算覆盖率求和、误差和归一化。恒定误差严格保持基础 FM 尺度；$\lambda_C=0$ 恢复原 loss。对于 soft coverage，二值 mask 的“区域内 token 权重份额”简式不能直接当成参数梯度份额。
 
-上述 C 的逐项计算在 [`region_fm_loss`](../samtok_edit21/region/supervision.py#L53)；[`flow_loss`](../samtok_edit21/training_core/training.py#L302) 对多组 target coverage 取逐格最大值，仅在区域合格且 `region_weight > 0` 时替换基础 FM 的位置聚合，最后仍乘 scheduler 的 timestep weight。
+上述 C 的逐项计算在 [`region_fm_loss`](../samtok_edit21/region/supervision.py#L53)；[`flow_loss`](../samtok_edit21/training_core/training.py#L303) 对多组 target coverage 取逐格最大值，仅在区域合格且 `region_weight > 0` 时替换基础 FM 的位置聚合，最后仍乘 scheduler 的 timestep weight。
 
 A 使用与前向一致的投影、q/k norm、RoPE 后 Q/K：
 
@@ -877,7 +877,7 @@ $$
 
 调用链为 `processor → block → non-reentrant checkpoint → DiT → model_fn → flow_loss`，每一步显式返回 Tensor/tuple；不使用 attention hook、全局列表或 forward side effect 收集统计。checkpoint 重算不会重复累计监督值。未启用 probe 时所有原输出形式不变。
 
-A 的分子/分母统计见 [`BoundRegionProbe.__call__`](../samtok_edit21/training_core/attention_supervision.py#L73)，跨层汇总及两项平方损失见 [`attention_loss`](../samtok_edit21/training_core/attention_supervision.py#L102)；[DiT attention processor](../DiffSynth-Studio/diffsynth/models/qwen_image_21_dit.py#L219) 在选定层取同次前向的 Q/K/LSE，[`flow_loss`](../samtok_edit21/training_core/training.py#L313) 接收返回值并与 FM 相加。
+A 的分子/分母统计见 [`BoundRegionProbe.__call__`](../samtok_edit21/training_core/attention_supervision.py#L73)，跨层汇总及两项平方损失见 [`attention_loss`](../samtok_edit21/training_core/attention_supervision.py#L102)；[DiT attention processor](../DiffSynth-Studio/diffsynth/models/qwen_image_21_dit.py#L219) 在选定层取同次前向的 Q/K/LSE，[`flow_loss`](../samtok_edit21/training_core/training.py#L314) 接收返回值并与 FM 相加。
 
 ### 10.5 超参数、梯度校准与日志
 
@@ -990,7 +990,7 @@ sources.jsonl + semantic_runs/..._003/annotations.jsonl
 
 **方法与需求。** 全量数据已在训练之前完成图片物化、逐行协议验证、mask code 编码和区域 coverage 构建。正式启动应读取这些产物并开始训练，避免 32 个 rank 各自提前遍历整套图片/coverage。两阶段的更新参数、任务配比、loss 和优化器不变。
 
-**官方起点与项目改动。** DiffSynth runner 不负责本项目的 region cache 验收。项目原 [Stage 1 入口](../samtok_edit21/training_core/train.py#L437) 在加载模型前对全部非 NTP 行调用 `RegionStore.load`；全量 390,657 行在每个 rank 重复执行，其中 194,618 行会读取 coverage 和图像内容。现由 [cluster.run](../samtok_edit21/distributed/cluster.py#L224) 在 `--full-training` 时自动传入 `--prepared-data-report <data>/metadata_report.json`，由 [verify_prepared_region_report](../samtok_edit21/schema/preflight.py#L11) 验证离线报告与当前 metadata/manifest 的身份一致。
+**官方起点与项目改动。** DiffSynth runner 不负责本项目的 region cache 验收。项目原 [Stage 1 入口](../samtok_edit21/training_core/train.py#L421) 在加载模型前对全部非 NTP 行调用 `RegionStore.load`；全量 390,657 行在每个 rank 重复执行，其中 194,618 行会读取 coverage 和图像内容。现由 [cluster.run](../samtok_edit21/distributed/cluster.py#L224) 在 `--full-training` 时自动传入 `--prepared-data-report <data>/metadata_report.json`，由 [verify_prepared_region_report](../samtok_edit21/schema/preflight.py#L11) 验证离线报告与当前 metadata/manifest 的身份一致。
 
 ```python
 # samtok_edit21/distributed/cluster.py：仅正式 Stage 1 自动启用
@@ -998,7 +998,7 @@ prepared = (["--prepared-data-report", str(data / "metadata_report.json")]
             if a.full_training else [])
 ```
 
-[预检分支](../samtok_edit21/training_core/train.py#L415) 仅让全局 rank 0 核对报告，使用已有 `_main_rank_result` 把结果或错误广播给全部 rank：
+[预检分支](../samtok_edit21/training_core/train.py#L399) 仅让全局 rank 0 核对报告，使用已有 `_main_rank_result` 把结果或错误广播给全部 rank：
 
 ```python
 if args.prepared_data_report:
@@ -1017,4 +1017,79 @@ else:
 
 训练正常读取 metadata 并构造真实 schedule；[RegionStore.load](../samtok_edit21/region/supervision.py#L146) 在首次消费相应文件时仍核对 coverage 和图像 hash、张量形状与协议。报告复用的是准备阶段的验证结果，不意味着启动时重新检查了每一个资产文件。Stage 1 后新生成的 conditioning cache 仍走既有 merge/Stage 2 完整性验证，因为它不属于此前离线准备的产物。
 
-[启动日志](../samtok_edit21/training_core/train.py#L405) 在各 rank 输出 metadata_load、region_preflight、model_identity、wandb_init、model_load、training 的开始/完成；Stage 2 另记录 conditioning_cache_validation。rank 0 将对应记录写入阶段目录的 `startup.jsonl`，`run.json.data_preflight` 保存报告核对结果。`--plan-only` 只打印，不写输出目录。[节点编排](../samtok_edit21/distributed/cluster.py#L140) 每 60 秒输出子进程日志路径、大小、距最后修改秒数，并写 `nodes/<node>/<phase>.progress.json`；这个心跳证明编排器仍在等待，是否完成 optimizer update 要看 `training_metrics.jsonl`。
+[启动日志](../samtok_edit21/training_core/train.py#L389) 在各 rank 输出 metadata_load、region_preflight、model_identity、wandb_init、model_load、training 的开始/完成；Stage 2 另记录 conditioning_cache_validation。rank 0 将对应记录写入阶段目录的 `startup.jsonl`，`run.json.data_preflight` 保存报告核对结果。`--plan-only` 只打印，不写输出目录。[节点编排](../samtok_edit21/distributed/cluster.py#L140) 每 60 秒输出子进程日志路径、大小、距最后修改秒数，并写 `nodes/<node>/<phase>.progress.json`；这个心跳证明编排器仍在等待，是否完成 optimizer update 要看 `training_metrics.jsonl`。
+
+
+## 14. loss、梯度更新与 scheduler：零权重修复
+
+### 14.1 总体说明与官方边界
+
+方法仍是 Stage 1 更新 TE language LoRA，Stage 2 冻结缓存条件、更新 DiT LoRA。NTP/FM、区域加权 C、注意力监督 A 的公式和正式系数不变；梯度累积、裁剪、AdamW 和 LR scheduler 的更新时钟不变。此次改动修复项目额外添加的梯度审计：**有限、保持计算图连接的零 loss/零梯度合法**。审计用于调试和故障诊断，不是 DiffSynth 或 SAMTok 官方要求。
+
+DiffSynth 的 [官方 set_training_weight](../DiffSynth-Studio/diffsynth/diffusion/flow_match.py#L365) 在 1000 个训练 timestep 下把曲线减去最小值再归一，因此最高噪声端点 `t=1000` 的 `training_weight=0`。[官方 FlowMatchSFTLoss](../DiffSynth-Studio/diffsynth/diffusion/loss.py#L5) 均匀抽 timestep，并先转为 pipeline dtype 再计算权重；项目沿用这一行为。BF16 下抽到索引 0–4，原始 timestep 约为 1000、999.558、999.116、998.674、998.231，都会舍入为 1000，因此这五种抽样产生零 FM 权重。不会排除这些 timestep，不给权重加 epsilon，也不 detach 零 loss。
+
+### 14.2 各 loss 实际进入 backward 的方式
+
+[SamtokTrainingModule.forward](../samtok_edit21/training_core/train.py#L228) 负责 Stage 1 分支系数；[flow_loss](../samtok_edit21/training_core/training.py#L250) 负责 FM/C/A。`w(t)` 是官方训练权重，`L_C` 是第 10.4 节按实际总权重归一后的区域 FM；不满足 C 条件时用全画布 MSE。正式配置为：
+
+| 阶段/行类型 | 单条样本用于 backward 的 loss |
+|---|---|
+| Stage 1 NTP | `0.05 × L_NTP` |
+| Stage 1 UMT ref/noref | `1 × w(t) × L_C`，C=0.5；区域不合格时退到 MSE |
+| Stage 1 plain edit | `1 × w(t) × MSE` |
+| Stage 2 UMT ref/noref | `w(t) × L_C + λ_A(u) × L_A`；区域不合格时退到基础 FM |
+| Stage 2 plain edit | `w(t) × MSE` |
+
+`λ_A(u)=0.1×min(u/500,1)`，`u` 是本窗口开始前已成功完成的 optimizer updates。[A warmup](../samtok_edit21/training_core/train.py#L187) 在同一累积窗口使用同一个 u；第一窗口 A 系数为 0，第二窗口为 0.0002。A 不乘 w(t)，所以 Stage 2 在 w=0 且 A 已启用时仍可有梯度。C 在 FM 内部，因此随 w(t) 一起为零。Stage 1 的 `ntp_weight/fm_weight` 属于混合任务系数，Stage 2 当前配方直接使用 FM+A。
+
+```python
+# 摘自 training_core/training.py：不改官方 timestep 的实际计算值
+original_t = pipe.scheduler.timesteps[i]
+t = original_t.to(device=pipe.device, dtype=pipe.torch_dtype)
+weight = pipe.scheduler.training_weight(t).to(pipe.device)
+basic_fm = mse * weight
+# 合格区域且启用 C 时：fm = regional * weight
+loss = fm + attention_weight * aux
+```
+
+例如 Stage 1 同一全局窗口的三类 NTP/ref/noref/plain 数为 96/64/64/32。累计目标是所有 256 条加权样本的均值，即 `3/8×0.05×mean(NTP)+5/8×mean(FM)`。日志中的 `loss_ntp`、`loss_fm` 是各自出现样本上的分支均值，`weighted_total` 是实际 backward loss 的全样本均值，不能直接把两个分支均值相加当总 loss。
+
+### 14.3 修复梯度审计与事后验收
+
+旧项目检查 `grad_norm>0 && current_backward_grad_peak>0`，会把官方零权重样本误判为断链。新模块 [audit_backward](../samtok_edit21/training_core/gradient_audit.py#L30) 将合法性与非零性分开：至少有可训练参数的 `.grad`、当前 backward 的参数 hook 确实被执行、累计 norm 与当前 hook peak 有限、冻结参数没有 `.grad`。[当前 backward 的参数 hook](../samtok_edit21/training_core/train.py#L179) 观察当前 backward，避免前面 microstep 的累积梯度掩盖本步未触达参数。LoRA A 初始梯度为零仍合法。
+
+```python
+# 摘自 training_core/gradient_audit.py：零值不是错误条件
+if not norms:
+    errors.append("missing_trainable_gradients")
+if not peaks:
+    errors.append("missing_current_backward_hooks")
+if not math.isfinite(total) or not math.isfinite(peak):
+    errors.append("nonfinite_gradient")
+if frozen:
+    errors.append("frozen_parameters_with_gradients")
+```
+
+每 rank 的 `gradients-rank<RANK>.jsonl` 在报错前也写完整记录：microstep、已完成更新数、分支、row_sha256、实际 timestep、抽样索引、转 BF16 前 timestep、training_weight、loss、当前 hook peak 与累积 norm。`current_backward_zero=true` 不代表整个累积窗口没有梯度；`accumulated_grad_zero` 独立记录此状态。原因字段区分 `fm_scheduler_weight_zero` 与 `finite_zero_backward`，后者也允许正权重下恰好为零的合法导数。
+
+[validate_gradient_record](../samtok_edit21/training_core/gradient_audit.py#L13) 和 [audit_gradient_logs](../samtok_edit21/training_core/gradient_audit.py#L83) 是训练及事后验收共享的判据，[正式实验事后验收](../scripts/train/audit_full_training.py#L60) 与 [debug 事后验收](../scripts/train/audit_debug_run.py#L28) 均调用，防止运行成功后又被旧的“非零”规则拒绝。历史缺少新增 hook 计数字段的日志可只读复核；新运行记录实际 hook 数。[on_optimizer_step](../samtok_edit21/training_core/train.py#L196) 聚合每个窗口的零梯度原因；[W&B 日志](../samtok_edit21/training_core/tracking.py#L97) 记录 `train/zero_backward`、`train/zero_weight_fm` 和 `gradient_zero/<reason>`。这两个 train 指标分别是全样本零 backward 比率和全样本零 FM 权重比率，不是累计 loss 权重。
+
+### 14.4 累积、AdamW 与 LR 的更新时钟
+
+[runner 更新段](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L137) 沿用 Accelerate 的累积语义：`accelerator.backward(loss)` 自动除以 accumulation；非同步 microstep 的包装 optimizer 不执行真正 step/zero_grad，保留累积梯度；同步边界进行 DDP 梯度平均、max_grad_norm=1 裁剪、AdamW 更新，然后清梯度。Stage 1 为 8 microsteps/update，Stage 2 为 4；32 ranks 对应全局 batch 256/128。
+
+项目 [scheduler_factory](../samtok_edit21/training_core/train.py#L362) 使用自定义 LambdaLR。[自定义 scheduler 与 Accelerate 的准备路径](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L111) 不把这个自定义 scheduler 交给 AcceleratedScheduler，从而不会按 world_size 重复推进；它只在同步且 optimizer 未被 scaler 跳过时推进一次。零 loss/零梯度不是 scaler 跳步：即便整个窗口恰好为零，AdamW 的历史动量和 weight decay 仍可能更新参数，LR、成功 update 数及 A warmup 正常推进。只有实际 optimizer 跳步时，这三个时钟都不推进。
+
+```python
+# 摘自 DiffSynth runner：项目传入 scheduler_factory 的路径
+effective_lr = optimizer.param_groups[0]["lr"]  # 本次真正使用的 LR
+optimizer.step()
+if accelerator.sync_gradients and not accelerator.optimizer_step_was_skipped:
+    scheduler.step()
+    optimizer_step += 1
+# 同步窗口结束后回调，再 zero_grad；Accelerate 保留非同步步的累积梯度
+```
+
+正式 warmup 经 [resolve_warmup_steps](../samtok_edit21/training_core/train.py#L349) 向上取整：Stage 1 `ceil(3081×0.04)=124`，Stage 2 `ceil(3081×0.025)=78`。第 u 次更新（从 1 开始）在 warmup 内使用 `base_lr×u/warmup_steps`；Stage 1 此后 cosine，Stage 2 此后 constant。`optimizer_steps.jsonl.lr` 和 W&B `train/lr` 记录本次应用的 LR，不是 step 后下一次 LR。checkpoint 保存间隔仍按 microsteps 计数，adapter 快照不包含 optimizer/scheduler resume 状态。
+
+本地验证结果和完整复现指令见[实验记录第 18 节](02_SAMTokEdit_Qwen21_实验记录.md#18-2026-09-30正式-_002-零梯度误报与更新链路验证)。四机使用新的 run ID 和新分支代码，入口见[四机指南第 2 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#2-正式全量训练入口)。

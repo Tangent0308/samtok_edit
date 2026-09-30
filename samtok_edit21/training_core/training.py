@@ -261,7 +261,8 @@ def flow_loss(pipe, inputs, *, timestep_index=None, noise=None, checkpointing=Tr
         if timestep_index is None
         else torch.tensor([timestep_index])
     )
-    t = pipe.scheduler.timesteps[i].to(device=pipe.device, dtype=pipe.torch_dtype)
+    original_t = pipe.scheduler.timesteps[i]
+    t = original_t.to(device=pipe.device, dtype=pipe.torch_dtype)
     x = inputs["input_latents"]
     noise = torch.randn_like(x) if noise is None else noise
     noisy = pipe.scheduler.add_noise(x, noise, t)
@@ -326,6 +327,8 @@ def flow_loss(pipe, inputs, *, timestep_index=None, noise=None, checkpointing=Tr
         "region_eligible": int(eligible),
         "fm_mse": mse.detach().item(),
         "timestep": t.item(),
+        "timestep_index": i.item(),
+        "timestep_before_cast": original_t.item(),
         "training_weight": weight.item(),
         "target_shape": list(target.shape),
     })

@@ -141,7 +141,7 @@ def launch_training_task(
                 if audit is not None:
                     audit_result = audit()
                     if accelerator.is_main_process:
-                        print(f"official_train_audit={audit_result}", flush=True)
+                        print(f"project_gradient_audit={audit_result}", flush=True)
                 # Accelerate accumulates gradients across micro-steps.  Clip
                 # only on the synchronized optimizer step so accumulation has
                 # the same semantics as the upstream runner.

@@ -189,3 +189,8 @@ PYTHONPATH=.:DiffSynth-Studio python -m samtok_edit21.full_training_data merge -
 正式四机 `--full-training` 复用这份报告：Stage 1 全局 rank 0 重算 metadata 和 region manifest hash，核对就绪状态、geometry/max_pixels、390,657 行以及 task/eligible/empty_region 计数。实际当前文件核对通过，耗时约 2.40 秒；不在 32 个 rank 逐条重新打开全部图片/coverage。报告接受结果保存到训练 `run.json.data_preflight`。没有重新生成或改动现成 mask。
 
 该检查验证离线报告与当前清单相符，不宣称再次全量扫描了每个资产。训练消费相应文件时 `RegionStore.load` 仍执行 checksum、图像身份和张量协议验证。未提供报告的普通/debug 训练保留原逐行预检；Stage 1 后新生成的 conditioning cache 继续验收。数据版本、max_pixels 或清单改变时须重新准备匹配的报告；完整启动命令见[四机指南第 2 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#2-正式全量训练入口)。
+
+
+### 零 FM 训练权重与数据准备的关系
+
+2026-09-30 的零梯度审计修复不改变上述源数据、JSONL、mask、区域 coverage 或任何 hash/count，不需要重新准备。`training_weight=0` 来自每次 FM 前向随机抽到的官方 timestep，属于训练计算，不是数据质量字段，也不是 noref/ref 类型的筛选或配比条件。相同训练行下次抽到不同 timestep 可以有正权重。所有现有行仍按 schedule 的 3:2:2:1 / 1:2:1 类型配比使用；Stage 2 A 在已启用时独立于 FM timestep 权重。实现见[代码说明第 14 节](01_SAMTokEdit_Qwen21_代码实现说明.md#14-loss梯度更新与-scheduler零权重修复)，正式重启入口为四机指南的 `_003`。

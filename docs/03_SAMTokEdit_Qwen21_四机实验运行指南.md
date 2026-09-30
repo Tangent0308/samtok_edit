@@ -12,7 +12,7 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 
 ## 2. 正式全量训练入口
 
-已准备数据：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003`。98,574 个源编辑对，Stage 1 为 390,657 行，Stage 2 为 293,296 行，详见[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)。下面使用修复后新 run `_002`；旧 `_001` 的启动停滞记录见[实验记录第 17 节](02_SAMTokEdit_Qwen21_实验记录.md#17-2026-09-30正式全量-_001-启动停滞与预检修复)。新命令尚未完成正式四机运行。
+已准备数据：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003`。98,574 个源编辑对，Stage 1 为 390,657 行，Stage 2 为 293,296 行，详见[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)。下面使用修复后新 run `_003`；旧 `_001` 的预检等待及 `_002` 三步后零梯度误报，分别见[实验记录第 17 节](02_SAMTokEdit_Qwen21_实验记录.md#17-2026-09-30正式全量-_001-启动停滞与预检修复)与[第 18 节](02_SAMTokEdit_Qwen21_实验记录.md#18-2026-09-30正式-_002-零梯度误报与更新链路验证)。新命令尚未完成正式四机运行。
 
 | 参数 | Stage 1 | Stage 2 |
 |---|---|---|
@@ -32,7 +32,7 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 
 `--full-training` 自动让 Stage 1 复用同目录 `metadata_report.json`：全局 rank 0 核对报告就绪状态、metadata/region manifest hash、分辨率与计数，再广播结果。远程启动不再对全量图片和 coverage 逐条预扫描；正常读取 metadata、构造 schedule 和训练消费时的文件验证保留。Stage 1 之后新生成的 conditioning cache 仍需验证。详细实现见[代码说明第 13 节](01_SAMTokEdit_Qwen21_代码实现说明.md#13-正式训练复用已准备数据的验收报告)。无需重新打标或重建当前数据。
 
-已运行的 `_001` 不会自动加载新代码。停止旧作业后，四个 worker 使用下面同一个新 ID 提交，确保 clone 到本次修复后的分支；如果设置了旧 `SAMTOK_EDIT_COMMIT`，须清除或改为此次修复的已推送 SHA。请保留 `_001` 的共享日志，不复用旧节点目录。
+此次修复接受官方零 FM 权重产生的有限零梯度，并仍拒绝梯度断链/非有限值/冻结参数误更新；loss、累积和 LR 配方保持原样。本地 68 项检查、八卡解析模型的更新轨迹对照及完整基座的小分辨率八卡训练路径均通过；完整基座 Stage 1 为 1 update、Stage 2 为 2 updates，Stage 2 只读复用已有 cache，范围见实验记录第 18 节。旧 `_002` 已失败退出且没有 checkpoint，不能从第三步恢复；请保留 `_001/_002` 的共享日志。四个 worker 使用下面同一个新 ID 提交，确保 clone 到本次修复后的分支；如果设置了旧 `SAMTOK_EDIT_COMMIT`，须清除或改为此次修复的已推送 SHA，不复用旧节点目录。
 
 ```bash
 #!/usr/bin/env bash
@@ -46,7 +46,7 @@ export WANDB_PROJECT=samtok-edit
 export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_full_9b_rules_003"
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_002
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_003
 
 
 # ----- User settings -----
@@ -137,7 +137,7 @@ bash scripts/train/run_arnold_4node.sh \
   --attention-warmup-steps 500 --timeout 604800 --wandb-mode online
 ```
 
-输出：`$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`。顺序为 topology → 32-rank NCCL → Stage 1 → 全量 conditioning cache → Stage 2 → `audit_full.json` → `TRAINING_COMPLETE.json` → `SUCCESS.json`。正式模式不调用仅适用于 18 对 debug 样本的推理脚本。权重保存是 adapter 快照，不包含 optimizer-state resume。
+输出：`$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`。顺序为 topology → 32-rank NCCL → Stage 1 → 全量 conditioning cache → Stage 2 → `audit_full.json` → `TRAINING_COMPLETE.json` → `SUCCESS.json`。正式模式不调用仅适用于 18 对 debug 样本的推理脚本。权重保存是 adapter 快照，不包含 optimizer-state resume。修复后每条 backward 将实际 timestep、抽样索引、权重、row hash、当前及累积梯度写入 `stage*/gradients-rank*.jsonl`；全局窗口零梯度原因写入 `training_metrics.jsonl` 和 W&B。`training_weight=0`、`current_backward_zero=true` 本身不表示异常，也不跳过正常 optimizer/LR 更新。
 
 ## 3. 四机 debug 训练入口
 
@@ -364,12 +364,14 @@ python -m samtok_edit21.full_regions merge \
 训练的每个节点日志在 `logs/node<rank>/`，环境/checkout/CUDA 诊断在 `bootstrap/`。ARNOLD 控制台每 60 秒输出 `running` 心跳和实际子进程日志路径；Stage 1/2 的 `startup.jsonl` 记录进入训练前的各阶段。控制台停留在 stage1 命令行本身不足以判断是否完成更新，须查看下面的文件。具体失败先看 `nodes/*/failure.json` 指向的原始节点日志；其他节点常只是连带退出。以下命令在可访问共享盘的机器执行，不含 W&B key：
 
 ```bash
-RUN=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_002
+RUN=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003
 find "$RUN/nodes" -name failure.json -print -exec cat {} \;
 tail -n 8 "$RUN/stage1/startup.jsonl"
 tail -n 20 "$RUN/logs/node0/stage1.log"
 cat "$RUN/nodes/0/stage1.progress.json"
 tail -n 2 "$RUN/stage1/training_metrics.jsonl"
+tail -n 2 "$RUN/stage1/optimizer_steps.jsonl"
+tail -n 2 "$RUN/stage1/gradients-rank0.jsonl"
 tail -n 2 "$RUN/stage2/training_metrics.jsonl"
 cat "$RUN/audit_full.json"
 cat "$RUN/TRAINING_COMPLETE.json" "$RUN/SUCCESS.json"

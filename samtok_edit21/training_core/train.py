@@ -113,8 +113,10 @@ class ScheduledCache(Dataset):
     def __getitem__(self, index):
         row = self.rows[self.schedule[index]]
         path = self.cache_dir / row["_cache_file"]
-        inputs = torch.load(path, map_location="cpu", weights_only=True)["inputs"]
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        inputs = payload["inputs"]
         inputs["_sample_kind"] = row_kind(row)
+        inputs["_sample_row_sha256"] = payload["row_hash"]
         return inputs
 
 
@@ -211,6 +213,7 @@ class SamtokTrainingModule(DiffusionTrainingModule):
                      "rank_samples": dict(Counter(str(r["_rank"]) for r in records)),
                      "metrics": {k: sum(v) / len(v) for k, v in values.items()},
                      "counts": {k: len(v) for k, v in values.items()},
+                     "gradient_zero_reasons": dict(Counter(r["_gradient_zero_reason"] for r in records if "_gradient_zero_reason" in r)),
                      "skip_reasons": dict(Counter(r["region_skip_reason"] for r in records if "region_skip_reason" in r))}
             with (Path(self.args.output) / "training_metrics.jsonl").open("a") as stream:
                 stream.write(json.dumps(entry) + "\n")
@@ -239,6 +242,7 @@ class SamtokTrainingModule(DiffusionTrainingModule):
                 raise ValueError("Stage 2 training expects cached inputs")
             inputs = dict(inputs)
             cached_branch = inputs.pop("_sample_kind", "cached_fm")
+            sample_hash = inputs.pop("_sample_row_sha256", None)
             validate_conditioning(inputs)
             loss, metrics = self._flow(inputs)
         elif data["sample_type"] == "edit_ntp":
@@ -262,33 +266,13 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         self.last_metrics = metrics
         branch = cached_branch if self.stage == "stage2" else row_kind(data)
         self.pending_metrics.append({**metrics, "weighted_total": loss.detach().item(),
+                                     "_row_sha256": sample_hash if self.stage == "stage2" else row_hash(data),
                                      "_branch": branch, "_rank": int(os.environ.get("RANK", 0))})
         return loss
 
     def after_backward_audit(self):
-        trainable = [p for p in self.parameters() if p.requires_grad]
-        frozen_with_grad = sum(
-            p.grad is not None for p in self.parameters() if not p.requires_grad
-        )
-        norms = [p.grad.detach().float().norm() for p in trainable if p.grad is not None]
-        total = float(torch.stack(norms).norm().item()) if norms else 0.0
-        branch_peak = float(torch.stack(self._branch_grad_peaks).amax()) if self._branch_grad_peaks else 0.0
-        if not norms or total == 0 or branch_peak == 0 or not torch.isfinite(torch.tensor(total)) or frozen_with_grad:
-            raise RuntimeError(
-                f"Invalid gradient audit: total={total}, "
-                f"frozen_with_grad={frozen_with_grad}"
-            )
-        result = {
-            "branch": self.pending_metrics[-1]["_branch"],
-            "grad_norm_before_clip": total,
-            "current_backward_grad_peak": branch_peak,
-            "trainable_grad_tensors": len(norms),
-            "nonzero_grad_tensors": sum(float(n) > 0 for n in norms),
-            "frozen_grad_tensors": frozen_with_grad,
-        }
-        with (Path(self.args.output) / f"gradients-rank{os.environ.get('RANK', '0')}.jsonl").open("a") as stream:
-            stream.write(json.dumps(result) + "\n")
-        return result
+        from .gradient_audit import audit_backward
+        return audit_backward(self)
 
 
 def _accelerator(accumulation=1):
@@ -697,7 +681,7 @@ def normalize_args(args):
             setattr(args, key, value)
     if args.accumulation < 1 or (args.steps is not None and args.steps < 1):
         raise ValueError("accumulation/steps must be positive")
-    for key in ("region_weight", "attention_weight", "attention_read_weight"):
+    for key in ("ntp_weight", "fm_weight", "region_weight", "attention_weight", "attention_read_weight"):
         if not math.isfinite(getattr(args, key)) or getattr(args, key) < 0:
             raise ValueError(f"{key} must be finite and nonnegative")
     if not math.isfinite(args.region_n_min) or args.region_n_min <= 0 or args.attention_warmup_steps < 0:

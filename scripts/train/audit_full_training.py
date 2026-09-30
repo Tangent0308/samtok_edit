@@ -10,6 +10,7 @@ from safetensors.torch import load_file
 
 from samtok_edit21.data import file_hash
 from samtok_edit21.provenance import verify_cache
+from samtok_edit21.training_core.gradient_audit import audit_gradient_logs
 
 
 def lines(path):
@@ -56,6 +57,7 @@ def main():
         if wandb.get("status") != "finished" or wandb.get("mode") != common["wandb_mode"]:
             raise ValueError(f"{stage}: W&B did not finish in requested mode")
         result["stages"][stage] = {"steps": steps, "metrics": len(metrics),
+                                    "gradients": audit_gradient_logs(directory, world, steps, accumulation, expected),
                                     "parameter_hash": parameters[0]["sha256"],
                                     "adapter_sha256": file_hash(adapter)}
     cache = json.loads((root / "cache" / "manifest.json").read_text())

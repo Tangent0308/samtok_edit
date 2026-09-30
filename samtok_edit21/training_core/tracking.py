@@ -101,6 +101,7 @@ class TrainingTracker:
             metrics = {f"train/{k}": v for k, v in entry["metrics"].items()}
             metrics.update({f"count/{k}": v for k, v in entry["counts"].items()})
             metrics.update({f"branch/{k}": v for k, v in entry["branches"].items()})
+            metrics.update({f"gradient_zero/{k}": v for k, v in entry.get("gradient_zero_reasons", {}).items()})
             metrics.update({"train/lr": learning_rate, "train/skipped": int(entry["skipped"]),
                             "train/world_size": self.accelerator.num_processes,
                             "train/samples": entry["samples"]})
