@@ -12,7 +12,7 @@ import json
 import math
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -402,6 +402,38 @@ def validate_training_length_and_saves(args):
         )
 
 
+def _startup(args, accelerator, phase, state, **details):
+    """Expose pre-model work instead of leaving the last log at NCCL startup."""
+    entry = {"time_utc": datetime.now(timezone.utc).isoformat(),
+             "rank": accelerator.process_index, "phase": phase, "state": state, **details}
+    print(json.dumps({"startup": entry}, ensure_ascii=False), flush=True)
+    if accelerator.is_main_process and not getattr(args, "plan_only", False):
+        with (Path(args.output) / "startup.jsonl").open("a") as stream:
+            stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def _region_preflight(args, accelerator, rows):
+    _startup(args, accelerator, "region_preflight", "started",
+             mode="prepared_report" if args.prepared_data_report else "full_scan")
+    if args.prepared_data_report:
+        from ..schema.preflight import verify_prepared_region_report
+        result = _main_rank_result(accelerator, lambda: verify_prepared_region_report(
+            args.prepared_data_report, args.metadata, args.region_cache,
+            args.max_pixels, len(rows)))
+    else:
+        from ..region.supervision import RegionStore
+        store = RegionStore(args.region_cache, args.max_pixels)
+        for index, row in enumerate(rows, 1):
+            if row["sample_type"] != "edit_ntp":
+                store.load(row, args.base_path)
+            if index % 1000 == 0 and accelerator.is_main_process:
+                _startup(args, accelerator, "region_preflight", "progress",
+                         rows_checked=index, rows_total=len(rows))
+        result = {"mode": "full_scan", "rows": len(rows)}
+    _startup(args, accelerator, "region_preflight", "complete", **result)
+    return result
+
+
 def run_train(args):
     if args.attention_weight:
         from samtok_edit21.training_core.attention_supervision import require_attention_backend
@@ -412,6 +444,7 @@ def run_train(args):
     if not args.plan_only:
         _fresh_output(args, accelerator)
     set_seed(args.seed)  # same adapter initialization on every rank
+    data_preflight = None
     if args.stage == "stage2":
         manifest = json.loads((Path(args.cache) / "manifest.json").read_text())
         args.max_pixels = manifest["identity"]["max_pixels"]
@@ -421,23 +454,25 @@ def run_train(args):
             if args.region_weight or args.attention_weight:
                 if not manifest.get("supervision_identity"):
                     raise ValueError("Training requires a conditioning cache built with --region-cache")
+        _startup(args, accelerator, "conditioning_cache_validation", "started")
         _main_rank_result(accelerator, validate)
+        _startup(args, accelerator, "conditioning_cache_validation", "complete")
         rows = manifest["rows"]
         schedule, report = _schedule_dataset(args, accelerator, rows)
         dataset = ScheduledCache(rows, args.cache, schedule)
         base_identity = manifest["identity"]["models"]
     else:
+        _startup(args, accelerator, "metadata_load", "started", metadata=args.metadata)
         rows = read_rows(args.metadata)
-        if args.region_weight:
-            from samtok_edit21.region.supervision import RegionStore
-            store = RegionStore(args.region_cache, args.max_pixels)
-            for row in rows:
-                if row["sample_type"] != "edit_ntp":
-                    store.load(row, args.base_path)
+        _startup(args, accelerator, "metadata_load", "complete", rows=len(rows))
+        if args.region_weight or args.prepared_data_report:
+            data_preflight = _region_preflight(args, accelerator, rows)
         schedule, report = _schedule_dataset(args, accelerator, rows)
         dataset = ScheduledMetadata(rows, schedule)
         from ..schema.provenance import model_identity
+        _startup(args, accelerator, "model_identity", "started")
         base_identity = _main_rank_result(accelerator, lambda: model_identity(args.qwen, args.samtok))
+        _startup(args, accelerator, "model_identity", "complete")
     if args.init_adapter:
         init_config = json.loads((Path(args.init_adapter) / "adapter.json").read_text())
         if init_config.get("base_identity") is not None and init_config["base_identity"] != base_identity:
@@ -466,6 +501,7 @@ def run_train(args):
             write_json(Path(args.output) / "schedule.json", report)
             write_json(Path(args.output) / "run.json", {
                 "args": vars(args), "base_identity": base_identity, "optimizer_updates": updates,
+                "data_preflight": data_preflight,
                 "effective_warmup_steps": warmup_steps,
                 "microsteps_per_rank": microsteps_per_rank,
                 "planned_step_checkpoints": planned_step_checkpoints,
@@ -478,17 +514,23 @@ def run_train(args):
         accelerator.end_training()
         return
     from samtok_edit21.training_core.tracking import TrainingTracker
+    _startup(args, accelerator, "wandb_init", "started")
     tracker = TrainingTracker(args, accelerator, plan)  # fail before expensive model loading
+    _startup(args, accelerator, "wandb_init", "complete")
+    _startup(args, accelerator, "model_load", "started")
     model = SamtokTrainingModule(args, "sft:train")
+    _startup(args, accelerator, "model_load", "complete")
     model.tracker = tracker
     logger = ModelLogger(args.output, remove_prefix_in_ckpt="pipe.text_encoder."
                         if args.stage == "stage1" else "pipe.dit.", enable_csv_log=True)
+    _startup(args, accelerator, "training", "started")
     launch_training_task(
         accelerator, dataset, model, logger, learning_rate=args.lr,
         weight_decay=args.weight_decay, num_workers=args.num_workers,
         save_steps=args.save_steps, num_epochs=1, max_grad_norm=args.max_grad_norm,
         scheduler_factory=factory, training_seed=args.seed, args=None,
     )
+    _startup(args, accelerator, "training", "complete")
     accelerator.wait_for_everyone()
     verify_rank_parameters(model, accelerator, args.output)
     def save():
@@ -596,6 +638,7 @@ def _parser():
                             help="Explicit optimizer updates, overriding the stage default ratio")
         p.add_argument("--init-adapter")
         p.add_argument("--region-cache", help="Independent frozen region cache (Stage 1 and conditioning cache builder)")
+        p.add_argument("--prepared-data-report", help="Stage 1: reuse offline metadata_report.json instead of scanning all image/coverage assets")
         p.add_argument("--region-weight", type=float, default=0.0, help="C coefficient; suggested 0.5, zero disables")
         p.add_argument("--region-n-min", type=float, default=16.0)
         p.add_argument("--attention-weight", type=float, default=0.0, help="Calibrated final A coefficient; Stage 2 only")
@@ -664,6 +707,8 @@ def normalize_args(args):
     args.attention_layers = sorted(args.attention_layers)
     if args.stage == "stage1" and args.attention_weight:
         raise ValueError("Attention supervision is Stage 2 only")
+    if args.prepared_data_report and (args.command != "train" or args.stage != "stage1" or not args.region_cache):
+        raise ValueError("--prepared-data-report requires Stage 1 train and --region-cache")
     if args.command == "train" and args.stage == "stage1" and args.region_weight and not args.region_cache:
         raise ValueError("Stage 1 C requires --region-cache")
     if args.command == "train" and args.stage == "stage2" and args.region_cache:

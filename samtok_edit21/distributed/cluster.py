@@ -143,11 +143,21 @@ class Pipeline:
         with (self.logdir / f"{phase}.log").open("w") as stream:
             process = subprocess.Popen(command, cwd=self.repo, env=self.env, stdout=stream,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-            deadline = time.monotonic() + self.args.timeout
+            started = last_progress = time.monotonic()
+            deadline = started + self.args.timeout
             try:
                 while process.poll() is None:
                     self.check_failures()
-                    if time.monotonic() > deadline:
+                    now = time.monotonic()
+                    if now - last_progress >= 60:
+                        stat = Path(stream.name).stat()
+                        progress = {"phase": phase, "elapsed_seconds": int(now - started),
+                                    "log": stream.name, "log_bytes": stat.st_size,
+                                    "log_age_seconds": round(time.time() - stat.st_mtime, 1)}
+                        atomic_json(self.node / f"{phase}.progress.json", progress)
+                        print(f"[node {self.rank}] running: {json.dumps(progress)}", flush=True)
+                        last_progress = now
+                    if now > deadline:
                         raise TimeoutError(f"Phase timed out: {phase}")
                     time.sleep(2)
                 if process.returncode:
@@ -177,7 +187,10 @@ class Pipeline:
         if a.wandb_mode == "online" and not os.environ.get("WANDB_API_KEY"):
             raise ValueError("Inject WANDB_API_KEY into every worker environment; do not put it in command logs")
         data = Path(a.data).resolve()
-        for name in ("stage1.jsonl", "stage2.jsonl", "regions/manifest.json"):
+        data_files = ["stage1.jsonl", "stage2.jsonl", "regions/manifest.json"]
+        if a.full_training:
+            data_files.append("metadata_report.json")
+        for name in data_files:
             if not (data / name).is_file():
                 raise FileNotFoundError(data / name)
         import importlib.metadata
@@ -190,7 +203,7 @@ class Pipeline:
                       hashlib.sha256(p.read_bytes()).hexdigest()
                       for p in (self.inference_script, self.audit_script, self.full_audit_script)},
                   "data": {n:hashlib.sha256((data/n).read_bytes()).hexdigest() for n in
-                           ("stage1.jsonl", "stage2.jsonl", "regions/manifest.json")}}
+                           data_files}}
         atomic_json(self.node / "topology.json", {"common": common, "hostname": socket.gethostname(),
                     "node_rank": self.rank, "python": sys.executable,
                     "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -211,11 +224,13 @@ class Pipeline:
             return ["--wandb-mode", a.wandb_mode, "--wandb-project", a.wandb_project,
                     "--wandb-entity", a.wandb_entity, "--wandb-name", name,
                     "--wandb-id", hashlib.sha256(str(self.root).encode()).hexdigest()[:16] + "-" + stage]
+        prepared = (["--prepared-data-report", str(data / "metadata_report.json")]
+                    if a.full_training else [])
         self.distributed("stage1", ["-m", "samtok_edit21.train", "train", "--stage", "stage1",
             "--metadata", str(data/"stage1.jsonl"), "--region-cache", str(data/"regions"),
             "--region-weight", str(a.region_weight), "--steps", str(a.stage1_steps),
             "--save-steps", str(a.stage1_save_steps), "--accumulation", "8", "--rank", str(a.stage1_rank),
-            "--output", str(self.root/"stage1"), *shared, *tracking("stage1")])
+            "--output", str(self.root/"stage1"), *prepared, *shared, *tracking("stage1")])
         self.distributed("cache", ["-m", "samtok_edit21.train", "cache",
             "--metadata", str(data/"stage2.jsonl"), "--region-cache", str(data/"regions"),
             "--te-adapter", str(self.root/"stage1/adapter"), "--output", str(self.root/"cache"), *shared])

@@ -88,6 +88,7 @@ stage1_sha256 = 70f00fd267ec26d7e26437207aec4d832c90c2cae892f03a2e6e569a0ddadfd5
 stage2_sha256 = b26fef1e76fa0c1360248b4a09f486feb430bdb4052b1a9b4e9249d99ce6e24a
 provenance_sha256 = 9417f2a7f660251f613b260e78939d980015ad5ba61ee5ff35c3ae7801767997
 region_manifest_sha256 = 2a67273b6e2fe06822a4a39bf9ef4cfcf64cf12c07bc34d568330369e3f43278
+metadata_report_sha256 = 19680009646cdddfd1c0d37a1552f0a8eb6651d254aebe58372d76ab42c330bf
 ```
 
 ## 5. 最终 row 字段和例子
@@ -179,3 +180,12 @@ PYTHONPATH=.:DiffSynth-Studio python -m samtok_edit21.full_training_data merge -
 ```
 
 当前 `metadata_report.json` 为 `training_ready=true`、`region_cache_ready=true`。重建应使用新版本目录，不覆盖正式数据。
+
+
+### 已准备数据在正式启动时的使用
+
+当前版本的报告路径：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/metadata_report.json`。来源准备已读取图片并确认可解码；编码 worker 验证每个派生训练行；区域 worker 验证每个生成的 coverage 张量，merge 验证行覆盖完整性、身份和保存的 checksum。这些检查属于数据准备阶段。
+
+正式四机 `--full-training` 复用这份报告：Stage 1 全局 rank 0 重算 metadata 和 region manifest hash，核对就绪状态、geometry/max_pixels、390,657 行以及 task/eligible/empty_region 计数。实际当前文件核对通过，耗时约 2.40 秒；不在 32 个 rank 逐条重新打开全部图片/coverage。报告接受结果保存到训练 `run.json.data_preflight`。没有重新生成或改动现成 mask。
+
+该检查验证离线报告与当前清单相符，不宣称再次全量扫描了每个资产。训练消费相应文件时 `RegionStore.load` 仍执行 checksum、图像身份和张量协议验证。未提供报告的普通/debug 训练保留原逐行预检；Stage 1 后新生成的 conditioning cache 继续验收。数据版本、max_pixels 或清单改变时须重新准备匹配的报告；完整启动命令见[四机指南第 2 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#2-正式全量训练入口)。

@@ -1,6 +1,6 @@
 # SAMTokEdit Qwen-Image-2.1 实验记录
 
-2026-09-29 最新 noref 数据转换记录见[9B 规则回退与四机复跑](archive/SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)：最终本地四卡 436 条，398 条模型通过、24 条规则回退通过、14 条仍失败；全量 98,574 条输入关联检查通过。此项是文本数据转换验证，不是两阶段训练结果。
+2026-09-30 最新正式训练启动诊断与预检修复见第 17 节；全量数据准备结果见第 15 节。2026-09-29 本地 noref 数据转换记录见[9B 规则回退与四机复跑](archive/SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)：最终本地四卡 436 条，398 条模型通过、24 条规则回退通过、14 条仍失败；全量 98,574 条输入关联检查通过。此项是文本数据转换验证，不是两阶段训练结果。
 
 > 下方原有第 1–6 节为历史记录。2026-09-26 的独立审计发现，历史 cache identity/非零梯度检查的充分性曾被高估；其旧环境路径也已失效。后续实现与修复从第 7 节起按日期追加；最新四机运行及独立结果复核见第 13 节。历史内容保留供追溯。
 
@@ -1066,3 +1066,39 @@ Stage 2 = 97,361 × (ref + noref + plain) + 1,213 plain
 - 所有临时校验脚本与输出保留在 `/tmp/samtok21-reorg-review/`，未进入源码或正式数据目录。
 
 模块验证：22 个旧模块 alias 与新模块对象一致，11 个 `python -m ... --help` 入口通过；noref worker 使用独立 vLLM 环境验证。结果见 `/tmp/samtok21-reorg-review/module-check.json`。
+
+
+## 17. 2026-09-30：正式全量 _001 启动停滞与预检修复
+
+**目的与运行。** 用户按四机正式入口启动 `qwen21_full_4n_formal_001`，commit `734b6a2c6d663a580c3d917242d07e26ceefa2ce`，4 × 8 H100、Stage 1/2 各 3081 updates、max_pixels=1048576、C=0.5、Stage 2 A=0.1。run 路径为 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_001`。完整新入口集中在[四机指南第 2 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#2-正式全量训练入口)。
+
+**观察结果。** 截至 06:50 UTC（北京时间 14:50），CUDA readiness 和 32-rank collectives 已通过，Stage 1 日志内全部 32 rank 的 NCCL Init COMPLETE。四节点日志最后修改为 04:18:51～54 UTC，大小分别 338232/337840/338649/338645 bytes，持续两小时以上无变化。`stage1/` 仍为空，无 training_plan、训练指标、adapter 或 failure.json；日志没有 Traceback/OOM。尚不能确认完成了任何 optimizer update。ARNOLD 控制台只显示 stage1 命令，是子进程日志被重定向到共享日志的正常行为，需结合实际文件判断。
+
+**定位与修复。** 源码显示 Stage 1 在 W&B 初始化和模型加载前，让每个 rank 对全部非 NTP 行调用 `RegionStore.load`。这里包含逐条 coverage 读取与 source/target checksum；全量会发生 32 份重复 I/O。本地抽查 64 条 UMT 行全部通过，读取耗时 4.069 秒，manifest 初始化 0.628 秒。这解释了全量启动可能出现长时间等待；远端 SSH 认证被拒绝，没有拿到实时 Python 栈，因此没有把该判断写成已捕获的唯一现场根因。
+
+用户要求已在本地准备验收的数据不再远程重复扫描。正式模式现自动传入 `--prepared-data-report`，全局 rank 0 核对现有报告、metadata/region manifest hash、几何参数、行数和区域计数，再广播结果，跳过资产逐行预扫描。消费文件时的原有验证保留；Stage 1 后新建 conditioning cache 的验证保留。新增各 rank 启动阶段日志、rank 0 `startup.jsonl` 和节点 60 秒心跳。实现详见[代码说明第 13 节](01_SAMTokEdit_Qwen21_代码实现说明.md#13-正式训练复用已准备数据的验收报告)。训练更新范围、loss、采样和超参数没有改变。
+
+**本地验证。** 证据均在 `/tmp/samtok21-preflight-fix/`：
+
+| 检查 | 结果/证据 |
+|---|---|
+| 当前全量报告核对 | 通过，390,657 行、全部 hash 和计数匹配，2.402 秒；`full_report_check.json` |
+| 针对性 CPU/模拟检查 | 15 passed；`test_prepared.py`、`prepared-tests.txt` |
+| 项目回归 | 23 passed；`repo-tests.txt`；最终与针对性检查联合运行 38 passed / 5.78 秒 |
+| 实际两进程 CPU/Gloo | 主 rank 核对全量报告后广播成功；错误 max_pixels 在两 rank 均正确报错，非主 rank 未调用验证器；`cpu-ddp.log`、`cpu-ddp/rank*.json` |
+| 文档入口 | 38 个 bash 块语法有效，三个完整 clone 入口模拟执行通过；`/tmp/samtok21-reorg-review/entries-947p7kqg/report.json` |
+| `_001` 运行快照 | `formal001-status.json`；此前诊断在 `/tmp/samtok21-formal001-status/status.json` |
+
+15 项检查覆盖：报告路径/readiness/hash/行数/预处理身份错误拒绝；已准备模式不调用资产扫描；默认入口保留扫描；训练消费缺失张量仍报错；plan-only 不创建输出；Stage 2/cache 不接受报告选项；正式编排仅向 Stage 1 传参；60 秒心跳正常发布。两进程 CPU 检查只验证报告广播/错误传播，模拟编排不等于实际四机训练结果。
+
+复现验证命令（仓库根目录，临时脚本不入 repo）：
+
+```bash
+ACCELERATE_USE_CPU=true PYTHONPATH=.:DiffSynth-Studio \
+  /tmp/samtok21-4node-env-debug/bin/python -m pytest -q \
+  /tmp/samtok21-preflight-fix/test_prepared.py --disable-warnings
+PYTHONPATH=.:DiffSynth-Studio \
+  /tmp/samtok21-4node-env-debug/bin/python -m pytest -q tests --disable-warnings
+```
+
+旧 `_001` 不会热更新已经加载的代码；需要停止旧作业，再用修复后的分支和共同新 ID `qwen21_full_4n_formal_002` 提交全部四个 worker。当前记录没有新四机训练通过或全量 loss/效果结论。

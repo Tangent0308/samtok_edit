@@ -12,7 +12,7 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 
 ## 2. 正式全量训练入口
 
-已准备数据：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003`。98,574 个源编辑对，Stage 1 为 390,657 行，Stage 2 为 293,296 行，详见[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)。本命令是待启动实验，不表示正式全量训练已完成。
+已准备数据：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003`。98,574 个源编辑对，Stage 1 为 390,657 行，Stage 2 为 293,296 行，详见[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)。下面使用修复后新 run `_002`；旧 `_001` 的启动停滞记录见[实验记录第 17 节](02_SAMTokEdit_Qwen21_实验记录.md#17-2026-09-30正式全量-_001-启动停滞与预检修复)。新命令尚未完成正式四机运行。
 
 | 参数 | Stage 1 | Stage 2 |
 |---|---|---|
@@ -29,6 +29,11 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 
 `3081` 是近似一轮调度长度；按类型池加权有放回采样，不保证每行逐次覆盖。分支比例、曝光率保存在 schedule/schedule_report 中。A=0.1 是当前可运行配置，不是全量效果最优系数，后续可做校准/消融。正式入口将单阶段及 barrier 超时设为 604800 秒（7 天），避免全量 cache/训练被 debug 的 7200 秒截断；GPU/NCCL 错误仍通过 worker 失败及时退出。
 
+
+`--full-training` 自动让 Stage 1 复用同目录 `metadata_report.json`：全局 rank 0 核对报告就绪状态、metadata/region manifest hash、分辨率与计数，再广播结果。远程启动不再对全量图片和 coverage 逐条预扫描；正常读取 metadata、构造 schedule 和训练消费时的文件验证保留。Stage 1 之后新生成的 conditioning cache 仍需验证。详细实现见[代码说明第 13 节](01_SAMTokEdit_Qwen21_代码实现说明.md#13-正式训练复用已准备数据的验收报告)。无需重新打标或重建当前数据。
+
+已运行的 `_001` 不会自动加载新代码。停止旧作业后，四个 worker 使用下面同一个新 ID 提交，确保 clone 到本次修复后的分支；如果设置了旧 `SAMTOK_EDIT_COMMIT`，须清除或改为此次修复的已推送 SHA。请保留 `_001` 的共享日志，不复用旧节点目录。
+
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -41,7 +46,7 @@ export WANDB_PROJECT=samtok-edit
 export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_full_9b_rules_003"
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_001
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_002
 
 
 # ----- User settings -----
@@ -356,11 +361,14 @@ python -m samtok_edit21.full_regions merge \
 
 ## 6. 检查进度和结果
 
-训练的每个节点日志在 `logs/node<rank>/`，环境/checkout/CUDA 诊断在 `bootstrap/`。具体失败先看 `nodes/*/failure.json` 指向的原始节点日志；其他节点常只是连带退出。以下命令在可访问共享盘的机器执行，不含 W&B key：
+训练的每个节点日志在 `logs/node<rank>/`，环境/checkout/CUDA 诊断在 `bootstrap/`。ARNOLD 控制台每 60 秒输出 `running` 心跳和实际子进程日志路径；Stage 1/2 的 `startup.jsonl` 记录进入训练前的各阶段。控制台停留在 stage1 命令行本身不足以判断是否完成更新，须查看下面的文件。具体失败先看 `nodes/*/failure.json` 指向的原始节点日志；其他节点常只是连带退出。以下命令在可访问共享盘的机器执行，不含 W&B key：
 
 ```bash
-RUN=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_001
+RUN=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_002
 find "$RUN/nodes" -name failure.json -print -exec cat {} \;
+tail -n 8 "$RUN/stage1/startup.jsonl"
+tail -n 20 "$RUN/logs/node0/stage1.log"
+cat "$RUN/nodes/0/stage1.progress.json"
 tail -n 2 "$RUN/stage1/training_metrics.jsonl"
 tail -n 2 "$RUN/stage2/training_metrics.jsonl"
 cat "$RUN/audit_full.json"

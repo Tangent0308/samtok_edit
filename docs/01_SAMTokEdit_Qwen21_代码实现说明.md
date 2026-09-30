@@ -46,7 +46,7 @@
 
 ```text
 samtok_edit21/
-  schema/          # protocol.py, data.py, provenance.py
+  schema/          # protocol.py, data.py, provenance.py, preflight.py
   models/          # model.py, codec.py
   annotation/      # prepare/full_training_data/noref cluster
   training_core/   # train.py, training.py, attention, tracking
@@ -207,7 +207,7 @@ else:
     loss = loss * self.args.fm_weight
 ~~~
 
-缓存由 [run_cache](../samtok_edit21/training_core/train.py#L538) 用冻结 TE+adapter 和 VAE 调用 prepare_fm(te_grad=False)，保存 prompt_embeds、source/target latents 与可选 region_supervision；噪声和 timestep 不保存，Stage 2 的 [flow_loss](../samtok_edit21/training_core/training.py#L261) 每次重新采样。缓存发布前，[cache manifest](../samtok_edit21/training_core/train.py#L510) 和 [verify_cache](../samtok_edit21/schema/provenance.py#L99) 核对 row hash、文件 checksum、模型/TE adapter/预处理身份和覆盖的样本行。最终 adapter 的 recipe 与 conditioning identity 由 [save_adapter](../samtok_edit21/training_core/training.py#L102) 和 [run_train](../samtok_edit21/training_core/train.py#L494) 保存；产物字段见第 6 节。
+缓存由 [run_cache](../samtok_edit21/training_core/train.py#L580) 用冻结 TE+adapter 和 VAE 调用 prepare_fm(te_grad=False)，保存 prompt_embeds、source/target latents 与可选 region_supervision；噪声和 timestep 不保存，Stage 2 的 [flow_loss](../samtok_edit21/training_core/training.py#L261) 每次重新采样。缓存发布前，[cache manifest](../samtok_edit21/training_core/train.py#L552) 和 [verify_cache](../samtok_edit21/schema/provenance.py#L99) 核对 row hash、文件 checksum、模型/TE adapter/预处理身份和覆盖的样本行。最终 adapter 的 recipe 与 conditioning identity 由 [save_adapter](../samtok_edit21/training_core/training.py#L102) 和 [run_train](../samtok_edit21/training_core/train.py#L536) 保存；产物字段见第 6 节。
 
 ### 2.6 推理入口、两次调用与分辨率
 
@@ -984,3 +984,37 @@ sources.jsonl + semantic_runs/..._003/annotations.jsonl
 ```
 
 [annotation_cluster.py](../samtok_edit21/annotation/annotation_cluster.py#L1) 在四机上启动 32 个独立 TP=1 vLLM worker，按 `inputs[rank::32]` 分片，按源 ID 合并。训练的 32-rank DDP 与此独立副本模式不同。准确目录、统计和真实行例子见[训练数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)，完整可直接提交的 ARNOLD 命令见[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
+
+
+## 13. 正式训练复用已准备数据的验收报告
+
+**方法与需求。** 全量数据已在训练之前完成图片物化、逐行协议验证、mask code 编码和区域 coverage 构建。正式启动应读取这些产物并开始训练，避免 32 个 rank 各自提前遍历整套图片/coverage。两阶段的更新参数、任务配比、loss 和优化器不变。
+
+**官方起点与项目改动。** DiffSynth runner 不负责本项目的 region cache 验收。项目原 [Stage 1 入口](../samtok_edit21/training_core/train.py#L437) 在加载模型前对全部非 NTP 行调用 `RegionStore.load`；全量 390,657 行在每个 rank 重复执行，其中 194,618 行会读取 coverage 和图像内容。现由 [cluster.run](../samtok_edit21/distributed/cluster.py#L224) 在 `--full-training` 时自动传入 `--prepared-data-report <data>/metadata_report.json`，由 [verify_prepared_region_report](../samtok_edit21/schema/preflight.py#L11) 验证离线报告与当前 metadata/manifest 的身份一致。
+
+```python
+# samtok_edit21/distributed/cluster.py：仅正式 Stage 1 自动启用
+prepared = (["--prepared-data-report", str(data / "metadata_report.json")]
+            if a.full_training else [])
+```
+
+[预检分支](../samtok_edit21/training_core/train.py#L415) 仅让全局 rank 0 核对报告，使用已有 `_main_rank_result` 把结果或错误广播给全部 rank：
+
+```python
+if args.prepared_data_report:
+    result = _main_rank_result(accelerator, lambda: verify_prepared_region_report(
+        args.prepared_data_report, args.metadata, args.region_cache,
+        args.max_pixels, len(rows)))
+else:
+    # 未提供离线报告的普通/debug 入口保留逐行预检。
+    store = RegionStore(args.region_cache, args.max_pixels)
+    for row in rows:
+        if row["sample_type"] != "edit_ntp":
+            store.load(row, args.base_path)
+```
+
+报告须属于同一版本目录，且 `training_ready`、`region_cache_ready` 均为 true；重算 Stage 1 JSONL 和 region manifest 的 SHA256，匹配报告；检查 schema、geometry、max_pixels、metadata hash、identity hash、总行数和三类区域计数。检查读取 JSONL/manifest，不逐条打开图片或 `.pt`。正式 report 的实测验证耗时约 2.40 秒；本次没有新四机训练耗时结论。
+
+训练正常读取 metadata 并构造真实 schedule；[RegionStore.load](../samtok_edit21/region/supervision.py#L146) 在首次消费相应文件时仍核对 coverage 和图像 hash、张量形状与协议。报告复用的是准备阶段的验证结果，不意味着启动时重新检查了每一个资产文件。Stage 1 后新生成的 conditioning cache 仍走既有 merge/Stage 2 完整性验证，因为它不属于此前离线准备的产物。
+
+[启动日志](../samtok_edit21/training_core/train.py#L405) 在各 rank 输出 metadata_load、region_preflight、model_identity、wandb_init、model_load、training 的开始/完成；Stage 2 另记录 conditioning_cache_validation。rank 0 将对应记录写入阶段目录的 `startup.jsonl`，`run.json.data_preflight` 保存报告核对结果。`--plan-only` 只打印，不写输出目录。[节点编排](../samtok_edit21/distributed/cluster.py#L140) 每 60 秒输出子进程日志路径、大小、距最后修改秒数，并写 `nodes/<node>/<phase>.progress.json`；这个心跳证明编排器仍在等待，是否完成 optimizer update 要看 `training_metrics.jsonl`。
