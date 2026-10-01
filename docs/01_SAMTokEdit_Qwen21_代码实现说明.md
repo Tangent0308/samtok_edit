@@ -1051,6 +1051,10 @@ for group in masks:
 
 当前四源全量数据没有 global 样本，文件内容、行数与现有训练配比不变。全部复核过程与范围见[实验记录第 20 节](02_SAMTokEdit_Qwen21_实验记录.md#20-2026-10-01全量资产复核与新-adapter-完整链路验证)。
 
+**共享文件系统 cache 的续写。** DiffSynth 的 `launch_data_process_task` 仍负责模型前向和 cache 数据格式；[项目适配层](../src/samtok_edit21/training/engine.py#L350) 增加 `--resume-cache`，并把写盘参数传给官方 runner。[写盘实现](../third_party/diffsynth/diffsynth/diffusion/runner.py#L175) 在重启时按 `_row_index` 读取并复用已经完成的 payload，损坏或身份不符的文件重新前向；新 payload 先写进 rank/进程唯一的临时文件，`fsync` 后用 `os.replace` 发布，`torch.save`/rename 的共享盘异常按指数退避和 rank jitter 重试。最后仍由 `_cache_manifest` 和 `verify_cache` 逐条检查 row hash、conditioning identity、tensor shape、sidecar checksum 和完整覆盖，未通过就不会进入 Stage 2。
+
+四机编排器的 `--stage1-adapter` 会跳过 Stage 1 DDP，直接校验并复用已完成的 adapter；`--cache-output` 可以指向失败作业的 partial cache，`--resume-cache` 继续写入同一目录。新 run 根下只建立旧 Stage 1/cache 的引用别名，使正式全量审计仍能检查原 Stage 1 记录和续写后的 cache。入口和故障实例见[四机指南第 2.1 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#21-stage-1-已完成后的四机续训入口)。
+
 [annotation_cluster.py](../src/samtok_edit21/distributed/annotation.py#L1) 在四机上启动 32 个独立 TP=1 vLLM worker，按 `inputs[rank::32]` 分片，按源 ID 合并。训练的 32-rank DDP 与此独立副本模式不同。准确目录、统计和真实行例子见[训练数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)，完整可直接提交的 ARNOLD 命令见[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
 
 

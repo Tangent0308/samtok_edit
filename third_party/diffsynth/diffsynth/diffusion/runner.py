@@ -1,4 +1,4 @@
-import os, json, torch, importlib
+import os, json, time, zipfile, torch, importlib
 from tqdm import tqdm
 from accelerate import Accelerator
 from .training_module import DiffusionTrainingModule
@@ -179,6 +179,9 @@ def launch_data_process_task(
     model_logger: ModelLogger,
     num_workers: int = 8,
     args = None,
+    resume: bool = False,
+    save_retries: int = 8,
+    save_retry_backoff: float = 2.0,
     **kwargs,
 ):
     # Keep the public function usable without the argparse namespace used by
@@ -203,16 +206,91 @@ def launch_data_process_task(
         exclude_quantized_params_from_ddp_sync(accelerator, model)
         model, dataloader = accelerator.prepare(model, dataloader)
     
+    reused = written = retries = 0
     for data_id, data in enumerate(tqdm(dataloader)):
         with accelerator.accumulate(model):
             with torch.no_grad():
                 folder = os.path.join(model_logger.output_path, str(accelerator.process_index))
                 os.makedirs(folder, exist_ok=True)
                 save_path = os.path.join(model_logger.output_path, str(accelerator.process_index), f"{data_id}.pth")
+                # A cache run may be restarted after a shared-filesystem
+                # interruption.  Reuse only a readable payload whose row
+                # identity still points at this scheduled item; malformed or
+                # stale files are regenerated below.
+                if resume and _reusable_cache_file(save_path, data.get("_row_index")):
+                    reused += 1
+                    continue
                 data = model(data)
-                torch.save(data, save_path)
+                retries += _save_cache_file(
+                    data, save_path, max_retries=save_retries,
+                    retry_backoff=save_retry_backoff,
+                )
+                written += 1
                 if enable_model_cpu_offload:
                     offload_manager.after_backward()
+    print(json.dumps({
+        "cache_rank": accelerator.process_index,
+        "cache_reused": reused,
+        "cache_written": written,
+        "cache_save_retries": retries,
+    }), flush=True)
+
+
+def _reusable_cache_file(path, expected_row_index):
+    """Return whether an existing cache payload can be reused safely.
+
+    ``torch.save`` uses a zip container.  Loading the payload verifies both
+    the container and the row index, while the final manifest pass verifies
+    the full row hash, model identity, tensors, and checksum.
+    """
+    if expected_row_index is None or not os.path.isfile(path):
+        return False
+    try:
+        with zipfile.ZipFile(path) as archive:
+            if archive.testzip() is not None:
+                return False
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        return payload.get("row_index") == expected_row_index
+    except Exception:
+        return False
+
+
+def _save_cache_file(data, path, *, max_retries=8, retry_backoff=2.0):
+    """Write one cache payload atomically and retry transient shared-FS I/O.
+
+    The temporary name prevents a failed ``torch.save`` from looking like a
+    complete shard to a resumed run.  ``os.replace`` publishes the payload
+    only after serialization has finished.
+    """
+    if not isinstance(max_retries, int) or max_retries < 0:
+        raise ValueError("cache save retries must be a nonnegative integer")
+    if not isinstance(retry_backoff, (int, float)) or retry_backoff < 0:
+        raise ValueError("cache retry backoff must be nonnegative")
+    path = os.fspath(path)
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    for attempt in range(max_retries + 1):
+        temporary = f"{path}.{os.getpid()}.{attempt}.tmp"
+        try:
+            torch.save(data, temporary)
+            # Force the completed zip to the filesystem before publishing its
+            # final name.  This is cheap for local storage and avoids exposing
+            # a partially flushed shard on the shared mount.
+            with open(temporary, "rb") as stream:
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            return attempt
+        except (OSError, RuntimeError):
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            if attempt >= max_retries:
+                raise
+            # A small rank-dependent jitter prevents all 32 writers from
+            # retrying the same metadata operation at exactly the same time.
+            rank_jitter = 1.0 + 0.03 * (int(os.environ.get("RANK", "0")) % 16)
+            time.sleep(float(retry_backoff) * (2 ** attempt) * rank_jitter)
 
 def initialize_deepspeed_gradient_checkpointing(accelerator: Accelerator):
     if getattr(accelerator.state, "deepspeed_plugin", None) is not None:

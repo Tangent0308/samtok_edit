@@ -139,6 +139,71 @@ bash scripts/training/run_arnold.sh \
 
 输出：`$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`。顺序为 topology → 32-rank NCCL → Stage 1 → 全量 conditioning cache → Stage 2 → `audit_full.json` → `TRAINING_COMPLETE.json` → `SUCCESS.json`。正式模式不调用仅适用于 18 对 debug 样本的推理脚本。权重保存是 adapter 快照，不包含 optimizer-state resume。修复后每条 backward 将实际 timestep、抽样索引、权重、row hash、当前及累积梯度写入 `stage*/gradients-rank*.jsonl`；全局窗口零梯度原因写入 `training_metrics.jsonl` 和 W&B。`training_weight=0`、`current_backward_zero=true` 本身不表示异常，也不跳过正常 optimizer/LR 更新。
 
+## 2.1 Stage 1 已完成后的四机续训入口
+
+2026-10-01 的正式 `_003` 已完成 Stage 1 的 3,081 个 optimizer updates，但 cache 在约 13% 处因共享文件系统瞬时写入错误退出。原始错误位于 `logs/node0/cache.log`、`node1/cache.log` 和 `node2/cache.log`：`torch.save` 写入 `cache/<rank>/<index>.pth` 时返回 `RuntimeError: ... cannot be opened`，同时出现 `OSError: [Errno 5] Input/output error`。这不是模型或 loss 错误。失败目录中已经完成的 `.pth` 会被下面的续训命令复用；坏文件会重新计算，写入使用临时文件、原子 rename、指数退避和 rank jitter。
+
+续训使用新的 run ID，避免覆盖旧的 node claim 和日志；`--stage1-adapter` 直接指向 `_003` 的 Stage 1 adapter，因此不会重新运行 Stage 1。`--cache-output` 指向原来的不完整 cache，`--resume-cache` 让每个 rank 校验并复用已有 payload。cache 完成后，程序自动在新 run 下建立 `stage1`/`cache` 的引用别名，完整审计仍能检查原 Stage 1 记录和新 cache。不要删除旧 `_003/cache`，直到续训 cache 的 `manifest.json` 和校验通过。
+
+以下完整脚本仍按 ARNOLD 的四个 worker 启动；四个 worker 使用同一组用户变量，平台负责注入各自的 `ARNOLD_ID=0..3` 和 `ARNOLD_WORKER_HOSTS`：
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
+export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
+export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_full_9b_rules_003"
+export SAMTOK_STAGE1_RUN="$SAMTOK_EXPERIMENT/runs/qwen21_full_4n_formal_003"
+export SAMTOK_STAGE1_ADAPTER="$SAMTOK_STAGE1_RUN/stage1/adapter"
+export SAMTOK_CACHE_OUTPUT="$SAMTOK_STAGE1_RUN/cache"
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_001
+export WANDB_ENTITY=2200012743-peking-university
+export WANDB_PROJECT=samtok-edit
+# 用 ARNOLD secret 注入真实 key；不要把真实值写入脚本或日志。
+export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
+
+: "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject ARNOLD_WORKER_HOSTS}"
+: "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM=4}"
+: "${ARNOLD_WORKER_GPU:?ARNOLD must inject ARNOLD_WORKER_GPU=8}"
+: "${ARNOLD_ID:?ARNOLD must inject ARNOLD_ID=0..3}"
+[[ "$ARNOLD_WORKER_NUM" == 4 && "$ARNOLD_WORKER_GPU" == 8 && "$ARNOLD_ID" =~ ^[0-3]$ ]] || exit 2
+[[ -n "$WANDB_API_KEY" && "$WANDB_API_KEY" != FILL_IN* ]] || { echo 'Set WANDB_API_KEY as an ARNOLD secret' >&2; exit 2; }
+[[ -f "$SAMTOK_STAGE1_ADAPTER/adapter.json" ]] || { echo 'Stage 1 adapter is missing' >&2; exit 2; }
+[[ -d "$SAMTOK_CACHE_OUTPUT" ]] || { echo 'Partial cache directory is missing' >&2; exit 2; }
+
+export NODE_RANK="$ARNOLD_ID"
+unset PORT MASTER_ADDR MASTER_PORT NNODES GPUS_PER_NODE
+RUN="$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID"
+NODE="$ARNOLD_ID"
+REPO="/tmp/samtok-edit-${SAMTOK_RUN_ID}-node${NODE}"
+if [[ -e "$RUN/nodes/$NODE" || -e "$RUN/SUCCESS.json" ]]; then
+  echo "Run already used: $RUN; choose a new common SAMTOK_RUN_ID" >&2; exit 2
+fi
+mkdir -p "$RUN/bootstrap"
+if ! mkdir "$RUN/bootstrap/node${NODE}.claimed"; then
+  echo "Worker $NODE already claimed this run" >&2; exit 2
+fi
+export GIT_TERMINAL_PROMPT=0
+git clone --branch "$SAMTOK_EDIT_BRANCH" --single-branch "$SAMTOK_EDIT_REPO_URL" "$REPO"
+cd "$REPO"
+git rev-parse HEAD > "$RUN/bootstrap/node${NODE}.commit.txt"
+bash scripts/training/run_arnold.sh \
+  --full-training \
+  --stage1-adapter "$SAMTOK_STAGE1_ADAPTER" \
+  --stage1-source-run "$SAMTOK_STAGE1_RUN" \
+  --cache-output "$SAMTOK_CACHE_OUTPUT" \
+  --resume-cache \
+  --stage1-steps 3081 --stage2-steps 3081 \
+  --stage1-save-steps 2000 --stage2-save-steps 2000 \
+  --max-pixels 1048576 --stage1-rank 64 --stage2-rank 32 \
+  --region-weight 0.5 --attention-weight 0.1 \
+  --attention-warmup-steps 500 --cache-save-retries 8 \
+  --cache-save-retry-backoff 2 --timeout 604800 --wandb-mode online
+```
+
+续训产物在 `$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`；Stage 1 是旧 `_003/stage1` 的引用别名，Stage 2 adapter、W&B run、审计和完成标记写入新的续训目录。成功条件是旧 cache 目录出现完整 `manifest.json`，新目录出现 `audit_full.json`、`TRAINING_COMPLETE.json` 和 `SUCCESS.json`。若文件服务再次短暂拒绝写入，单个 rank 会自动退避重试；若作业被外部终止，使用新的续训 run ID，继续指向同一个 `SAMTOK_CACHE_OUTPUT` 并保留 `--resume-cache`，已完成 payload 不会重新前向计算。
+
 ## 3. 四机 debug 训练入口
 
 18 对样本（前三个数据集各 6 对）、72/54 条 metadata。此入口复现历史 debug_002 的训练规模，同时使用当前修复后的代码和新 ID；旧 run 的 W&B 上传缺陷及验收边界见[实验记录第 13 节](02_SAMTokEdit_Qwen21_实验记录.md#13-2026-09-28四机-32-卡-debug_002-完整结果复核)。完整流程增加 node 0 八卡推理与 debug audit。

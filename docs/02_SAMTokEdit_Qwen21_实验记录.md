@@ -1356,3 +1356,11 @@ BF16 不承诺跨不同计算形状或内核逐位一致，已经用独立数学
 真实 online 推理八例中 6 例生成有效 ref、2 例显式 plain fallback；有效在线回放使用真实数据中已有的定位 tokens，21 例都完成两遍定位→编辑。这区分真实定位输出行为与有效输入下的完整推理计算，不声称短训后的定位/编辑效果已经达标。
 
 **结论与限制。** 上述范围内没有未解决的训练/数据/推理实现失败；已发现的合法去重和新构建组内排序问题已修复；历史 75 组的已有顺序保留并明确记载。全量所有资产已检查，但没有为验收重新进行全量正式训练或实际提交四台物理机器/32 rank 作业。四机入口为模拟编排验证，实际通信/训推为本地 8 GPU；新分支的物理四机运行仍须由后续 ARNOLD 实验确认。实验报告不构成所有未来输入和环境下永无 bug 的证明。
+
+### 20.5 2026-10-01 正式四机 `_003` cache 写盘失败与续训修复
+
+正式 run `qwen21_full_4n_formal_003` 的 Stage 1 已完成 3,081 个 optimizer updates，W&B 记录为 finished；随后 cache 阶段约完成 13% 时，node 0/1/2 的多个 rank 在写入 `cache/<rank>/<index>.pth` 时分别出现 `RuntimeError: ... cannot be opened` 和 `OSError: [Errno 5] Input/output error`。共享盘容量充足，故障发生在 32 个进程并发创建小文件的瞬时文件系统 I/O 上；该 run 没有生成完整 `manifest.json`，因此不能进入 Stage 2。
+
+续训修复位于 `src/samtok_edit21/distributed/training.py`、`src/samtok_edit21/training/engine.py` 和 vendored DiffSynth 的 `third_party/diffsynth/diffsynth/diffusion/runner.py`：新 run 通过 `--stage1-adapter` 复用旧 adapter 并跳过 Stage 1；通过 `--cache-output` 指向旧的 partial cache；`--resume-cache` 校验 zip payload 和 `row_index` 后复用已完成文件，损坏或缺失文件重新前向；新的 cache 写入临时文件、`fsync`、原子发布，并带 rank jitter 的指数退避重试。完整入口见四机运行指南的“Stage 1 已完成后的四机续训入口”一节。
+
+本地验证包括 24 个仓库测试、临时故障注入/续写测试、四进程别名创建竞态测试、CLI 参数检查和文档静态检查；实际 partial cache 的抽样 payload 可读且 row index 自洽。续训成功条件是旧 cache 生成完整 `manifest.json`，新 run 完成 Stage 2、全量审计和 `SUCCESS.json`。

@@ -342,6 +342,25 @@ def _fresh_output(args, accelerator):
     _main_rank_result(accelerator, create)
 
 
+def _resume_cache_output(args, accelerator):
+    """Open an incomplete cache directory for per-file continuation.
+
+    A completed manifest is rejected so a successful cache can never be
+    accidentally overwritten.  Existing shard files are checked by the
+    DiffSynth data-process runner and only readable, matching row payloads are
+    reused.
+    """
+    def prepare():
+        path = Path(args.output)
+        if path.exists() and not path.is_dir():
+            raise ValueError(f"Cache output is not a directory: {path}")
+        if (path / "manifest.json").is_file():
+            raise ValueError("Cache is already complete; use a new output or train from its manifest")
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+    _main_rank_result(accelerator, prepare)
+
+
 def resolve_warmup_steps(args, updates):
     """Turn a requested ratio into optimizer updates, never microsteps."""
     if updates < 1:
@@ -558,9 +577,16 @@ def _cache_manifest(args, accelerator, rows):
 
 
 def run_cache(args):
+    if args.cache_save_retries < 0:
+        raise ValueError("cache-save-retries must be nonnegative")
+    if args.cache_save_retry_backoff < 0 or not math.isfinite(args.cache_save_retry_backoff):
+        raise ValueError("cache-save-retry-backoff must be finite and nonnegative")
     accelerator = _accelerator()
     args.device = str(accelerator.device)
-    _fresh_output(args, accelerator)
+    if args.resume_cache:
+        _resume_cache_output(args, accelerator)
+    else:
+        _fresh_output(args, accelerator)
     set_seed(args.seed)
     rows = read_rows(args.metadata)
     if any(row["sample_type"] == "edit_ntp" for row in rows):
@@ -576,7 +602,10 @@ def run_cache(args):
     dataset = ScheduledMetadata(rows, list(range(len(rows))), cache=True)
     model = SamtokTrainingModule(args, "sft:data_process")
     launch_data_process_task(accelerator, dataset, model, ModelLogger(args.output),
-                             num_workers=args.num_workers, args=None)
+                             num_workers=args.num_workers, args=None,
+                             resume=args.resume_cache,
+                             save_retries=args.cache_save_retries,
+                             save_retry_backoff=args.cache_save_retry_backoff)
     accelerator.wait_for_everyone()
     _main_rank_result(accelerator, lambda: _cache_manifest(args, accelerator, rows))
     accelerator.end_training()
@@ -596,6 +625,12 @@ def _parser():
         p.add_argument("--metadata")
         p.add_argument("--cache")
         p.add_argument("--te-adapter")
+        p.add_argument("--resume-cache", action="store_true",
+                       help="Resume an incomplete cache, reusing readable row payloads")
+        p.add_argument("--cache-save-retries", type=int, default=8,
+                       help="Retries for transient shared-filesystem cache writes")
+        p.add_argument("--cache-save-retry-backoff", type=float, default=2.0,
+                       help="Initial seconds for exponential cache-write backoff")
         p.add_argument("--stage", choices=("stage1", "stage2"), default="stage2")
         p.add_argument("--steps", type=int)
         p.add_argument("--accumulation", type=int)

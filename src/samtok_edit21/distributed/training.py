@@ -39,6 +39,26 @@ def record_failure(path, value):
         tmp.unlink()
 
 
+def link_alias(target, source):
+    """Atomically expose a reused artifact under the new run root."""
+    target, source = Path(target), Path(source).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_symlink() or target.exists():
+        if target.is_symlink() and target.resolve() == source:
+            return
+        raise RuntimeError(f"Refusing to replace existing run artifact: {target}")
+    try:
+        # Symlink creation itself is atomic.  Avoid a rename-overwrite race
+        # because all ranks publish the same alias concurrently.
+        os.symlink(source, target, target_is_directory=True)
+    except FileExistsError:
+        # Another rank may have published the same alias between our
+        # existence check and symlink call.  Accept that exact result;
+        # reject any conflicting artifact.
+        if not (target.is_symlink() and target.resolve() == source):
+            raise
+
+
 def topology(env, local=False):
     if local:
         return dict(nodes=1, node_rank=0, gpus=8, world_size=8,
@@ -228,16 +248,37 @@ class Pipeline:
                     "--wandb-id", hashlib.sha256(str(self.root).encode()).hexdigest()[:16] + "-" + stage]
         prepared = (["--prepared-data-report", str(data / "metadata_report.json")]
                     if a.full_training else [])
-        self.distributed("stage1", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage1",
-            "--metadata", str(data/"stage1.jsonl"), "--region-cache", str(data/"regions"),
-            "--region-weight", str(a.region_weight), "--steps", str(a.stage1_steps),
-            "--save-steps", str(a.stage1_save_steps), "--accumulation", "8", "--rank", str(a.stage1_rank),
-            "--output", str(self.root/"stage1"), *prepared, *shared, *tracking("stage1")])
+        if a.stage1_adapter:
+            stage1_adapter = Path(a.stage1_adapter).resolve()
+            if not (stage1_adapter / "adapter.json").is_file():
+                raise FileNotFoundError(stage1_adapter / "adapter.json")
+            link_alias(self.root / "stage1", stage1_adapter.parent)
+            # Keep a visible phase marker in the new run while reusing the
+            # completed adapter.  No Stage 1 DDP process is launched.
+            atomic_json(self.node / "stage1.reused.json", {
+                "adapter": str(stage1_adapter), "source_run": a.stage1_source_run,
+                "time": time.time(),
+            })
+            self.barrier("stage1_reused")
+        else:
+            self.distributed("stage1", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage1",
+                "--metadata", str(data/"stage1.jsonl"), "--region-cache", str(data/"regions"),
+                "--region-weight", str(a.region_weight), "--steps", str(a.stage1_steps),
+                "--save-steps", str(a.stage1_save_steps), "--accumulation", "8", "--rank", str(a.stage1_rank),
+                "--output", str(self.root/"stage1"), *prepared, *shared, *tracking("stage1")])
+            stage1_adapter = self.root / "stage1" / "adapter"
+        cache_output = Path(a.cache_output).resolve() if a.cache_output else self.root / "cache"
+        if cache_output != (self.root / "cache").resolve():
+            link_alias(self.root / "cache", cache_output)
+        cache_flags = ["--resume-cache"] if a.resume_cache else []
         self.distributed("cache", ["-m", "samtok_edit21.training.engine", "cache",
             "--metadata", str(data/"stage2.jsonl"), "--region-cache", str(data/"regions"),
-            "--te-adapter", str(self.root/"stage1/adapter"), "--output", str(self.root/"cache"), *shared])
+            "--te-adapter", str(stage1_adapter), "--output", str(cache_output),
+            "--cache-save-retries", str(a.cache_save_retries),
+            "--cache-save-retry-backoff", str(a.cache_save_retry_backoff),
+            *cache_flags, *shared])
         self.distributed("stage2", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage2",
-            "--cache", str(self.root/"cache"), "--region-weight", str(a.region_weight),
+            "--cache", str(cache_output), "--region-weight", str(a.region_weight),
             "--attention-weight", str(a.attention_weight), "--attention-warmup-steps", str(a.attention_warmup_steps),
             "--steps", str(a.stage2_steps), "--save-steps", str(a.stage2_save_steps), "--accumulation", "4",
             "--rank", str(a.stage2_rank), "--output", str(self.root/"stage2"), *shared, *tracking("stage2")])
@@ -284,6 +325,12 @@ def main():
     p.add_argument("--stage2-rank", type=int, default=32)
     p.add_argument("--stage1-save-steps", type=int, default=8, help="Per-rank microsteps, multiple of 8")
     p.add_argument("--stage2-save-steps", type=int, default=4, help="Per-rank microsteps, multiple of 4")
+    p.add_argument("--stage1-adapter", help="Completed Stage 1 adapter to reuse; skips Stage 1 training")
+    p.add_argument("--stage1-source-run", default=None, help="Run directory containing the reused Stage 1 adapter")
+    p.add_argument("--cache-output", help="Existing/incomplete cache directory to resume or a new cache output")
+    p.add_argument("--resume-cache", action="store_true", help="Resume cache-output and reuse completed payloads")
+    p.add_argument("--cache-save-retries", type=int, default=8)
+    p.add_argument("--cache-save-retry-backoff", type=float, default=2.0)
     p.add_argument("--max-pixels", type=int, default=65536)
     p.add_argument("--region-weight", type=float, default=0.5)
     p.add_argument("--attention-weight", type=float, default=0.1, help="Smoke coefficient only; calibrate for real training")
@@ -292,6 +339,13 @@ def main():
     p.add_argument("--seed", type=int, default=20260928)
     p.add_argument("--timeout", type=int, default=7200, help="Per-phase and barrier timeout in seconds")
     args = p.parse_args()
+    if args.cache_save_retries < 0 or args.cache_save_retry_backoff < 0:
+        raise SystemExit("cache-save-retries/backoff must be nonnegative")
+    if args.resume_cache and not args.cache_output:
+        # This is valid for a same-run restart, but a new run should normally
+        # pass the failed run's cache directory explicitly so completed files
+        # can be reused.
+        print("warning: --resume-cache without --cache-output uses this run's cache directory", file=sys.stderr)
     pipeline = Pipeline(args)
     try:
         pipeline.run()
