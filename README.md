@@ -1,88 +1,75 @@
 # SAMTokEdit for Qwen-Image-2.1
 
-This repository adapts the SAMTok region-localization method to Qwen-Image-2.1. It combines a Qwen3-VL-8B-SAMTok text encoder with the Qwen-Image-2.1 VAE/DiT, and provides strict data validation, two-stage LoRA training, deterministic multi-GPU sample mixing, TE conditioning cache, localization, and image editing inference.
+An installable SAMTok extension for the fixed DiffSynth Qwen-Image-2.1 editing pipeline. It combines the Qwen3-VL-8B-SAMTok text encoder with the Qwen-Image-2.1 DiT/VAE, two-stage LoRA training, region supervision, conditioning caches and editing inference.
 
-The implementation is based on the DiffSynth version vendored in `DiffSynth-Studio/` and the SAMTok code under `samtok/`. Source datasets are read-only; generated debug data and experiment outputs belong under the experiment directory configured by the user.
-
-## Environment
+## Install
 
 ```bash
-python3.11 -m venv /path/to/samtok21-venv
-source /path/to/samtok21-venv/bin/activate
-pip install -r requirements.txt
-export PYTHONPATH=$PWD:DiffSynth-Studio
+git clone --branch refactor/qwen21-layout --single-branch \
+  https://github.com/Tangent0308/samtok_edit.git samtok_edit_qwen21_refactor
+cd samtok_edit_qwen21_refactor
+uv venv --python /usr/bin/python3.11 /path/to/samtok21-env
+uv pip install --python /path/to/samtok21-env/bin/python -r requirements.txt
+source /path/to/samtok21-env/bin/activate
 ```
 
-Set local model paths with `--qwen` and `--samtok`, or use the defaults in `samtok_edit21/models/model.py`.
+Install the **vendored project extension** in `third_party/diffsynth` as specified by `requirements.txt`. A stock DiffSynth installation does not include this project's optional training/attention hooks. Model weights, images and training artifacts are external to the package. Dependencies for four-node training and text-only annotation are installed by separate environment scripts; see the run guide.
 
-## Data validation
+## Python API
+
+```python
+from PIL import Image
+from samtok_edit21 import load_pipeline, load_adapter, edit
+
+pipe = load_pipeline(device="cuda")
+load_adapter(pipe.text_encoder, "/path/stage1/adapter")
+load_adapter(pipe.dit, "/path/stage2/adapter")
+pipe.eval()
+image, report = edit(
+    pipe, "Make the leftmost bird blue.",
+    [Image.open("/path/source.png").convert("RGBA")],
+    mode="online", height=1024, width=1024, seed=0,
+)
+image.save("/path/result.png")
+```
+
+`load_pipeline`, `edit`, `localize`, `SamtokCodec` and `load_adapter` lazily expose the implementation objects. Importing the package itself does not load CUDA or models. Inference and the training engine work from an installed package outside the checkout; cluster orchestration additionally uses checkout scripts.
+
+## Commands
+
+`samtok-edit` and `python -m samtok_edit21` use the same CLI:
 
 ```bash
-python -m samtok_edit21.cli validate \
-  --metadata /path/stage1.jsonl --base-path /path/data
+samtok-edit validate --metadata /path/stage1.jsonl --base-path /path/data
+python -m torch.distributed.run --nproc_per_node 8 \
+  -m samtok_edit21 train --stage stage1 --metadata /path/stage1.jsonl \
+  --base-path /path/data --output /path/stage1 --steps 1000 --accumulation 8
+python -m torch.distributed.run --nproc_per_node 8 \
+  -m samtok_edit21 cache --metadata /path/stage2.jsonl \
+  --base-path /path/data --te-adapter /path/stage1/adapter --output /path/cache
+python -m torch.distributed.run --nproc_per_node 8 \
+  -m samtok_edit21 train --stage stage2 --cache /path/cache \
+  --output /path/stage2 --steps 1000 --accumulation 4
+samtok-edit infer --image /path/source.png --prompt "Make the leftmost bird blue." \
+  --te-adapter /path/stage1/adapter --dit-adapter /path/stage2/adapter \
+  --output /path/result.png
 ```
 
-The protocol supports `edit`, `edit_ntp`, and `edit_umt` rows. Mask spans and localization JSON are validated strictly.
-Localization uses the Qwen3-VL-8B-SAMTok chat template without a system message,
-with a fixed empty thinking prefix excluded from NTP supervision. Metadata has
-an exact field whitelist; annotation/provenance stays in a separate manifest.
-The `convert` command accepts annotated units and stored sample rows, and requires
-the input encoder's `--mask-tokenizer-sha256` to match the supplied SAMTok codec.
+These are minimal usage examples. The four-node guide contains the full production recipe with region/attention losses, prepared data, ARNOLD and W&B configuration. `--plan-only` inspects training exposure without loading models. Checkpoints are adapter weight snapshots, not complete optimizer-state resumes. Default inference canvas is 1024 × 1024, as before.
 
-## Training
+## Layout
 
-Stage 1 trains the Qwen3-VL LoRA with NTP plus flow matching:
+- `src/samtok_edit21/`: project package, organized into `data`, `models`, `training`, `regions`, `preparation`, and `distributed`.
+- `third_party/`: pinned DiffSynth and SAMTok sources; project-specific framework hooks are documented here.
+- `scripts/{training,annotation,diagnostics}/`: operational entry points, separate from reusable Python modules.
+- `tests/`: tests against the installed package; `examples/metadata/`: historical small metadata fixtures.
+- `docs/`: four current guides and an archive of historical records.
 
-Choose `--steps` explicitly. To inspect the exact sampling exposure before loading
-the training model, run the same command with `--plan-only`; it does not write to
-`--output`. Training saves weight snapshots every 2000 per-rank microsteps by
-default, aligned to gradient accumulation, plus a final adapter. Snapshots are
-not full optimizer-state resumes.
-
-```bash
-accelerate launch --num_processes 8 --mixed_precision bf16 \
-  -m samtok_edit21.train train --stage stage1 \
-  --metadata /path/stage1.jsonl --base-path /path/data \
-  --output /path/stage1 --steps 1000 --accumulation 8
-```
-
-Build TE/VAE cache with the Stage 1 adapter:
-
-```bash
-accelerate launch --num_processes 8 --mixed_precision bf16 \
-  -m samtok_edit21.train cache --metadata /path/stage2.jsonl \
-  --base-path /path/data --te-adapter /path/stage1/adapter \
-  --output /path/cache
-```
-
-Stage 2 trains the Qwen-Image-2.1 DiT LoRA from that cache:
-
-```bash
-accelerate launch --num_processes 8 --mixed_precision bf16 \
-  -m samtok_edit21.train train --stage stage2 \
-  --cache /path/cache --output /path/stage2 --steps 1000 --accumulation 4
-```
-
-## Inference
-
-Pure-text localization/editing defaults to `--variant ref`. A `noref` ablation
-requires reviewed per-unit types via `--units-file`; use `--strict-noref` to
-reject fallback. Interactive masks bypass localization and bind to region phrases.
-
-```bash
-python -m samtok_edit21.cli localize --image /path/source.png \
-  --prompt "Make the leftmost bird blue." \
-  --te-adapter /path/stage1/adapter --output /path/localize.json
-python -m samtok_edit21.cli infer --image /path/source.png \
-  --prompt "..." --te-adapter /path/stage1/adapter \
-  --dit-adapter /path/stage2/adapter --output /path/result.png
-```
+The previous flat compatibility modules have been removed. Current code paths and module entry points are listed in the implementation guide. The layout change preserves model computation, data/cache formats and training recipes.
 
 ## Documentation
 
-- [Implementation and code references](docs/01_SAMTokEdit_Qwen21_代码实现说明.md): method, official components, project changes, training, inference, and A/C supervision.
-- [Experiment history](docs/02_SAMTokEdit_Qwen21_实验记录.md): debug results, model/prompt comparisons, failures, fixes, and validation limits.
-- [Four-node run guide](docs/03_SAMTokEdit_Qwen21_四机实验运行指南.md): complete ARNOLD scripts for full training, debug training, and noref conversion.
-- [Training data inventory](docs/04_SAMTokEdit_Qwen21_训练数据盘点.md): source filters, final paths, counts, fields, examples, and sampling ratios.
-
-Implementation lives in `samtok_edit21/{schema,models,annotation,training_core,region,distributed}`. The original flat module names remain compatibility entry points. Noref conversion uses Qwen3.5-9B with vLLM, thinking disabled, and validated rule fallback; it does not use W&B. Two-stage training uses W&B online.
+1. [Implementation](docs/01_SAMTokEdit_Qwen21_代码实现说明.md): overall method, official starting points, project additions, code links and excerpts.
+2. [Experiments](docs/02_SAMTokEdit_Qwen21_实验记录.md): debug and production history, validation results and limits.
+3. [Four-node runs](docs/03_SAMTokEdit_Qwen21_四机实验运行指南.md): complete ARNOLD/git-clone/W&B entry scripts; noref annotation uses no W&B.
+4. [Training data](docs/04_SAMTokEdit_Qwen21_训练数据盘点.md): sources, filtering, prepared paths, counts, protocol, examples and sampling.

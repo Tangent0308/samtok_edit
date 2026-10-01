@@ -8,9 +8,9 @@ from torch.utils.data import Dataset, SequentialSampler
 from diffsynth.diffusion.logger import ModelLogger
 from diffsynth.diffusion.runner import launch_data_process_task, launch_training_task
 from diffsynth.diffusion.training_module import DiffusionTrainingModule
-from samtok_edit21.data import make_schedule, row_kind
-from samtok_edit21.train import ScheduledMetadata, verify_cache
-from samtok_edit21.data import file_hash, row_hash
+from samtok_edit21.data.io import make_schedule, row_kind
+from samtok_edit21.training.engine import ScheduledMetadata, verify_cache
+from samtok_edit21.data.io import file_hash, row_hash
 
 
 def _row(kind):
@@ -139,7 +139,7 @@ def test_cache_manifest_checks_geometry_and_checksum(tmp_path):
         "prompt_embeds_mask": torch.ones(1, 4, dtype=torch.bool),
         "edit_image_pad_mask": torch.ones(1, 4, dtype=torch.bool),
     }
-    from samtok_edit21.provenance import FORMAT, PREPROCESSING
+    from samtok_edit21.data.provenance import FORMAT, PREPROCESSING
     identity = {"schema": FORMAT, "preprocessing": PREPROCESSING,
                 "models": {"test_fixture": "synthetic"}, "metadata_sha256": "fixture",
                 "row_hashes": [row_hash(row)]}

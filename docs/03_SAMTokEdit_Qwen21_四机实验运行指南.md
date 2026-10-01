@@ -8,11 +8,11 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 
 训练环境按 `requirements.txt`、`requirements-cluster.txt` 锁定 torch 2.8.0；9B 转换按 `requirements-annotation-qwen35-lock.txt` 锁定 torch 2.10.0/vLLM 0.17.1。两者使用各自的节点本地 venv。真实 key 不写入 Git 或实验 manifest。节点执行一致性检查，commit、源码、数据和参数不一致时退出；需要固定版本时可在四台机器统一设置 `SAMTOK_EDIT_COMMIT` 为已推送的完整 40 位 SHA。
 
-每次提交使用新的共同 run ID。节点启动 claim 防止调度器重试覆盖旧日志。脚本中的 bootstrap 与仓库 `scripts/train/bootstrap_arnold_*.sh` 保持一致，clone 后调用 `run_arnold_*.sh` 安装环境并执行管线。
+每次提交使用新的共同 run ID。节点启动 claim 防止调度器重试覆盖旧日志。脚本中的 bootstrap 与仓库 `scripts/training/bootstrap_arnold.sh` 或 `scripts/annotation/bootstrap_arnold.sh` 保持一致，clone 后调用对应目录的 `run_arnold.sh` 安装环境并执行管线。
 
 ## 2. 正式全量训练入口
 
-已准备数据：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003`。98,574 个源编辑对，Stage 1 为 390,657 行，Stage 2 为 293,296 行，详见[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)。下面使用修复后新 run `_003`；旧 `_001` 的预检等待及 `_002` 三步后零梯度误报，分别见[实验记录第 17 节](02_SAMTokEdit_Qwen21_实验记录.md#17-2026-09-30正式全量-_001-启动停滞与预检修复)与[第 18 节](02_SAMTokEdit_Qwen21_实验记录.md#18-2026-09-30正式-_002-零梯度误报与更新链路验证)。新命令尚未完成正式四机运行。
+已准备数据：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003`。98,574 个源编辑对，Stage 1 为 390,657 行，Stage 2 为 293,296 行，详见[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)。下面使用整理后独立分支的新 run `_004_layout`；正在运行的旧 `_003` 保持其原始 checkout；旧 `_001` 的预检等待及 `_002` 三步后零梯度误报，分别见[实验记录第 17 节](02_SAMTokEdit_Qwen21_实验记录.md#17-2026-09-30正式全量-_001-启动停滞与预检修复)与[第 18 节](02_SAMTokEdit_Qwen21_实验记录.md#18-2026-09-30正式-_002-零梯度误报与更新链路验证)。新命令尚未完成正式四机运行。
 
 | 参数 | Stage 1 | Stage 2 |
 |---|---|---|
@@ -32,13 +32,13 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 
 `--full-training` 自动让 Stage 1 复用同目录 `metadata_report.json`：全局 rank 0 核对报告就绪状态、metadata/region manifest hash、分辨率与计数，再广播结果。远程启动不再对全量图片和 coverage 逐条预扫描；正常读取 metadata、构造 schedule 和训练消费时的文件验证保留。Stage 1 之后新生成的 conditioning cache 仍需验证。详细实现见[代码说明第 13 节](01_SAMTokEdit_Qwen21_代码实现说明.md#13-正式训练复用已准备数据的验收报告)。无需重新打标或重建当前数据。
 
-此次修复接受官方零 FM 权重产生的有限零梯度，并仍拒绝梯度断链/非有限值/冻结参数误更新；loss、累积和 LR 配方保持原样。本地 68 项检查、八卡解析模型的更新轨迹对照及完整基座的小分辨率八卡训练路径均通过；完整基座 Stage 1 为 1 update、Stage 2 为 2 updates，Stage 2 只读复用已有 cache，范围见实验记录第 18 节。旧 `_002` 已失败退出且没有 checkpoint，不能从第三步恢复；请保留 `_001/_002` 的共享日志。四个 worker 使用下面同一个新 ID 提交，确保 clone 到本次修复后的分支；如果设置了旧 `SAMTOK_EDIT_COMMIT`，须清除或改为此次修复的已推送 SHA，不复用旧节点目录。
+当前实现接受官方零 FM 权重产生的有限零梯度，并仍拒绝梯度断链/非有限值/冻结参数误更新；loss、累积和 LR 配方保持原样。本地 68 项检查、八卡解析模型的更新轨迹对照及完整基座的小分辨率八卡训练路径均通过；完整基座 Stage 1 为 1 update、Stage 2 为 2 updates，Stage 2 只读复用已有 cache，此前修复的验证范围见实验记录第 18 节；本次整理前后的权重/推理一致性及入口验证见第 19 节。旧 `_002` 已失败退出且没有 checkpoint，不能从第三步恢复；请保留 `_001/_002` 的共享日志。本页当前代码来自 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`，分支 `refactor/qwen21-layout`。环境安装会安装项目 src 包及 `third_party/diffsynth`，标注环境仅安装项目基础包，不引入训练依赖。数据和旧日志路径保持原样。源码身份 hash 随布局改变，新任务必须使用新 run ID；不要把新代码用于旧 noref 的原地续写。已有 `_003` 标注与正式 metadata 无需重建。四个 worker 使用下面同一个新 ID 提交，确保 clone 到本次修复后的分支；如果设置了旧 `SAMTOK_EDIT_COMMIT`，须清除或改为当前整理分支的已推送 SHA，不复用旧节点目录。
 
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
-export SAMTOK_EDIT_BRANCH=qwen-image-2.1-dev
+export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
 # 如需固定版本，可在四个 worker 上设置同一个已推送的完整 40 位 SAMTOK_EDIT_COMMIT。
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
@@ -46,7 +46,7 @@ export WANDB_PROJECT=samtok-edit
 export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_full_9b_rules_003"
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_003
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_004_layout
 
 
 # ----- User settings -----
@@ -58,7 +58,7 @@ export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:?Set the shared experiment directo
 export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
 export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-refactor/qwen21-layout}"
 
 # ----- ARNOLD checks -----
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
@@ -129,7 +129,7 @@ if [[ -n "${SAMTOK_EDIT_COMMIT:-}" ]]; then
 fi
 git rev-parse HEAD > "$BOOTSTRAP/node${NODE}.commit.txt"
 BOOTSTRAP_PHASE=environment-or-pipeline
-bash scripts/train/run_arnold_4node.sh \
+bash scripts/training/run_arnold.sh \
   --full-training --stage1-steps 3081 --stage2-steps 3081 \
   --stage1-save-steps 2000 --stage2-save-steps 2000 \
   --max-pixels 1048576 --stage1-rank 64 --stage2-rank 32 \
@@ -147,7 +147,7 @@ bash scripts/train/run_arnold_4node.sh \
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
-export SAMTOK_EDIT_BRANCH=qwen-image-2.1-dev
+export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
 # 如需固定版本，可在四个 worker 上设置同一个已推送的完整 40 位 SAMTOK_EDIT_COMMIT。
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
@@ -155,7 +155,7 @@ export WANDB_PROJECT=samtok-edit
 export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_4node_debug_20260928
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data"
-export SAMTOK_RUN_ID=qwen21_4n_debug_003
+export SAMTOK_RUN_ID=qwen21_4n_debug_004_layout
 
 
 # ----- User settings -----
@@ -167,7 +167,7 @@ export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:?Set the shared experiment directo
 export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
 export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-refactor/qwen21-layout}"
 
 # ----- ARNOLD checks -----
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
@@ -238,7 +238,7 @@ if [[ -n "${SAMTOK_EDIT_COMMIT:-}" ]]; then
 fi
 git rev-parse HEAD > "$BOOTSTRAP/node${NODE}.commit.txt"
 BOOTSTRAP_PHASE=environment-or-pipeline
-bash scripts/train/run_arnold_4node.sh \
+bash scripts/training/run_arnold.sh \
   --stage1-steps 2 --stage2-steps 3 \
   --stage1-save-steps 8 --stage2-save-steps 4 \
   --max-pixels 65536 --stage1-rank 64 --stage2-rank 32 \
@@ -248,13 +248,13 @@ bash scripts/train/run_arnold_4node.sh \
 
 ## 4. noref 四机转换入口（不使用 W&B）
 
-数据已完成的生产版本是 `_003`，不需要为启动训练再次打标。下面 `_004` 是需要复跑时使用的新实验 ID，四机共 32 个独立 TP=1 vLLM 副本；使用 9B、thinking 关闭和规则回退。只有复跑产物重新验收/构建 metadata 后，才可更换正式训练数据目录；改 annotation ID 不会自动覆盖 train_full_9b_rules_003。
+数据已完成的生产版本是 `_003`，不需要为启动训练再次打标。下面 `_005_layout` 是需要复跑时使用的新实验 ID，四机共 32 个独立 TP=1 vLLM 副本；使用 9B、thinking 关闭和规则回退。只有复跑产物重新验收/构建 metadata 后，才可更换正式训练数据目录；改 annotation ID 不会自动覆盖 train_full_9b_rules_003。
 
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export SAMTOK_DATA_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
-export SAMTOK_ANNOTATION_RUN_ID=qwen21_noref9b_rules_4n_full_004
+export SAMTOK_ANNOTATION_RUN_ID=qwen21_noref9b_rules_4n_full_005_layout
 export SAMTOK_ANNOTATION_MODEL=/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen3.5-9B
 export SAMTOK_ANNOTATION_BATCH_SIZE=64
 export SAMTOK_ANNOTATION_ATTEMPTS=3
@@ -267,7 +267,7 @@ export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
 export SAMTOK_ANNOTATION_ATTEMPTS="${SAMTOK_ANNOTATION_ATTEMPTS:-3}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-refactor/qwen21-layout}"
 # Optional: pin a pushed commit. The revised prompt/protocol needs a fresh run.
 # Resume only a run made with identical code, model, input and sharding.
 export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"
@@ -326,7 +326,7 @@ git rev-parse HEAD > "$RUN/bootstrap/node${NODE}.commit.txt"
 export SAMTOK_ENV="/tmp/samtok-noref-${SAMTOK_ANNOTATION_RUN_ID}-node${NODE}-env"
 export SAMTOK_PYTHON="${SAMTOK_PYTHON:-/usr/bin/python3.11}"
 PHASE=environment-or-annotation
-bash scripts/train/run_arnold_annotation_4node.sh "$@"
+bash scripts/annotation/run_arnold.sh "$@"
 ```
 
 输出：`$SAMTOK_DATA_EXPERIMENT/data/semantic_runs/$SAMTOK_ANNOTATION_RUN_ID/` 下的 `shards/`、`annotations.jsonl`、`rule_based.jsonl`、`failed.jsonl` 和 `SUCCESS.json`。`processed_complete` 表示全量已处理，不表示全部样本语义通过。32 个 shard 的 ID 归属、完整性和 hash 经过 merge 验证，failed 行单独保留。后续构建正式数据的步骤见[数据盘点第 9 节](04_SAMTokEdit_Qwen21_训练数据盘点.md#9-验证和重建命令)。
@@ -339,13 +339,13 @@ bash scripts/train/run_arnold_annotation_4node.sh "$@"
 set -Eeuo pipefail
 export TRAIN_DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_rebuild_NEW_VERSION
 export SAMTOK_CODEC=/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok
-export PYTHONPATH="$PWD:$PWD/DiffSynth-Studio${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PWD:$PWD/third_party/diffsynth${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$TRAIN_DATA/regions_logs"
 for offset in 0 8; do
   pids=()
   for gpu in $(seq 0 7); do
     rank=$((offset + gpu))
-    CUDA_VISIBLE_DEVICES="$gpu" python -m samtok_edit21.full_regions worker \
+    CUDA_VISIBLE_DEVICES="$gpu" python -m samtok_edit21.regions.build worker \
       --metadata "$TRAIN_DATA/stage1.jsonl" --output "$TRAIN_DATA/regions" \
       --qwen /mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1 \
       --samtok "$SAMTOK_CODEC" --rank "$rank" --shards 16 --device cuda:0 \
@@ -355,7 +355,7 @@ for offset in 0 8; do
   done
   for pid in "${pids[@]}"; do wait "$pid"; done
 done
-python -m samtok_edit21.full_regions merge \
+python -m samtok_edit21.regions.build merge \
   --metadata "$TRAIN_DATA/stage1.jsonl" --output "$TRAIN_DATA/regions" --shards 16
 ```
 

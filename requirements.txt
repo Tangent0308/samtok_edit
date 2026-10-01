@@ -1,5 +1,5 @@
 -c constraints-tested.txt
--e ./DiffSynth-Studio
+-e ./third_party/diffsynth
 mmengine==0.10.7
 ijson
 pyarrow
@@ -8,3 +8,4 @@ hydra-core
 opencv-python
 scipy
 pytest
+-e .[training,data,test]

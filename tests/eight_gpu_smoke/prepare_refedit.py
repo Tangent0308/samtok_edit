@@ -16,9 +16,9 @@ import numpy as np
 import pyarrow.parquet as pq
 from PIL import Image
 
-from samtok_edit21.codec import SamtokCodec
-from samtok_edit21.data import write_json, write_rows
-from samtok_edit21.protocol import to_cot, validate_row
+from samtok_edit21.models.codec import SamtokCodec
+from samtok_edit21.data.io import write_json, write_rows
+from samtok_edit21.data.protocol import to_cot, validate_row
 
 
 def _first_source_ref(record):

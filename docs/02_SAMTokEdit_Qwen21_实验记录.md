@@ -1,5 +1,7 @@
 # SAMTokEdit Qwen-Image-2.1 实验记录
 
+2026-10-01 当前开发 checkout 为 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`（`refactor/qwen21-layout`），此次整理与验证见第 19 节。此前实验仍来自原分支与旧 checkout，历史 commit、run ID、数据/结果路径保持记录；下文现存模块的代码链接及可复用命令已映射到新布局，早期已移除的临时脚本只用于追溯。正在运行的正式 `_003` 不因此次整理被更新或重启。
+
 2026-09-30 最新正式 `_002` 零梯度误报修复及本地更新链路验证见第 18 节；此前启动预检修复见第 17 节；全量数据准备结果见第 15 节。2026-09-29 本地 noref 数据转换记录见[9B 规则回退与四机复跑](archive/SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)：最终本地四卡 436 条，398 条模型通过、24 条规则回退通过、14 条仍失败；全量 98,574 条输入关联检查通过。此项是文本数据转换验证，不是两阶段训练结果。
 
 > 下方原有第 1–6 节为历史记录。2026-09-26 的独立审计发现，历史 cache identity/非零梯度检查的充分性曾被高估；其旧环境路径也已失效。后续实现与修复从第 7 节起按日期追加；最新四机运行及独立结果复核见第 13 节。历史内容保留供追溯。
@@ -21,12 +23,12 @@
 运行：
 
 ```bash
-PYTHONPATH=.:DiffSynth-Studio python tests/eight_gpu_smoke/prepare_refedit.py \
+PYTHONPATH=src:third_party/diffsynth python tests/eight_gpu_smoke/prepare_refedit.py \
   --source /mnt/bn/strategy-mllm-train/user/tanyue/datasets/RefEdit-mask-prefiltered-qwen38-self-contained \
   --output /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data \
   --samtok /mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok \
   --unique-rows 8
-PYTHONPATH=.:DiffSynth-Studio python -m samtok_edit21.cli validate \
+PYTHONPATH=src:third_party/diffsynth python -m samtok_edit21.cli validate \
   --metadata /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data/stage1.jsonl \
   --base-path /mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
 ```
@@ -53,7 +55,7 @@ Stage 2 使用 port 45681、`--stage stage2 --accumulation 4`。8 个 rank 均�
 
 ### 3.1 可选 XTuner 导入阻塞 codec
 
-最初导入 `samtok.models` 会同时加载 XTuner 感知模型，和当前 Transformers 版本冲突，导致 mask codec 尚未初始化就失败。修复：`samtok/models/__init__.py` 只直接加载 VQ-SAM2，其他类通过 `__getattr__` 懒加载；SAM2/losses 内部改为相对导入。`mmengine` 加入运行环境依赖。
+最初导入 `samtok.models` 会同时加载 XTuner 感知模型，和当前 Transformers 版本冲突，导致 mask codec 尚未初始化就失败。修复：`third_party/samtok/models/__init__.py` 只直接加载 VQ-SAM2，其他类通过 `__getattr__` 懒加载；SAM2/losses 内部改为相对导入。`mmengine` 加入运行环境依赖。
 
 ### 3.2 设备错误：8 个进程全部占用 GPU 0
 
@@ -69,7 +71,7 @@ Stage 2 使用 port 45681、`--stage stage2 --accumulation 4`。8 个 rank 均�
 
 ```bash
 accelerate launch --main_process_port 45682 --num_processes 8 --mixed_precision bf16 \
-  -m samtok_edit21.train train --stage stage1 \
+  -m samtok_edit21.training.engine train --stage stage1 \
   --metadata .../refedit_data/stage1.jsonl --base-path .../refedit_data \
   --output .../stage1 --max-pixels 262144 --steps 1 --accumulation 8 \
   --save-steps 64 --num-workers 0 --seed 20260925
@@ -81,7 +83,7 @@ Stage 2 cache：
 
 ```bash
 accelerate launch --main_process_port 45683 --num_processes 8 --mixed_precision bf16 \
-  -m samtok_edit21.train cache --metadata .../refedit_data/stage2.jsonl \
+  -m samtok_edit21.training.engine cache --metadata .../refedit_data/stage2.jsonl \
   --base-path .../refedit_data --te-adapter .../stage1/adapter \
   --output .../cache --max-pixels 262144 --num-workers 0
 ```
@@ -92,7 +94,7 @@ Stage 2 training：
 
 ```bash
 accelerate launch --main_process_port 45684 --num_processes 8 --mixed_precision bf16 \
-  -m samtok_edit21.train train --stage stage2 --cache .../cache \
+  -m samtok_edit21.training.engine train --stage stage2 --cache .../cache \
   --output .../stage2 --steps 1 --accumulation 4 --save-steps 32 --num-workers 0
 ```
 
@@ -233,7 +235,7 @@ F1/F2/F3/F4/F5 和大部分 A 项是项目实现/契约问题，不是升级官�
 
 ```bash
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH=$PWD:DiffSynth-Studio
+export PYTHONPATH=$PWD/src:third_party/diffsynth
 export CHECK=/tmp/samtok21-fixes-dUnbt5
 export PY=$CHECK/venv/bin/python
 export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
@@ -246,7 +248,7 @@ CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.cli train --stage stage1 \
   --max-pixels 65536 --steps 1 --rank 2 --dropout 0.15 --seed 926
 
 CUDA_VISIBLE_DEVICES=0,1 $PY -m torch.distributed.run --standalone --nproc_per_node=2 \
-  -m samtok_edit21.train train --stage stage1 --metadata $DATA/stage1.jsonl \
+  -m samtok_edit21.training.engine train --stage stage1 --metadata $DATA/stage1.jsonl \
   --base-path $DATA --output $CHECK/stage1_warm_ddp --max-pixels 65536 \
   --steps 1 --init-adapter $CHECK/stage1/adapter --seed 926
 
@@ -255,7 +257,7 @@ CUDA_VISIBLE_DEVICES=2,3 $PY -m torch.distributed.run --standalone --nproc_per_n
   --base-path $DATA --te-adapter $CHECK/stage1/adapter \
   --output $CHECK/cache_ddp --max-pixels 65536
 
-CUDA_VISIBLE_DEVICES=5 $PY -m samtok_edit21.train cache \
+CUDA_VISIBLE_DEVICES=5 $PY -m samtok_edit21.training.engine cache \
   --metadata /tmp/samtok21-audit-tKUbmC/cache_three.jsonl --base-path $DATA \
   --te-adapter $CHECK/stage1/adapter --output $CHECK/cache_single --max-pixels 65536
 
@@ -264,18 +266,18 @@ CUDA_VISIBLE_DEVICES=4 $PY -m samtok_edit21.cli train --stage stage2 \
   --rank 2 --dropout 0.15 --lr-schedule cosine --warmup-steps 1 --seed 926
 
 CUDA_VISIBLE_DEVICES=2,3 $PY -m torch.distributed.run --standalone --nproc_per_node=2 \
-  -m samtok_edit21.train train --stage stage2 --cache $CHECK/cache_ddp \
+  -m samtok_edit21.training.engine train --stage stage2 --cache $CHECK/cache_ddp \
   --output $CHECK/stage2_ddp --steps 2 --rank 2 --dropout 0.15 \
   --lr-schedule cosine --warmup-steps 1 --seed 926
 
 CUDA_VISIBLE_DEVICES=5,6 $PY -m torch.distributed.run --standalone --nproc_per_node=2 \
-  -m samtok_edit21.train train --stage stage2 --cache $CHECK/cache_ddp \
+  -m samtok_edit21.training.engine train --stage stage2 --cache $CHECK/cache_ddp \
   --init-adapter $CHECK/stage2/adapter --output $CHECK/stage2_warm_ddp --steps 1 --seed 926
 
 $PY $CHECK/prepare_reviewed.py
 $PY -m samtok_edit21.cli validate --metadata $CHECK/reviewed_stage1.jsonl \
   --base-path $DATA --check-bindings
-CUDA_VISIBLE_DEVICES=3 $PY -m samtok_edit21.train train --stage stage1 \
+CUDA_VISIBLE_DEVICES=3 $PY -m samtok_edit21.training.engine train --stage stage1 \
   --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA --output $CHECK/reviewed_stage1 \
   --max-pixels 65536 --steps 1 --rank 2 --dropout 0.15 --seed 926
 
@@ -332,9 +334,9 @@ $PY $CHECK/final_artifact_checks.py
 
 ```bash
 CUDA_VISIBLE_DEVICES=0,1 $PY -m torch.distributed.run --standalone --nproc_per_node=2 \
-  -m samtok_edit21.train cache --metadata $CHECK/reviewed_stage2.jsonl --base-path $DATA \
+  -m samtok_edit21.training.engine cache --metadata $CHECK/reviewed_stage2.jsonl --base-path $DATA \
   --te-adapter $CHECK/reviewed_stage1/adapter --output $CHECK/cache_final --max-pixels 65536
-CUDA_VISIBLE_DEVICES=4 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=4 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache $CHECK/cache_final --output $CHECK/stage2_final --steps 1 --rank 2 --dropout 0.15 --seed 926
 ```
 
@@ -374,11 +376,11 @@ CUDA_VISIBLE_DEVICES=4 $PY -m samtok_edit21.cli infer --mode oracle \
 
 ```bash
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH=.:DiffSynth-Studio
+export PYTHONPATH=src:third_party/diffsynth
 export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
 export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
 $PY -m pytest -p no:cacheprovider -q tests /tmp/samtok21-fixes-dUnbt5/test_regressions.py
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache /tmp/samtok21-fixes-dUnbt5/cache_final \
   --output /tmp/samtok21-stage2-official-45yHZt/stage2 --steps 1
 CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.cli infer --mode oracle \
@@ -396,7 +398,7 @@ CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.cli infer --mode oracle \
 
 ### 9.1 实现与来源
 
-此前项目虽已有 `constant|cosine` 与显式 `--warmup-steps`，两阶段默认仍为 constant/0 warmup；这是本项目旧配方，不是 DiffSynth 或 SAMTok 的硬性要求。此次只改项目训练入口 `samtok_edit21/train.py`，不改 DiffSynth runner：Stage 1 默认 cosine + `--warmup-ratio 0.04`，Stage 2 默认 constant + `--warmup-ratio 0.025`；Stage 2 可显式选 cosine，使用**同一份 cache 和相同 2.5% warmup**做后续 ablation。`--warmup-ratio` 与 `--warmup-steps` 互斥，后者可覆盖默认比例或设 0；有效 warmup update 数为 `ceil(ratio × optimizer_updates)`，写入 `run.json`。原有 `--init-adapter` 仍只 warm-start 权重，不恢复 optimizer/scheduler。历史运行的默认 LR 轨迹不因代码更新而改变，不能将历史记录解释为新配方结果。
+此前项目虽已有 `constant|cosine` 与显式 `--warmup-steps`，两阶段默认仍为 constant/0 warmup；这是本项目旧配方，不是 DiffSynth 或 SAMTok 的硬性要求。此次只改项目训练入口 `src/samtok_edit21/training/engine.py`，不改 DiffSynth runner：Stage 1 默认 cosine + `--warmup-ratio 0.04`，Stage 2 默认 constant + `--warmup-ratio 0.025`；Stage 2 可显式选 cosine，使用**同一份 cache 和相同 2.5% warmup**做后续 ablation。`--warmup-ratio` 与 `--warmup-steps` 互斥，后者可覆盖默认比例或设 0；有效 warmup update 数为 `ceil(ratio × optimizer_updates)`，写入 `run.json`。原有 `--init-adapter` 仍只 warm-start 权重，不恢复 optimizer/scheduler。历史运行的默认 LR 轨迹不因代码更新而改变，不能将历史记录解释为新配方结果。
 
 ### 9.2 本次测试与短程验收
 
@@ -408,23 +410,23 @@ CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.cli infer --mode oracle \
 
 ```bash
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH=.:DiffSynth-Studio
+export PYTHONPATH=src:third_party/diffsynth
 export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
 export CHECK=/tmp/samtok21-fixes-dUnbt5
 export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
 export OUT=/tmp/samtok21-lr-schedule-M3nCRA
 $PY -m pytest -p no:cacheprovider -q tests $CHECK/test_regressions.py
-CUDA_VISIBLE_DEVICES=2 $PY -m samtok_edit21.train train --stage stage1 \
+CUDA_VISIBLE_DEVICES=2 $PY -m samtok_edit21.training.engine train --stage stage1 \
   --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA --max-pixels 65536 \
   --output $OUT/stage1_cosine --steps 1 --rank 2 --seed 926
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache $CHECK/cache_final --output $OUT/stage2_constant --steps 3 --rank 2 \
   --seed 926 --lr-schedule constant
-CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache $CHECK/cache_final --output $OUT/stage2_cosine --steps 3 --rank 2 \
   --seed 926 --lr-schedule cosine
 CUDA_VISIBLE_DEVICES=3,4 $PY -m torch.distributed.run --standalone --nproc_per_node=2 \
-  -m samtok_edit21.train train --stage stage2 --cache $CHECK/cache_final \
+  -m samtok_edit21.training.engine train --stage stage2 --cache $CHECK/cache_final \
   --output $OUT/stage2_cosine_ddp --steps 3 --rank 2 --seed 926 --lr-schedule cosine
 ```
 
@@ -452,29 +454,29 @@ DiffSynth `ModelLogger` 每个 microstep 调用一次 `on_step_end`，保存文�
 
 ```bash
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH=.:DiffSynth-Studio
+export PYTHONPATH=src:third_party/diffsynth
 export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
 export CHECK=/tmp/samtok21-fixes-dUnbt5
 export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
 export OUT=/tmp/samtok21-training-plan-VdqG2K
 $PY -m pytest -p no:cacheprovider -q tests $CHECK/test_regressions.py $CHECK/test_training_plan.py
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage1 \
   --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA \
   --output $OUT/no-stage1-output --steps 3 --plan-only
-CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache $CHECK/cache_final --output $OUT/no-stage2-output --steps 3 --plan-only
 CUDA_VISIBLE_DEVICES=4,5 NCCL_DEBUG=WARN $PY -m torch.distributed.run --standalone \
-  --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --nproc_per_node=2 -m samtok_edit21.training.engine train --stage stage2 \
   --cache $CHECK/cache_final --output $OUT/no-stage2-ddp-output \
   --steps 3 --rank 2 --seed 926 --plan-only
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage1 \
   --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA --max-pixels 65536 \
   --output $OUT/stage1_smoke --steps 2 --rank 2 --seed 926 --save-steps 8
-CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache $CHECK/cache_final --output $OUT/stage2_smoke \
   --steps 3 --rank 2 --seed 926 --save-steps 4
 CUDA_VISIBLE_DEVICES=2,3 NCCL_DEBUG=WARN $PY -m torch.distributed.run --standalone \
-  --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --nproc_per_node=2 -m samtok_edit21.training.engine train --stage stage2 \
   --cache $CHECK/cache_final --output $OUT/stage2_ddp_smoke \
   --steps 2 --rank 2 --seed 926 --save-steps 4
 ```
@@ -536,17 +538,17 @@ export CHECK=/tmp/samtok21-fixes-dUnbt5
 export OUT=/tmp/samtok-data-contract-zmsuwi
 export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH=$PWD:DiffSynth-Studio
+export PYTHONPATH=$PWD/src:third_party/diffsynth
 $PY -m pytest -p no:cacheprovider -q tests $OUT/test_contract.py $CHECK/test_training_plan.py
 $PY -m pytest -p no:cacheprovider -q $CHECK/test_regressions.py \
   -k 'cache or identity or stage2 or zero_branch or each_image or input_guard or benchmark or scheduler'
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage1 \
   --metadata $CHECK/reviewed_stage1.jsonl --base-path $DATA --max-pixels 65536 \
   --output $OUT/stage1 --steps 2 --rank 2 --save-steps 8 --seed 926
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train cache \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine cache \
   --metadata $CHECK/reviewed_stage2.jsonl --base-path $DATA --max-pixels 65536 \
   --te-adapter $OUT/stage1/adapter --output $OUT/cache
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache $OUT/cache --output $OUT/stage2 --steps 2 --rank 2 --save-steps 4 --seed 926
 CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.cli localize \
   --image $DATA/images/refedit_00_source.png \
@@ -657,29 +659,29 @@ export CHECK=/tmp/samtok21-fixes-dUnbt5
 export OUT=/tmp/samtok-region-train-Rzdty0
 export DATA=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1_dev_smoke/refedit_data
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH=$PWD:DiffSynth-Studio
+export PYTHONPATH=$PWD/src:third_party/diffsynth
 # CODEC_SHA 取本批数据编码阶段已确认使用的 mask_tokenizer 权重 hash。
 CUDA_VISIBLE_DEVICES=7 $PY -m samtok_edit21.cli prepare-regions \
   --metadata "$CHECK/reviewed_stage1.jsonl" --base-path "$DATA" \
   --max-pixels 65536 --assume-aligned --mask-tokenizer-sha256 "$CODEC_SHA" \
   --output "$OUT/regions"
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage1 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage1 \
   --metadata "$CHECK/reviewed_stage1.jsonl" --base-path "$DATA" \
   --max-pixels 65536 --output "$OUT/stage1" --steps 2 --rank 2 \
   --save-steps 8 --seed 926 --region-cache "$OUT/regions" --region-weight 0.5
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train cache \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine cache \
   --metadata "$CHECK/reviewed_stage2.jsonl" --base-path "$DATA" \
   --max-pixels 65536 --te-adapter "$OUT/stage1/adapter" \
   --region-cache "$OUT/regions" --output "$OUT/cache"
 CUDA_VISIBLE_DEVICES=1 $PY -m samtok_edit21.cli calibrate-attention \
   --cache "$OUT/cache" --output "$OUT/calibration.json" \
   --rank 2 --samples 2 --timesteps 100 500 900 --seed 926
-CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.train train --stage stage2 \
+CUDA_VISIBLE_DEVICES=0 $PY -m samtok_edit21.training.engine train --stage stage2 \
   --cache "$OUT/cache" --output "$OUT/stage2" --steps 2 --rank 2 \
   --save-steps 4 --seed 926 --region-weight 0.5 \
   --attention-weight 0.03421928752136922 --attention-warmup-steps 1
 CUDA_VISIBLE_DEVICES=4,5 OMP_NUM_THREADS=4 $PY -m torch.distributed.run \
-  --standalone --nproc_per_node=2 -m samtok_edit21.train train --stage stage2 \
+  --standalone --nproc_per_node=2 -m samtok_edit21.training.engine train --stage stage2 \
   --cache "$OUT/cache" --output "$OUT/stage2_ddp" --steps 2 --rank 2 \
   --save-steps 4 --seed 926 --region-weight 0.5 \
   --attention-weight 0.1 --attention-warmup-steps 1
@@ -742,7 +744,7 @@ CUDA_VISIBLE_DEVICES=0 $PY "$OUT/integration.py"
 | 区域 C 系数 / n_min | 0.5 / 16 | 0.5 / 16 |
 | attention A 系数 | 0 | 0 → 0.1 → 0.1 |
 
-用原 seed=20260928 重新生成 [make_schedule](../samtok_edit21/schema/data.py#L101)，与 `schedule.json` 全部内容一致；再将全局序列按 `[rank::32]` 切片，**逐 microstep** 对比每个 rank 的实际梯度日志 branch，全部一致。证据不止是最终分支计数相同。background/global/composite 未包含在本批数据中，本次不声称覆盖这些类型。
+用原 seed=20260928 重新生成 [make_schedule](../src/samtok_edit21/data/io.py#L101)，与 `schedule.json` 全部内容一致；再将全局序列按 `[rank::32]` 切片，**逐 microstep** 对比每个 rank 的实际梯度日志 branch，全部一致。证据不止是最终分支计数相同。background/global/composite 未包含在本批数据中，本次不声称覆盖这些类型。
 
 节点 0 的阶段完成时间如下，全部为 UTC（北京时间需 +8 小时）：
 
@@ -760,7 +762,7 @@ Stage 1 阶段包含基座身份哈希、权重读取、DDP 初始化和训练�
 
 ### 13.3 更新对象、梯度同步与权重落盘
 
-实现入口是 [SamtokTrainingModule](../samtok_edit21/training_core/train.py#L123)：Stage 1 挂载 TE language model LoRA，DiT/VAE/visual 保持冻结；Stage 2 只加载 DiT，用固定 cache 训练 DiT LoRA。反传、累积和同步仍走 [DiffSynth runner](../DiffSynth-Studio/diffsynth/diffusion/runner.py#L150)，在完整 accumulation 窗口末尾才同步、裁剪并完成 optimizer update。
+实现入口是 [SamtokTrainingModule](../src/samtok_edit21/training/engine.py#L119)：Stage 1 挂载 TE language model LoRA，DiT/VAE/visual 保持冻结；Stage 2 只加载 DiT，用固定 cache 训练 DiT LoRA。反传、累积和同步仍走 [DiffSynth runner](../third_party/diffsynth/diffsynth/diffusion/runner.py#L150)，在完整 accumulation 窗口末尾才同步、裁剪并完成 optimizer update。
 
 | 检查 | Stage 1 | Stage 2 |
 |---|---:|---:|
@@ -775,13 +777,13 @@ Stage 1 阶段包含基座身份哈希、权重读取、DDP 初始化和训练�
 
 32 个 rank 在每个同步窗口末端的梯度范数完全一致。所有 backward 均有当前这一次反传的非零梯度峰值，避免只检查先前累积留下的梯度。初始化时部分 LoRA-A 梯度为零符合 LoRA-B 零初始化；最终全部 A/B 张量都已更新。某些未同步 microstep 的累积梯度范数高于 1，并不表示 clipping 失效：当前实现仅在同步窗口末端裁剪。
 
-除了读取运行自带的 [verify_rank_parameters](../samtok_edit21/training_core/train.py#L288) 结果，本轮独立从 `adapter.safetensors` 重算包含参数名的 SHA256，与 32 个 rank 的记录逐项相等。最终 step checkpoint 与导出的 adapter 所有 tensor 逐元素相同；首末 checkpoint 全部 LoRA-A/B tensor 均发生变化，全部 fp32 且有限。Stage 2 的当前实测为 224 个模块，不能套用历史其他 recipe 中的 232 模块计数。
+除了读取运行自带的 [verify_rank_parameters](../src/samtok_edit21/training/engine.py#L284) 结果，本轮独立从 `adapter.safetensors` 重算包含参数名的 SHA256，与 32 个 rank 的记录逐项相等。最终 step checkpoint 与导出的 adapter 所有 tensor 逐元素相同；首末 checkpoint 全部 LoRA-A/B tensor 均发生变化，全部 fp32 且有限。Stage 2 的当前实测为 224 个模块，不能套用历史其他 recipe 中的 232 模块计数。
 
 Stage 1 的 cosine 设置在这次仅 2 updates 的 smoke 中实际 LR 为 `[4e-5, 4e-5]`：`ceil(2 × 0.04)=1`，唯一 warmup update 已达到基础 LR，第二次 update 处于 cosine 起点；最后 scheduler 下降发生在最后一次更新之后。这符合当前定义，不是 scheduler 没调用。Stage 2 constant 的实际 LR 为 `[1e-4, 1e-4, 1e-4]`，两阶段无 skipped update。
 
 ### 13.4 Loss 的分母、A/C 生效与数值复算
 
-[on_optimizer_step](../samtok_edit21/training_core/train.py#L196) 按「每个指标实际出现的样本数」聚合，不能把所有列默认看成同一个分母。Stage 1 每 update：NTP 指标 96 条、FM 指标 160 条、区域指标 128 条；Stage 2：FM 指标 128 条、A/C 指标 96 条，plain skip=32。
+[on_optimizer_step](../src/samtok_edit21/training/engine.py#L192) 按「每个指标实际出现的样本数」聚合，不能把所有列默认看成同一个分母。Stage 1 每 update：NTP 指标 96 条、FM 指标 160 条、区域指标 128 条；Stage 2：FM 指标 128 条、A/C 指标 96 条，plain skip=32。
 
 | 阶段 / update | 基础 FM 均值 | C/FM 均值 | raw NTP 均值 | A 主项 / read 均值 | 实际混合 weighted_total |
 |---|---:|---:|---:|---:|---:|
@@ -791,7 +793,7 @@ Stage 1 的 cosine 设置在这次仅 2 updates 的 smoke 中实际 LR 为 `[4e-
 | S2 / 2 | 0.1345494780 | 0.1445377344 | — | 0.6799390195 / 0.5888725960 | 0.2176158855 |
 | S2 / 3 | 0.1410368418 | 0.1504116481 | — | 0.6772213553 / 0.6011615066 | 0.2237468078 |
 
-Stage 1 的 `loss_total` 只对 FM 子集有定义；**完整混合训练应看 `weighted_total`**。具体计算与 [forward](../samtok_edit21/training_core/train.py#L228) 一致：
+Stage 1 的 `loss_total` 只对 FM 子集有定义；**完整混合训练应看 `weighted_total`**。具体计算与 [forward](../src/samtok_edit21/training/engine.py#L224) 一致：
 
 ```python
 # 指标均值按各自 counts 计算；下面复算的是全局 accumulation 窗口。
@@ -802,9 +804,9 @@ stage2_total = mean_fm + effective_A * (mean_attn_main + 0.5 * mean_attn_read) *
 # = 0.2176158879，日志值 0.2176158855，差约 2.34e-9。
 ```
 
-五条日志的独立复算误差最大为 **2.35e-9**，符合 FP32 舍入。Stage 2 首 update 的 A 系数为 0，但仍计算 A 统计；本次显式 `attention_warmup_steps=1`，第二个 update 起系数为 0.1，[`completed_updates` 控制系数](../samtok_edit21/training_core/train.py#L187) 与记录一致。正式默认 500 不被本实验覆盖。
+五条日志的独立复算误差最大为 **2.35e-9**，符合 FP32 舍入。Stage 2 首 update 的 A 系数为 0，但仍计算 A 统计；本次显式 `attention_warmup_steps=1`，第二个 update 起系数为 0.1，[`completed_updates` 控制系数](../src/samtok_edit21/training/engine.py#L183) 与记录一致。正式默认 500 不被本实验覆盖。
 
-区域损失在 [region_fm_loss](../samtok_edit21/region/supervision.py#L53) 使用 soft coverage 和 `n_min=16` 下界，并将最终位置权重归一化。每一步 `region_weight_sum` 约等于 1，最大误差小于 7e-9；区域面积不足 16 tokens 的样本占比约 37.5%–43.0%，因此 `region_inside_clamped>0` 是本次小分辨率下的预期行为，不是 mask 被清空。
+区域损失在 [region_fm_loss](../src/samtok_edit21/regions/supervision.py#L53) 使用 soft coverage 和 `n_min=16` 下界，并将最终位置权重归一化。每一步 `region_weight_sum` 约等于 1，最大误差小于 7e-9；区域面积不足 16 tokens 的样本占比约 37.5%–43.0%，因此 `region_inside_clamped>0` 是本次小分辨率下的预期行为，不是 mask 被清空。
 
 ### 13.5 用本次实际权重追加的独立梯度实验
 
@@ -817,11 +819,11 @@ stage2_total = mean_fm + effective_A * (mean_attn_main + 0.5 * mean_attn_read) *
 | 单独 A（未乘 0.1） | 0.9318551421 | 1.9064254019 | 0.0772805139 |
 | C/FM + 0.1 A | 0.2507328391 | 0.3118189128 | 0.0127874445 |
 
-四种模式的 `loss_fm_basic` 完全一致；与相同 RNG 下官方 [FlowMatchSFTLoss](../DiffSynth-Studio/diffsynth/diffusion/loss.py#L5) 的差为 **0**，组合目标与 `C + 0.1 A` 的差为 **1.49e-8**。各次梯度有限且非零，冻结参数无梯度。证明本次保存权重可重载，A 本身具有有效的反传路径，读取 A 统计没有改变基础 FM 预测。
+四种模式的 `loss_fm_basic` 完全一致；与相同 RNG 下官方 [FlowMatchSFTLoss](../third_party/diffsynth/diffsynth/diffusion/loss.py#L5) 的差为 **0**，组合目标与 `C + 0.1 A` 的差为 **1.49e-8**。各次梯度有限且非零，冻结参数无梯度。证明本次保存权重可重载，A 本身具有有效的反传路径，读取 A 统计没有改变基础 FM 预测。
 
 该样本上 `0.1 × ||grad(A)|| / ||grad(C)|| = 1.39726`。这不是实现错误，但说明 **debug 系数 0.1 未经正式分支校准**；本次实测不支持将它直接当正式训练推荐值，也不支持从 2/3 次更新判断收敛或方法增益。此处各梯度范数来自单样本独立反传，不与已经 accumulation 缩放、跨 32 ranks 平均的训练日志范数直接比较。
 
-证据：临时目录 `check_actual_losses.py`、`actual_losses.log`、`actual_losses.json`；模型端使用 [flow_loss](../samtok_edit21/training_core/training.py#L250)、[attention_loss](../samtok_edit21/training_core/attention_supervision.py#L102)。
+证据：临时目录 `check_actual_losses.py`、`actual_losses.log`、`actual_losses.json`；模型端使用 [flow_loss](../src/samtok_edit21/training/objectives.py#L250)、[attention_loss](../src/samtok_edit21/training/attention.py#L102)。
 
 ### 13.6 阶段身份链、cache 几何与推理结果
 
@@ -834,7 +836,7 @@ flowchart LR
     S2 --> I
 ```
 
-独立重跑 [verify_cache](../samtok_edit21/schema/provenance.py#L99)：所有 payload/sidecar/manifest 的 hash、row index、内容身份、张量形状、有限性、区域监督与 span 位置检查通过。cache 中的 Stage 1 权重 hash 与配置 hash 均对应本次最终 adapter；Stage 2 adapter 保存的 `conditioning_identity` 与本次 cache 完全一致，两阶段 base model identity 相同；区域身份链也一致。54 行由 32 ranks 不补齐地分片：rank 0–21 各 2 行，rank 22–31 各 1 行，没有重复补样本。
+独立重跑 [verify_cache](../src/samtok_edit21/data/provenance.py#L99)：所有 payload/sidecar/manifest 的 hash、row index、内容身份、张量形状、有限性、区域监督与 span 位置检查通过。cache 中的 Stage 1 权重 hash 与配置 hash 均对应本次最终 adapter；Stage 2 adapter 保存的 `conditioning_identity` 与本次 cache 完全一致，两阶段 base model identity 相同；区域身份链也一致。54 行由 32 ranks 不补齐地分片：rank 0–21 各 2 行，rank 22–31 各 1 行，没有重复补样本。
 
 训练 `max_pixels=65536` 不表示所有图都是 256×256。实际 target latent `[1,64,H/16,W/16]` 分布如下：
 
@@ -848,7 +850,7 @@ flowchart LR
 
 32 倍数取整后实际像素数可能略高于 65536，这符合现有尺寸函数定义。所有 36 条 UMT cache 的 span tensor 为 `[1,4]`，即本批 K=1；Qwen3 image-pad 数量 ×4 与 VAE source 网格数量相符。没有重新编码全量 TE/VAE 与 cache 做逐元素对照；本轮针对已保存结果检查身份与内部一致性，不能冒充新的全量重编码实验。
 
-[debug_inference8.py](../scripts/train/debug_inference8.py#L1) 显式固定 256×256、4 inference steps、CFG=1、KV cache 开启。8 张 PNG 均能重新打开，RGBA、RGB 非常数、alpha 最大值为 255，没有全透明输出：
+[debug_inference8.py](../scripts/diagnostics/debug_inference8.py#L1) 显式固定 256×256、4 inference steps、CFG=1、KV cache 开启。8 张 PNG 均能重新打开，RGBA、RGB 非常数、alpha 最大值为 255，没有全透明输出：
 
 | rank | 数据集 | 模式 / actual variant | fallback |
 |---|---|---|---|
@@ -877,10 +879,10 @@ plan.pool_exposure.edit_umt:ref.by_edit_type.action.max_draws_per_row
 
 检查本地 `.wandb` 二进制 history：Stage 1 恰有 step 1、2；Stage 2 恰有 step 1、2、3。**每一步所有 `train/*`、`count/*`、`branch/*` 与 `training_metrics.jsonl` 完全一致**；最终 `wandb-summary.json` 和 LR 也对应末步。指标被正确交给本地 SDK；日志扫描没有发现指标上传 HTTP ERROR，但本轮未读取远端数据库/API，不能据此保证服务器已完整接收。
 
-本轮只修改 [tracking.py](../samtok_edit21/training_core/tracking.py#L13)，修复方式：
+本轮只修改 [tracking.py](../src/samtok_edit21/training/tracking.py#L13)，修复方式：
 
 1. 提前将配置展开；≤64 字符的 key 保留，长 key 使用稳定摘要缩短，避免不同类型计数的同前缀冲突。每阶段将完整路径写入 `tracking/config-key-map.json`；原始 run/schedule 参数完整保留。
-2. [finish](../samtok_edit21/training_core/tracking.py#L111) 在 SDK 收尾后检查本次 `debug-internal.log`；对已记录的 HTTP 拒绝抛出错误并广播到其他 rank，阻止写出成功 tracking 状态。异常只包含日志位置，不输出请求 body。
+2. [finish](../src/samtok_edit21/training/tracking.py#L111) 在 SDK 收尾后检查本次 `debug-internal.log`；对已记录的 HTTP 拒绝抛出错误并广播到其他 rank，阻止写出成功 tracking 状态。异常只包含日志位置，不输出请求 body。
 
 ```python
 # tracking.py:wandb_config，完整实现另检查重复 key。
@@ -903,7 +905,7 @@ check_wandb_upload_errors(Path(self.args.output) / "tracking")
 ```bash
 export PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python
 export REVIEW=/tmp/samtok21-run002-review-ajHLIx
-export PYTHONPATH="$PWD:$PWD/DiffSynth-Studio"
+export PYTHONPATH="$PWD:$PWD/third_party/diffsynth"
 export PYTHONDONTWRITEBYTECODE=1
 $PY "$REVIEW/audit_results.py"
 $PY "$REVIEW/check_wandb_history.py"
@@ -1053,13 +1055,13 @@ Stage 2 = 97,361 × (ref + noref + plain) + 1,213 plain
 
 ## 16. 2026-09-30：目录重组与四机入口统一
 
-将实现拆为 schema/models/annotation/training_core/region/distributed；旧模块保留兼容转发，已有 `python -m samtok_edit21.train` 等命令继续有效。修正移动模块后的 repo-root 和源码身份扫描。四机指南统一提供不依赖本地 checkout 的完整 bootstrap（ARNOLD/W&B → git clone → run）。正式训练显式使用 2000 microsteps 保存间隔与 7 天单阶段超时，避免误用 debug 每步保存/2 小时超时。
+将实现拆为 schema/models/annotation/training_core/region/distributed；当时旧模块保留兼容转发；2026-10-01 后改用 `python -m samtok_edit21.training.engine` 等规范模块，见第 19 节。修正移动模块后的 repo-root 和源码身份扫描。四机指南统一提供不依赖本地 checkout 的完整 bootstrap（ARNOLD/W&B → git clone → run）。正式训练显式使用 2000 microsteps 保存间隔与 7 天单阶段超时，避免误用 debug 每步保存/2 小时超时。
 
 验证证据与工具放在 `/tmp/samtok21-reorg-review/`。本轮不启动正式训练、不修改已准备的数据；已有四机实测以第 13 节的 debug_002 为准，不能将重组后的代码称为已重新完成四机训练。正式 `qwen21_full_4n_formal_001` 是待启动入口，尚无全量 loss/效果结论。
 
 本轮已通过的检查：
 
-- 项目回归：`PYTHONPATH=.:DiffSynth-Studio /tmp/samtok21-4node-env-debug/bin/python -m pytest -q tests --disable-warnings`，23 passed。
+- 项目回归：`PYTHONPATH=src:third_party/diffsynth /tmp/samtok21-4node-env-debug/bin/python -m pytest -q tests --disable-warnings`，23 passed。
 - 四份主文档及 README 的相对文件链接/行号范围有效；37 个 bash 代码块通过 `bash -n`。
 - 三段完整四机入口在 `/tmp/samtok21-reorg-review/entries-kaqv4xeh/` 用模拟 git/后续 runner 验证，覆盖 clone、参数传递、训练 key 占位拒绝、noref 无 key。未调用实际 W&B/GPU。
 - `/tmp/samtok21-reorg-review/pipeline-_3sllyih/report.json` 验证正式编排为 collectives → stage1 → cache → stage2 → audit_full，保存间隔 2000、steps 3081 均正确传递；分布式执行被替换为记录器，不能据此声称训练完成。
@@ -1094,10 +1096,10 @@ Stage 2 = 97,361 × (ref + noref + plain) + 1,213 plain
 复现验证命令（仓库根目录，临时脚本不入 repo）：
 
 ```bash
-ACCELERATE_USE_CPU=true PYTHONPATH=.:DiffSynth-Studio \
+ACCELERATE_USE_CPU=true PYTHONPATH=src:third_party/diffsynth \
   /tmp/samtok21-4node-env-debug/bin/python -m pytest -q \
   /tmp/samtok21-preflight-fix/test_prepared.py --disable-warnings
-PYTHONPATH=.:DiffSynth-Studio \
+PYTHONPATH=src:third_party/diffsynth \
   /tmp/samtok21-4node-env-debug/bin/python -m pytest -q tests --disable-warnings
 ```
 
@@ -1153,26 +1155,26 @@ runner 验证使用小型解析模型、真实 DiffSynth runner/Accelerator/官�
 复现指令（仓库根目录，临时脚本不入 repo；重复运行请为 output 使用新路径）：
 
 ```bash
-PYTHONPATH=.:DiffSynth-Studio ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 \
+PYTHONPATH=src:third_party/diffsynth ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 \
   /tmp/samtok21-4node-env-debug/bin/python -m pytest -q \
   /tmp/samtok21-gradient-fix-20260930/test_gradients.py \
   /tmp/samtok21-gradient-fix-20260930/test_runner_edges.py \
   /tmp/samtok21-preflight-fix/test_prepared.py tests --disable-warnings
-PYTHONPATH=.:DiffSynth-Studio ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 \
+PYTHONPATH=src:third_party/diffsynth ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 \
   /tmp/samtok21-4node-env-debug/bin/python \
   /tmp/samtok21-gradient-fix-20260930/runner_probe.py \
   --output /tmp/samtok21-gradient-fix-20260930/cpu-single-recheck
-PYTHONPATH=.:DiffSynth-Studio ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 \
+PYTHONPATH=src:third_party/diffsynth ACCELERATE_USE_CPU=true OMP_NUM_THREADS=1 \
   /tmp/samtok21-4node-env-debug/bin/python -m torch.distributed.run \
   --standalone --nproc_per_node 2 \
   /tmp/samtok21-gradient-fix-20260930/runner_probe.py \
   --output /tmp/samtok21-gradient-fix-20260930/cpu-ddp-recheck
-PYTHONPATH=.:DiffSynth-Studio ACCELERATE_USE_CPU=false OMP_NUM_THREADS=1 \
+PYTHONPATH=src:third_party/diffsynth ACCELERATE_USE_CPU=false OMP_NUM_THREADS=1 \
   /tmp/samtok21-4node-env-debug/bin/python -m torch.distributed.run \
   --standalone --nproc_per_node 8 \
   /tmp/samtok21-gradient-fix-20260930/runner_probe.py \
   --output /tmp/samtok21-gradient-fix-20260930/cuda-eight-recheck
-PYTHONPATH=.:DiffSynth-Studio ACCELERATE_USE_CPU=false OMP_NUM_THREADS=1 PYTHONUNBUFFERED=1 \
+PYTHONPATH=src:third_party/diffsynth ACCELERATE_USE_CPU=false OMP_NUM_THREADS=1 PYTHONUNBUFFERED=1 \
   /tmp/samtok21-4node-env-debug/bin/python -m torch.distributed.run \
   --standalone --nproc_per_node 8 \
   /tmp/samtok21-gradient-fix-20260930/full_model_probe.py \
@@ -1180,3 +1182,75 @@ PYTHONPATH=.:DiffSynth-Studio ACCELERATE_USE_CPU=false OMP_NUM_THREADS=1 PYTHONU
 ```
 
 源数据、metadata、现成 mask 和区域 cache 未重建，数据计数及 hash 不变。旧 `_002` 没有可恢复 checkpoint；新正式入口采用 `qwen21_full_4n_formal_003`，四 worker 从已推送新分支 clone，一致使用新 ID，重新从初始 adapter 开始。
+
+
+## 19. 2026-10-01：独立克隆中的安装包整理与行为一致性验证
+
+**目的**：把现有方法整理为可安装、可复用的 DiffSynth/SAMTok 扩展，移除根目录兼容转发层，保持训练/推理计算和当前数据不变。没有重启或修改运行中的正式 `_003`。
+
+**代码与备份**：原目录 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev` 保留，其基准 commit 为 `ba9e5e78adf8f97c624e29f3752a28c93bb05fa5`，包含原先未提交的 doc 修改。新 clone 为 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`，独立分支 `refactor/qwen21-layout`。按原工作区逐文件 SHA256 核对，**1,815 个 tracked 文件保持原样**。
+
+**组织改动**：项目实现移至 `src/samtok_edit21/{data,models,training,regions,preparation,distributed}`；DiffSynth 和 SAMTok 分别移至 `third_party/diffsynth`、`third_party/samtok`。脚本分为 `scripts/training`、`scripts/annotation`、`scripts/diagnostics`。新增 `pyproject.toml`、延迟公共 API 和统一 CLI；只为四机 launcher 的 checkout 资产增加根路径解析。API 导出实际实现对象，不再包装模型前向。删除 22 个顶层兼容别名；旧 `python -m samtok_edit21.train` 入口改为 `python -m samtok_edit21 train` 或 `python -m samtok_edit21.training.engine train`。
+
+| 原实现模块 | 当前模块 |
+|---|---|
+| `schema/data.py`、`schema/protocol.py` | `data/io.py`、`data/protocol.py` |
+| `models/model.py` | `models/pipeline.py` |
+| `training_core/train.py`、`training_core/training.py` | `training/engine.py`、`training/objectives.py` |
+| `training_core/attention_supervision.py` | `training/attention.py` |
+| `region/full_regions.py`、`region/supervision.py` | `regions/build.py`、`regions/supervision.py` |
+| `annotation/prepare.py`、`annotation/full_training_data.py` | `preparation/converters.py`、`preparation/corpus.py` |
+| `annotation/full_data.py`、`annotation/annotate_full.py` | `preparation/sources.py`、`preparation/semantic.py` |
+| `distributed/cluster.py`、`annotation/annotation_cluster.py` | `distributed/training.py`、`distributed/annotation.py` |
+
+表中路径均相对于各自 package，当前完整路径带 `src/samtok_edit21/`。这改变 Python import/module 名称和源码身份 hash；不改变权重 tensor 键、训练 JSONL、conditioning cache-v2 或区域 cache 格式。新任务须使用新 run ID。已有完成的 noref 与全量 metadata 继续使用，不在原 annotation 目录上用新身份续写。
+
+### 19.1 如何验证
+
+本轮全部新增调试脚本、环境与结果位于 `/tmp`。主记录目录：`/tmp/samtok21-layout-refactor-20261001`。独立安装环境 `/tmp/samtok21-layout-env`，wheel 验证环境 `/tmp/samtok21-layout-wheel-env`；两者只读复用已验收训练环境的第三方依赖，不修改原环境。项目和 DiffSynth 分别在新环境重新安装。两种环境依赖检查均为 121 packages compatible。标注单独使用 `/tmp/samtok21-layout-annotation-env`，同样只读复用已验收的 9B/vLLM 依赖；实际标注环境脚本安装当前包后为 185 packages compatible。
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit_qwen21_refactor
+# 可在全新环境按 requirements.txt 安装；本地对照使用独立临时环境。
+uv pip install --python /tmp/samtok21-layout-env/bin/python \
+  --no-deps --no-build-isolation -e ./third_party/diffsynth -e .
+/tmp/samtok21-layout-env/bin/python -m pytest -q tests \
+  /tmp/samtok21-layout-refactor-20261001/checks/test_gradients.py \
+  /tmp/samtok21-layout-refactor-20261001/checks/test_runner_edges.py \
+  /tmp/samtok21-layout-refactor-20261001/checks/test_prepared.py
+# 使用新的空输出目录；gradient 日志不能在旧输出中重复追加。
+/tmp/samtok21-layout-env/bin/python -m torch.distributed.run \
+  --standalone --nproc_per_node 2 \
+  /tmp/samtok21-layout-refactor-20261001/checks/runner_probe.py \
+  --cpu --output /tmp/samtok21-layout-refactor-20261001/cpu-ddp-final
+/tmp/samtok21-layout-env/bin/python -m torch.distributed.run \
+  --standalone --nproc_per_node 8 \
+  /tmp/samtok21-layout-refactor-20261001/checks/full_model_probe.py \
+  --output /tmp/samtok21-layout-refactor-20261001/full-eight
+python /tmp/samtok21-layout-refactor-20261001/check_entries.py
+```
+
+以上命令记录当时实际运行方式；再次调试须更换临时输出路径。wheel 构建和仓库外导入也在临时目录验证；最终 repo 不收录调试输出和 wheel。
+
+### 19.2 结果
+
+| 检查 | 结果与证据 |
+|---|---|
+| vendored 依赖 | 1,719 个文件逐字节一致，`source-parity.json` |
+| 方法实现 | 179 个顶层函数/类定义中 176 个在规范化 import 后结构一致；另 3 个为语义标注 main 的依赖路径、源码摘要路径、launcher repo/脚本路径；数值计算未变 |
+| 协议、loss、梯度、scheduler、报告复用 | **68 passed**，`pytest-final.log`；包括零 FM 权重、梯度断链、冻结参数、真实 AcceleratedOptimizer skip 及预检身份 |
+| 实际 CPU 双 rank DDP | S1/S2 各 4 updates，accumulation=8/4，与独立 AdamW 参考及整理前逐 rank 的参数/LR 轨迹完全一致；整窗零梯度仍正确推进 optimizer/LR，`cpu-ddp-final/report.json` |
+| 完整基座八卡 | S1=1 update，S2=2 updates，max_pixels=65,536；强制官方零 FM 权重，S1 NTP 驱动 TE 更新；S2 首窗 A=0，次窗 A=0.1 驱动 DiT 更新；8 rank 梯度有限、冻结参数无梯度、权重同步 |
+| 八卡整理前后权重 | S1/S2 所有 rank 更新前后 LoRA SHA256 与 `20260930/full-eight-fixed` 的已验收结果**完全相同**，`training-parity.json` |
+| 真实基座推理 | 同一已验收 S1/S2 adapter，direct/inline/online 各 2 steps，seed=31415；三种输出均为 256×256 RGBA，像素 SHA256 和报告逐字段**完全相同**；online 请求 250×250 后两遍均对齐至 256×256，`inference-parity.json` |
+| noref 确定性部分 | 从四源按 dataset/type 抽取 100 条；model input、prompt、schema、规则回退、归一化/协议检查结果与原代码完全一致，`semantic-parity.json`；未重新运行全量 LLM 转换 |
+| 实际标注环境入口 | `scripts/annotation/setup_env.sh` 成功；torch 2.10/vLLM 0.17.1、185 个依赖、8 GPU CUDA 通过；真实导入 semantic/annotation launcher 不导入 DiffSynth，`annotation-environment.log` |
+| 实际训练环境入口 | `scripts/training/setup_env.sh` 在独立临时环境执行成功；requirements/lock、W&B/FlexAttention 校验和 8 GPU CUDA 分配/计算/同步通过，`environment.log` |
+| 包安装 | editable 与 wheel 均通过；wheel 在仓库外真实导入项目、SAMTok codec 与 DiffSynth，所有模块来自 wheel 环境，无源码路径回退；公共 API 为实际原函数对象 |
+| 四机完整入口 | 正式训练/debug/noref 三套文档入口 × 4 ARNOLD rank，共 **12 个模拟启动通过**；训练 key 校验、key 不进入日志、branch clone、共同 IPv6 host/port、run claim/重复启动拒绝与参数传递通过；不提交远程作业 |
+| 文档 | 四份主文档/README 共 222 个本地链接、36 个 bash 块语法检查通过；具体记录 `doc-check/report.json` |
+| 正式数据 | 98,574 source pairs，S1=390,657，S2=293,296；两份 metadata、region manifest 与 metadata_report hash 均与之前验收一致，无重建 |
+
+完整基座 S1 更新后 LoRA SHA256：`a880b009489c8b6fbab2ecafaa2ac661a353a244ce52f43ec257d7455995991d`。S2 更新后：`d5d117445bf72431106b460cd4787116a1c69eba9b721d5e4b5da1982a27f591`。online 为快速检查设置 max_new_tokens=16，定位 JSON 未完成时走已有 plain fallback；inline 检查有效的已编码 mask 指令。该测试不声称在线定位语义通过率达标。推理测试复用旧 debug adapter，测试代码和 PNG 在 `inference-old/`、`inference-new/`，两组逐像素一致，不据此评价图像编辑质量。
+
+**范围**：本轮证明所测链路行为一致，并保留所有方法计算实现。八卡 S2 只读使用历史 conditioning cache，未重新跑本轮 S1→全量 cache→S2；四机入口验证是模拟编排，不是新分支已经完成正式四机训练。当前 `_003` 正式实验的历史结果不被这些检查替代。

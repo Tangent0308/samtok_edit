@@ -2,7 +2,7 @@ from collections import Counter
 
 import pytest
 
-from samtok_edit21.protocol import (
+from samtok_edit21.data.protocol import (
     Unit,
     span_of,
     spans_in,
@@ -14,8 +14,8 @@ from samtok_edit21.protocol import (
     interactive_prompt,
     validate_row,
 )
-from samtok_edit21.prepare import convert_record
-from samtok_edit21.data import make_schedule, row_kind, capped_plain_weights
+from samtok_edit21.preparation.converters import convert_record
+from samtok_edit21.data.io import make_schedule, row_kind, capped_plain_weights
 
 A, B = span_of([3, 300]), span_of([40, 450])
 

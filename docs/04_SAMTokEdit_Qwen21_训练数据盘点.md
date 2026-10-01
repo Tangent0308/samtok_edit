@@ -2,6 +2,8 @@
 
 本文盘点当前正式训练使用的四个源数据集、过滤规则、路径、字段映射、noref 转换、最终文件结构和训练读取方式。源数据 mask 视为数据集提供的准确标注；项目只读取、物化和编码，不重新计算或核对 mask 几何。
 
+当前开发 checkout：`/opt/tiger/tanyue/samtok_edit_qwen21_refactor`（`refactor/qwen21-layout`）。代码整理只改变 `src` 模块路径和脚本入口；下面的来源路径、图片组织、正式 metadata、region/conditioning cache 格式与统计不变。不复制大数据进入 Git 仓库，也不重新计算数据集 mask。
+
 ## 1. 四个源数据集
 
 | 数据集 | 大致内容 | 源路径 | 发布行 | 最终保留 |
@@ -146,7 +148,7 @@ coverage 文件按 source/target/span 内容去重，ref/noref 行共享文件�
 
 ## 8. 训练读取和配比
 
-实际实现位于 [`samtok_edit21/schema/data.py`](../samtok_edit21/schema/data.py) 的 `make_schedule`，根入口 `samtok_edit21.data` 仅为兼容 alias：
+实际实现位于 [`src/samtok_edit21/data/io.py`](../src/samtok_edit21/data/io.py) 的 `make_schedule`，根入口 `samtok_edit21.data.io` 仅为兼容 alias：
 
 ```text
 Stage 1 global batch 256: edit_ntp=96, ref=64, noref=64, plain=32
@@ -165,18 +167,18 @@ export DATA_ROOT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/
 export TRAIN_DATA=$DATA_ROOT/train_full_rebuild_NEW_VERSION
 [[ ! -e "$TRAIN_DATA" ]] || { echo "Use a fresh output directory" >&2; exit 2; }
 export CODEC=/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok
-PYTHONPATH=.:DiffSynth-Studio python -m samtok_edit21.full_training_data split \
+PYTHONPATH=src:third_party/diffsynth python -m samtok_edit21.preparation.corpus split \
   --source-root "$DATA_ROOT" \
   --semantic-run "$DATA_ROOT/semantic_runs/qwen21_noref9b_rules_4n_full_003" \
   --output "$TRAIN_DATA" --workers 8
 pids=()
 for rank in $(seq 0 7); do
-  CUDA_VISIBLE_DEVICES=$rank PYTHONPATH=.:DiffSynth-Studio python -m samtok_edit21.full_training_data encode-worker \
+  CUDA_VISIBLE_DEVICES=$rank PYTHONPATH=src:third_party/diffsynth python -m samtok_edit21.preparation.corpus encode-worker \
     --output "$TRAIN_DATA" --rank $rank --codec-root "$CODEC" --device cuda:0 --batch-size 16 &
   pids+=("$!")
 done
 for pid in "${pids[@]}"; do wait "$pid" || exit 1; done
-PYTHONPATH=.:DiffSynth-Studio python -m samtok_edit21.full_training_data merge --output "$TRAIN_DATA"
+PYTHONPATH=src:third_party/diffsynth python -m samtok_edit21.preparation.corpus merge --output "$TRAIN_DATA"
 ```
 
 当前 `metadata_report.json` 为 `training_ready=true`、`region_cache_ready=true`。重建应使用新版本目录，不覆盖正式数据。

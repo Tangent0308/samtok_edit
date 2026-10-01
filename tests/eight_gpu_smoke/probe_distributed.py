@@ -9,7 +9,7 @@ from collections import Counter
 
 from accelerate import Accelerator
 
-from samtok_edit21.data import make_schedule, read_rows
+from samtok_edit21.data.io import make_schedule, read_rows
 
 
 def main():

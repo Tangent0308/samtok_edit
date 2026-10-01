@@ -1,7 +1,7 @@
 import pytest
 
-from samtok_edit21.data import file_hash, row_hash, write_json
-from samtok_edit21.training import verify_cache
+from samtok_edit21.data.io import file_hash, row_hash, write_json
+from samtok_edit21.training.objectives import verify_cache
 
 
 def test_cache_identity_and_content_corruption(tmp_path):
@@ -34,7 +34,7 @@ def test_cache_identity_and_content_corruption(tmp_path):
 
 def test_geometry_requires_qwen3_vae_alignment():
     import torch
-    from samtok_edit21.training import validate_conditioning
+    from samtok_edit21.training.objectives import validate_conditioning
 
     inputs = {
         "input_latents": torch.zeros(1, 64, 4, 4),
