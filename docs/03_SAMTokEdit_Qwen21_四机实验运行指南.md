@@ -157,7 +157,9 @@ export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_full_9b_rules_003"
 export SAMTOK_STAGE1_RUN="$SAMTOK_EXPERIMENT/runs/qwen21_full_4n_formal_003"
 export SAMTOK_STAGE1_ADAPTER="$SAMTOK_STAGE1_RUN/stage1/adapter"
 export SAMTOK_CACHE_OUTPUT="$SAMTOK_STAGE1_RUN/cache"
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_001
+# resume_001 stopped during bootstrap because the old entry omitted SAMTOK_ENV;
+# use this fresh run ID after pulling the fixed branch.
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_002
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
 # 用 ARNOLD secret 注入真实 key；不要把真实值写入脚本或日志。
