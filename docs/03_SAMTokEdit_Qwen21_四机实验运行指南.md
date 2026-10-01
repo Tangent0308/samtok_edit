@@ -158,8 +158,9 @@ export SAMTOK_STAGE1_RUN="$SAMTOK_EXPERIMENT/runs/qwen21_full_4n_formal_003"
 export SAMTOK_STAGE1_ADAPTER="$SAMTOK_STAGE1_RUN/stage1/adapter"
 export SAMTOK_CACHE_OUTPUT="$SAMTOK_STAGE1_RUN/cache"
 # resume_001 stopped during bootstrap because the old entry omitted SAMTOK_ENV;
-# use this fresh run ID after pulling the fixed branch.
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_002
+# resume_002 stopped before checkout because the shared filesystem quota was full.
+# After cleaning obsolete artifacts, use this fresh run ID.
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_003
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
 # 用 ARNOLD secret 注入真实 key；不要把真实值写入脚本或日志。
@@ -179,6 +180,14 @@ unset PORT MASTER_ADDR MASTER_PORT NNODES GPUS_PER_NODE
 RUN="$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID"
 NODE="$ARNOLD_ID"
 REPO="/tmp/samtok-edit-${SAMTOK_RUN_ID}-node${NODE}"
+# Fail before clone/bootstrap if the shared filesystem still rejects regular
+# files; directory creation alone does not detect this quota condition.
+QUOTA_PROBE="$SAMTOK_EXPERIMENT/.quota_probe_${SAMTOK_RUN_ID}_node${NODE}"
+if ! (umask 077; printf 'quota probe\n' > "$QUOTA_PROBE"); then
+  echo "Shared filesystem cannot create regular files; clean quota before retrying" >&2
+  exit 3
+fi
+rm -f "$QUOTA_PROBE"
 if [[ -e "$RUN/nodes/$NODE" || -e "$RUN/SUCCESS.json" ]]; then
   echo "Run already used: $RUN; choose a new common SAMTOK_RUN_ID" >&2; exit 2
 fi
