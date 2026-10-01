@@ -160,9 +160,10 @@ export SAMTOK_STAGE1_RUN="$SAMTOK_EXPERIMENT/runs/qwen21_full_4n_formal_003"
 export SAMTOK_STAGE1_ADAPTER="$SAMTOK_STAGE1_RUN/stage1/adapter"
 export SAMTOK_CACHE_OUTPUT="$SAMTOK_STAGE1_RUN/cache"
 # resume_001 stopped during bootstrap because the old entry omitted SAMTOK_ENV;
-# resume_002 stopped before checkout because the shared filesystem quota was full.
-# After cleaning obsolete artifacts, use this fresh run ID.
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_003
+# resume_002 stopped before checkout because the shared filesystem quota was full;
+# resume_003 stopped after clone because its pinned SHA was mistyped.
+# Use this fresh run ID with the corrected SHA below.
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_004
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
 # 用 ARNOLD secret 注入真实 key；不要把真实值写入脚本或日志。
