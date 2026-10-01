@@ -39,7 +39,7 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
-export SAMTOK_EDIT_COMMIT=f2335814bb38f6373cf3c25cb6361d4acf96daa
+export SAMTOK_EDIT_COMMIT=f233581a65ec2390cc938c5ad9b21dd0a0f0be11
 # 如需固定版本，可在四个 worker 上设置同一个已推送的完整 40 位 SAMTOK_EDIT_COMMIT。
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
@@ -153,7 +153,7 @@ bash scripts/training/run_arnold.sh \
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
-export SAMTOK_EDIT_COMMIT=f2335814bb38f6373cf3c25cb6361d4acf96daa
+export SAMTOK_EDIT_COMMIT=f233581a65ec2390cc938c5ad9b21dd0a0f0be11
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_full_9b_rules_003"
 export SAMTOK_STAGE1_RUN="$SAMTOK_EXPERIMENT/runs/qwen21_full_4n_formal_003"
