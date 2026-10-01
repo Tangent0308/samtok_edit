@@ -378,3 +378,10 @@ cat "$RUN/TRAINING_COMPLETE.json" "$RUN/SUCCESS.json"
 ```
 
 最终审计检查 optimizer updates、全局样本数和各分支比例、各 rank 参数 hash、有效 adapter、W&B 完成状态与 cache checksum；训练时另逐 backward 检查梯度。debug 使用 `audit.json` 且没有 `TRAINING_COMPLETE.json`。W&B 本地 finished 加 SDK 错误检查不等于独立读取远端所有点位的验证，最终可结合项目页面复核上传。文档与代码完成本地检查后提交；完整的新四机运行仍需由上述作业实际执行验证。
+
+
+## 本地复核与当前入口的关系（2026-10-01）
+
+新 clone 的第二轮复核已完成全量所有资产的读取校验、114 项测试，以及 max_pixels=65,536 和正式 1,048,576 的本地八卡新 Stage 1 → 新 cache → Stage 2。新 adapter 推理、默认 1,024² 输出、实际 CLI、Qwen3.5-9B/vLLM、IPv6 NCCL 及上述三套文档入口的 12 个模拟 ARNOLD rank 均通过。发现并修复了数据准备器误拒绝相同 ref/noref 去重及新构建漏组内排序的边界；当前四源数据和正式超参数不变，不必重建 `train_full_9b_rules_003`。
+
+正式入口仍按本文件配置 ARNOLD/W&B、clone `refactor/qwen21-layout` 并运行，不增加远程全量资产预检。此次未提交新的物理四机作业，没有重启既有 `_003`。实际 32-rank 网络与正式运行仍由后续 ARNOLD 实验验收，详细命令、指标与边界见[实验记录第 20 节](02_SAMTokEdit_Qwen21_实验记录.md#20-2026-10-01全量资产复核与新-adapter-完整链路验证)。

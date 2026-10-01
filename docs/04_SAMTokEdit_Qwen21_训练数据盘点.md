@@ -196,3 +196,15 @@ PYTHONPATH=src:third_party/diffsynth python -m samtok_edit21.preparation.corpus 
 ### 零 FM 训练权重与数据准备的关系
 
 2026-09-30 的零梯度审计修复不改变上述源数据、JSONL、mask、区域 coverage 或任何 hash/count，不需要重新准备。`training_weight=0` 来自每次 FM 前向随机抽到的官方 timestep，属于训练计算，不是数据质量字段，也不是 noref/ref 类型的筛选或配比条件。相同训练行下次抽到不同 timestep 可以有正权重。所有现有行仍按 schedule 的 3:2:2:1 / 1:2:1 类型配比使用；Stage 2 A 在已启用时独立于 FM timestep 权重。实现见[代码说明第 14 节](01_SAMTokEdit_Qwen21_代码实现说明.md#14-loss梯度更新与-scheduler零权重修复)，正式重启入口为四机指南的 `_003`。
+
+
+### 2026-10-01 的独立全量复核
+
+在 `/tmp/samtok21-comprehensive-audit-20261001` 重新核对了全部 3,023 个来源分片/清单的最终通过字段，确认发布的 100,396 条中仅使用 98,574 条，排除 1,822 条不合格数据。逐行验证了 390,657 条 Stage 1 行及其 Stage 2 子序列，按来源 ID 对齐所有标注，并重构了全部 97,361 条成功语义标注的训练格式。1,213 条失败 ID 每条仍仅有一行原指令 plain 编辑数据。
+
+另逐个读取、解码全部 **252,982 个唯一图片及现成 mask 文件**，重算图片内容 hash；逐份读取并核对全部 **97,309 个唯一 coverage 文件**的 checksum、来源图片身份、shape/dtype/有限值和协议。没有对数据集 mask 做语义、区域并集或面积质量筛选，没有改动正式资产。此轮离线全量复核不加入正式启动流程，正式四机仍复用验收报告。
+
+数据准备已支持合法的相同 ref/noref 去重：从 NTP 重构 ref 并确认其与 noref 相同，才接受三行结果；真正缺行仍拒绝。当前数据没有 global，这一修复不改变既有数据。实现索引及关键代码见[代码说明第 12 节](01_SAMTokEdit_Qwen21_代码实现说明.md#12-全量数据与-noref-转换实现)，完整证据见[实验记录第 20 节](02_SAMTokEdit_Qwen21_实验记录.md#20-2026-10-01全量资产复核与新-adapter-完整链路验证)。
+
+
+现有 metadata 中共有 **254 个多 mask 组**，其中 **179 组**符合 x/y 外接框中心排序，**75 组**保留来源实例存储顺序。后者没有错绑：训练与 cache 按同一已存 span 顺序传递 label、token positions 和对应 coverage。此次遵照保留已启动训练输入的要求，不重排或覆盖这些历史行。runtime 协议接收已有的同组连续多 span；后续新构建数据则由修复后的 `corpus.encode_chunk` 使用 codec 的 `_ordered_masks` 统一空间排序，不修改现成 mask 或 annotation mask_ids。排序盘点只使用已有 RLE 的边界来检查顺序，没有判定或筛选 mask 质量。完整逐例记录在 `/tmp/samtok21-comprehensive-audit-20261001/instance-order.json`；真实 codec 排序回归在 `actual-sorted-codec.json`。

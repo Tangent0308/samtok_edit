@@ -19,7 +19,9 @@ from pycocotools import mask as coco_mask
 
 from samtok_edit21.data.io import file_hash, row_hash, write_json
 from samtok_edit21.preparation.converters import convert_record
-from samtok_edit21.data.protocol import EDIT_TYPES, validate_row
+from samtok_edit21.data.protocol import (
+    EDIT_TYPES, grouped_units, parse_cot, render_units, validate_row,
+)
 
 
 COARSE_PLAIN_TYPES = {
@@ -162,6 +164,9 @@ def encode_chunk(records, codec, batch_size):
         masks = masks_for_record(source, annotation['units'])
         start = len(pairs)
         for group in masks:
+            if len(group) > 1:
+                _, order = codec._ordered_masks(group)
+                group = [group[index] for index in order]
             for mask in group:
                 pairs.append((image, mask))
         slices.append((start, [len(group) for group in masks]))
@@ -188,8 +193,18 @@ def encode_chunk(records, codec, batch_size):
                                            'units': units,
                                            'noref_instruction': annotation['noref_instruction']})
             kinds = [(row['sample_type'], row.get('instr_variant')) for row in rows]
-            if errors or kinds != [('edit_ntp', None), ('edit', None),
-                                   ('edit_umt', 'ref'), ('edit_umt', 'noref')]:
+            expected = [('edit_ntp', None), ('edit', None),
+                        ('edit_umt', 'ref'), ('edit_umt', 'noref')]
+            # convert_record keeps one noref row when both UMT prompts are
+            # identical (typically a global edit). Verify the omitted ref
+            # prompt rather than rejecting valid deduplication or accepting
+            # a genuinely missing ref row.
+            if not errors and kinds == [expected[0], expected[1], expected[3]]:
+                reference = render_units(source['instruction'], grouped_units(
+                    source['instruction'], parse_cot(rows[0]['mt_cot'])))
+                if reference == rows[-1]['prompt']:
+                    expected.pop(2)
+            if errors or kinds != expected:
                 raise ValueError(f"Incomplete derived rows for {source['id']}: {errors}; {kinds}")
         result.append({'index': item['index'], 'id': source['id'], 'dataset': source['dataset'],
                        'conversion_method': item['conversion_method'], 'rows': rows})

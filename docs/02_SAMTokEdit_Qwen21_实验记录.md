@@ -1254,3 +1254,105 @@ python /tmp/samtok21-layout-refactor-20261001/check_entries.py
 完整基座 S1 更新后 LoRA SHA256：`a880b009489c8b6fbab2ecafaa2ac661a353a244ce52f43ec257d7455995991d`。S2 更新后：`d5d117445bf72431106b460cd4787116a1c69eba9b721d5e4b5da1982a27f591`。online 为快速检查设置 max_new_tokens=16，定位 JSON 未完成时走已有 plain fallback；inline 检查有效的已编码 mask 指令。该测试不声称在线定位语义通过率达标。推理测试复用旧 debug adapter，测试代码和 PNG 在 `inference-old/`、`inference-new/`，两组逐像素一致，不据此评价图像编辑质量。
 
 **范围**：本轮证明所测链路行为一致，并保留所有方法计算实现。八卡 S2 只读使用历史 conditioning cache，未重新跑本轮 S1→全量 cache→S2；四机入口验证是模拟编排，不是新分支已经完成正式四机训练。当前 `_003` 正式实验的历史结果不被这些检查替代。
+
+
+## 20. 2026-10-01：全量资产复核与新 adapter 完整链路验证
+
+**目的与范围。** 在新克隆 `samtok_edit_qwen21_refactor` 中做第二轮独立复核，补齐第 19 节尚未覆盖的新 Stage 1 → 新条件缓存 → Stage 2 → 推理，并测试正式分辨率。全部新增测试代码、数据、日志、adapter、PNG、wheel 和环境均在 `/tmp`；没有重启或改动远程正式 `_003`，也没有改动原备份和正式数据。主目录为 `/tmp/samtok21-comprehensive-audit-20261001`。
+
+### 20.1 发现并修复的数据准备边界
+
+合法 global 编辑在 ref/noref 指令相同时，`convert_record` 会保留 NTP、plain、noref 三行；`corpus.encode_chunk` 原先强制四行，误报 `Incomplete derived rows`。实际合成例 `Apply a watercolor style to this image.` 在修复前复现报错，修复后通过。现在从 NTP 重新构造 ref，确认与最终 noref 指令确实相同才允许三行。缺失 ref、额外行和转换错误仍拒绝。代码索引及关键代码块见[代码说明第 12 节](01_SAMTokEdit_Qwen21_代码实现说明.md#12-全量数据与-noref-转换实现)。当前四源数据没有 global；这不改变已准备数据或训练数值计算。
+
+另外，全量 254 个多 mask 组中的 75 组没有遵循文档的 x/y 中心排序，原因是批量编码器直接保留来源 mask_ids 顺序，而单图 `codec.encode` 的排序没有被调用。已在新批量构建中复用 codec 封装的同一排序 helper，并验证 x 顺序、x 相同的 y 顺序、已排序输入、与 composite unit 顺序独立这四个回归例。真实 composite 数据 `crispedit-98f9d099347ff7df0e2f777c` 包含两个 unit，mask 数量分别为 1 和 4；第二个 unit 的新排序为 `[0,1,3,2]`，完整组内排序为 `[[0],[0,1,3,2]]`。实际 codec 编码与预期排序后的直接批编码一致，NTP、ref、noref 的 span 顺序一致，见 `actual-sorted-codec.json`。
+
+历史已编码的 75 组仍是可读取的连续多 span，原 span/label/coverage 绑定正确；不覆写已用于正式训练的文件，也不重启该实验。当前 runtime 保留已存的组内顺序，新构建输出采用规范空间排序。只有构建新数据版本时会改变这部分输出次序。这是数据格式规范的修复，不修改训练/推理数值算法。
+
+### 20.2 实际运行方法
+
+小样本从当前已通过来源筛选的四源全量数据与编码记录中抽取：24 个 source pairs，refedit/crispedit/scaleedit/derived 分别为 4/7/8/5。覆盖 add/remove/replace/attribute/action/text/composite 七种实际类型和多实例 composite；含 21 个成功语义转换及 3 个历史失败的 plain-only 样本。形成 Stage 1=87 行、Stage 2=66 行。图片和已有 mask 只读引用正式资产；临时 JSONL、区域缓存及训练输出均在上述 `/tmp` 目录。
+
+```bash
+cd /opt/tiger/tanyue/samtok_edit_qwen21_refactor
+export PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
+AUDIT=/tmp/samtok21-comprehensive-audit-20261001
+PY=/tmp/samtok21-layout-env/bin/python
+# 全部现有测试及本轮独立数值/边界测试；缓存和临时文件也在 /tmp。
+"$PY" -m pytest -q -o cache_dir="$AUDIT/pytest-cache" \
+  --basetemp="$AUDIT/pytest-all" tests \
+  /tmp/samtok21-layout-refactor-20261001/checks/test_gradients.py \
+  /tmp/samtok21-layout-refactor-20261001/checks/test_runner_edges.py \
+  /tmp/samtok21-layout-refactor-20261001/checks/test_prepared.py \
+  "$AUDIT/test_additional.py" "$AUDIT/test_corpus_edges.py" \
+  "$AUDIT/test_actual_cache_failures.py" "$AUDIT/test_kv_oracle.py" \
+  "$AUDIT/test_instance_order.py"
+# 重读全部正式来源标记、训练行、资产与 coverage；不评价 mask 语义。
+"$PY" "$AUDIT/data_audit.py"
+# 以下保存实际运行的完整命令，再次跑须替换为新的空输出目录。
+bash "$AUDIT/full_chain2.sh"                   # 65,536 pixels：S1 4 updates / S2 3
+bash "$AUDIT/full_chain_resolution.sh"         # 1,048,576 pixels：S1 1 update / S2 2
+"$PY" "$AUDIT/audit_chain.py"
+"$PY" "$AUDIT/audit_chain_full.py"
+"$PY" -m torch.distributed.run --standalone --nproc_per_node 8 \
+  "$AUDIT/inference_matrix.py"
+"$PY" "$AUDIT/cli_matrix.py"
+```
+
+两套完整链路均调用实际公共 CLI `python -m samtok_edit21 train/cache`，使用完整 SAMTok/Qwen-Image-2.1 基座和 8 张 H100。未强制零 timestep，FM 使用官方正常随机采样。训练为 LoRA rank=64/32、accumulation=8/4、NTP=0.05、C=0.5、A=0.1；为短程测试设置 LR warmup=1、A warmup=1。W&B 使用 **offline**，记录初始化、每次 optimizer update 与正常 finish；不向正式项目提交额外在线 run。
+
+小样本采用 `prepare-regions` 的普通缓存，训练走完整逐行预检；它不适用 `full_training_data.merge + full_regions.merge` 的全量验收报告。第一次误给临时小样本传入该报告，被 `Prepared eligible region has no coverage provenance` 正确拒绝；修正调试参数后完成全部链路。正式四机的报告复用路径不变。
+
+### 20.3 结果与证据
+
+表内文件均相对于 `/tmp/samtok21-comprehensive-audit-20261001`。
+
+| 检查 | 实际结果 | 证据 |
+|---|---|---|
+| 全部测试 | **114 passed**；含 C 独立逐像素权重/梯度、A 稠密 softmax/梯度、完整 3,081-step LR、各 rank 配比、AMP skip、零梯度、global 去重及损坏缓存 | `pytest-all-final.log` |
+| 最终来源过滤 | 全部 3,023 个分片/清单的最终字段；100,396 发布行中选 98,574，排除 1,822，四源计数与 inventory 一致 | `data-audit.json` |
+| 全量训练协议 | 全部 S1=390,657、S2=293,296；按 immutable ID 和编码 receipt 对齐；97,361 成功标注逐条重构为训练格式，1,213 失败每条仅 plain | `data-audit.json` |
+| 图片和 mask 文件 | 252,982 个唯一文件全部读取、解码；图片内容 SHA256 与来源一致，总计读取 221,285,897,351 bytes；不做 mask 语义/并集/面积质量筛选 | `data-audit.json` |
+| 区域文件 | 97,309 份全部 checksum/来源身份/shape/dtype/有限值通过，检查 797,790,876 个 FP32 值 | `data-audit.json` |
+| 小分辨率八卡完整链路 | S1 4 updates → 全部 66 条新 cache → S2 3 updates；A 为 0/0.1/0.1；所有 rank 梯度、loss、LR、冻结参数、checkpoint、权重同步及 W&B finish 通过 | `chain-audit.json` |
+| 正式分辨率八卡完整链路 | max_pixels=1,048,576；S1 1 update → 全部 66 条新 cache → S2 2 updates；A 为 0/0.1；同样审计通过，最高显存 S1=36.784 GiB、S2=20.522 GiB | `chain-full-audit.json` |
+| 八卡新 adapter 推理 | 147 个记录输出，覆盖四源/七类及 direct/inline/oracle ref/noref、有效在线 token 回放、真实在线生成、CFG、多图、KV 开关和 strict noref；21 例非整齐 canvas 的两遍预处理完全一致 | `inference-matrix.json`、`inference2/` |
+| 实际 CLI | 3 个历史失败 source 的 plain 编辑均成功；interactive 现成 mask 成功；localize 实际生成并解码出一个 mask；stock 无 adapter 成功；默认 1,024² RGBA 和 benchmark RGB/原图尺寸对齐通过 | `cli-matrix.json`、`cli/` |
+| 实际 NTP 对齐 | 四源上 pre-final-RMSNorm 与 normalized feature 分工正确，标签起点 prefix−1/EOS 正确；完整 native HF labels loss 与只投影监督段的 loss，在 FP32 head 对照中四例误差均为 0 | `ntp-native-oracle.json` |
+| 实际 CUDA A 公式 | 真实 FlexAttention forward/LSE 与独立全 key 稠密 softmax 对照；两层/两组 mask 的 loss 相同，LSE 最大误差 4.77e−7，Q/K BF16 梯度最大误差 3.05e−5 | `flex-oracle.json` |
+| codec 官方对照 | 四源六例、10 个现成 mask 的 encode/decode 及批处理成功；同一 batch 下直接调用官方 VQ-SAM2 与封装输出相同；量化临界 batch 变化单独记录 | `codec-probe.json`、`codec-native-oracle.json` |
+| 损坏缓存 | 9 种实际缓存篡改均拒绝：metadata、重复 shard、路径越界、checksum、identity、payload index、feature dim、NaN coverage、越界 token positions；只改临时副本 | `pytest-cache-failures.log` |
+| CPU 双 rank | 两阶段各 4 updates，参数/AdamW/LR 轨迹与独立参考一致，完整零梯度积累窗口仍正确更新 clock | `cpu-ddp/report.json` |
+| IPv6 八卡通信 | 实际 `master_addr=::1`、8 rank NCCL all_reduce=36 与 4 MiB broadcast 通过 | `collectives-ipv6/` |
+| 四机文档入口 | 正式/debug/noref 三套 × 4 ARNOLD rank，共 12 个模拟入口通过；branch clone、W&B key 不入日志、统一端口、重复启动拒绝、参数传递正确 | `entries.log` 指向对应模拟记录 |
+| wheel | 在临时源码镜像重建并安装，仓库外的模型/codec/corpus/DiffSynth 均来自 wheel 环境；两处修复已进入 wheel | `wheel-check-final.json` |
+| 文档与源码静态检查 | 228 个本地链接、171 个代码行索引、38 个 Bash 代码块及 35 个项目 Python 文件通过检查；`git diff --check` 通过 | `doc-check/report.json` |
+| 备份与依赖 | 原备份 1,815 个 tracked 文件 hash 未变；1,719 个 vendored 文件逐字节未变 | `backup-vendor.json` |
+
+正式分辨率 S2 的第一/第二次 update：FM=0.15013054 / 0.16467444，total=0.15013054 / 0.24320986，均有限且梯度审计正常。这里用于验证计算与更新，不根据两次 loss 判断收敛或效果。日志中 A 的 `attn_main/read` 仅对 eligible 样本求均值，而 FM/total 对全部 FM 样本求均值；检查总 loss 时必须乘 `counts.attn_main / samples`，不能直接把两种不同分母的日志均值相加。
+
+### 20.4 vLLM 与数值边界
+
+实际用当前 Qwen3.5-9B、vLLM 0.17.1 的 `preparation.semantic` 跑同一批 24 条文本样本，模型只输出 ref_phrase/noref_instruction。**21 条 LLM accepted、3 条 failed**，恰为加入的 3 条历史失败；不伪造 noref。模型初始化 32.498 秒，生成/重试 6.438 秒、31 requests、1,178 output tokens。24 条整段处理 6.534 秒。三个拒绝原因分别为 add 指令丢失尺寸/坐标约束、text 引用 `'21'` 不在原文精确出现、add 引用遗漏新内容与位置绑定。结果在 `semantic-runtime.json`；这验证重试/回退/失败记录的运行，不代表全量语义质量重新由人工验收。
+
+```bash
+AUDIT=/tmp/samtok21-comprehensive-audit-20261001
+PATH=/tmp/samtok21-layout-annotation-env/bin:$PATH \
+PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 CUDA_VISIBLE_DEVICES=7 \
+VLLM_CACHE_ROOT="$AUDIT/vllm-cache" XDG_CACHE_HOME="$AUDIT/xdg-cache" \
+TORCHINDUCTOR_CACHE_DIR="$AUDIT/annotation-inductor" HF_HUB_OFFLINE=1 \
+/tmp/samtok21-layout-annotation-env/bin/python -m samtok_edit21.preparation.semantic \
+  --sources "$AUDIT/semantic-smoke-input.jsonl" --output "$AUDIT/semantic-smoke" \
+  --batch-size 8 --gpu-memory-utilization .4 --max-model-len 8192 --attempts 3
+```
+
+临时标注环境只读复用旧环境的依赖，首次实际加载暴露了临时环境缺 `tvm_ffi` 的本地资源路径以及 `ninja` 可执行入口；在临时环境补齐只读链接/PATH 后完成实测。正式 `setup_env.sh` 从 lock 安装真实依赖，`run_arnold.sh` 已 export 环境 bin 到 PATH；没有为这两个临时环境问题修改生产代码。vLLM 正常完成后仍有 xgrammar/nanobind 的资源释放警告，进程 exit=0、24 条输出和 complete receipt 完整，不把该警告写成训练失败。
+
+BF16 不承诺跨不同计算形状或内核逐位一致，已经用独立数学/官方同形状对照核实：
+
+- 同一现成 mask 在官方 VQ-SAM2 的 B=1/4 时 code 为 `[209,31]`，B=8 时为 `[209,143]`；第二级候选距离接近，官方内部 BF16 feature 的最大差约 0.011。同形状的封装与官方相同。decoder 的 batch/serial 二值结果在本次 10 个 mask 上有少量阈值边缘差异，逐例数量见报告。这不重编正式 mask codes，也不影响已绑定 checksum 的训练/coverage。
+- KV 开关在官方 DiT 的 Flex 首步/全序列与 SDPA decode 之间切换，八例 PNG 像素可能不同；FP32 split 路径的独立缓存数学对照 CPU 最大误差 5.96e−8、CUDA 为 0。默认 KV=on 不变。
+- NTP 的 BF16 full-token LM head 与 supervised-token-only head 在四例 loss 上差 0.00228～0.00700；临时只把 head 计算改为 FP32 后 native/project loss 四例误差为 0，证明标签和归一化位置一致。生产保持原 BF16 数值与仅投影监督段的内存优化。
+
+真实 online 推理八例中 6 例生成有效 ref、2 例显式 plain fallback；有效在线回放使用真实数据中已有的定位 tokens，21 例都完成两遍定位→编辑。这区分真实定位输出行为与有效输入下的完整推理计算，不声称短训后的定位/编辑效果已经达标。
+
+**结论与限制。** 上述范围内没有未解决的训练/数据/推理实现失败；已发现的合法去重和新构建组内排序问题已修复；历史 75 组的已有顺序保留并明确记载。全量所有资产已检查，但没有为验收重新进行全量正式训练或实际提交四台物理机器/32 rank 作业。四机入口为模拟编排验证，实际通信/训推为本地 8 GPU；新分支的物理四机运行仍须由后续 ARNOLD 实验确认。实验报告不构成所有未来输入和环境下永无 bug 的证明。

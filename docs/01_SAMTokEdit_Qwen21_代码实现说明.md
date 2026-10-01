@@ -400,7 +400,7 @@ Please identify and segment the region to be edited in this image.<|im_end|>
 | background | 膨胀后的稳定前景之补集 | background/scene/backdrop 或新底短语 | `this region`；抠图换底需上游审核改写 |
 | global | 全图 | 固定 label=`this image`；ref 挂靠实际整图短语 | `this image`；无整图短语补 `to this image`；独立 `Colorize` 等补宾语 |
 
-单 unit 用原子类型；≥2 units 用 `composite`，各 unit 类型仍为原子类型。global/background 仅一个 mask。label 去掉句首 the/a/an，必须是原文唯一连续片段；去冠词后出现歧义（如同句 the cat/a cat）不产生 NTP/ref，不保留冠词来绕过协议。同短语多实例写 `one of the {ref_phrase}`；unit 按指令顺序，同组 mask 按外接框中心先 x 后 y 排序。已有 code-only 输入须由上游保证空间排序；codec.encode 或携带 `mask_paths` 的转换会执行排序。
+单 unit 用原子类型；≥2 units 用 `composite`，各 unit 类型仍为原子类型。global/background 仅一个 mask。label 去掉句首 the/a/an，必须是原文唯一连续片段；去冠词后出现歧义（如同句 the cat/a cat）不产生 NTP/ref，不保留冠词来绕过协议。同短语多实例写 `one of the {ref_phrase}`；unit 按指令顺序，同组 mask 按外接框中心先 x 后 y 排序。新构建数据按空间排序；codec.encode、批量 corpus 编码以及携带 `mask_paths` 的转换都会执行排序。现有 code-only 输入不从 token 文本猜空间位置，保留已存的组内顺序并保持 span/label/coverage 对齐；历史全量数据的 75 组非规范排序例外见第 12 节和数据盘点。
 
 局部六类原始 mask 面积限定 0.05%–60%，background 限定 20%–97% 且等于膨胀稳定前景的补集，global 必须全图。`validate_mask_geometry` 检查这些像素条件；`convert_record` 的 unit 可带与 `mask_codes` 一一配对的 `mask_paths`，background 再带 `stable_foreground_path`，路径使用绝对路径，转换会检查原图尺寸、面积和空间顺序。纯 token 行不含几何信息，不能仅靠 `validate` 证明面积、目标语义、SAM3/diff 的标注正确性；这些必须由上游打标 QC 保证并写入 manifest。`build-debug` 没有稳定前景证据时会跳过 background，而非默认通过。SAM3 打标/跨图映射、语义复核不由训练 dataloader 重新执行。
 
@@ -1011,7 +1011,7 @@ value = {'instruction': source['instruction'],
 
 [annotate_full.py](../src/samtok_edit21/preparation/semantic.py#L84) 的后处理绑定已有 mask IDs，规范化 region 指代，检查原文匹配、内容保留和协议。原子类型沿用源标签，仅对未映射的粗类别做细化。生成失败后，[rule_fallback.py](../src/samtok_edit21/preparation/fallback.py#L1) 尝试从原指令截取完整 referent，并保留新内容；输出仍经过同一验证器。自动 accepted 不是人工语义金标。
 
-[full_training_data.py](../src/samtok_edit21/preparation/corpus.py#L1) 的 split → encode-worker → merge 将源/语义结果按 ID 对齐，使用冻结 SAMTok codec 编码，验证每行后写出两阶段 metadata。[full_regions.py](../src/samtok_edit21/regions/build.py#L1) 另生成 coverage，ref/noref 共享同一内容缓存。两者与 Stage 1 adapter 生成的 conditioning cache 是不同产物。
+[corpus.encode_chunk](../src/samtok_edit21/preparation/corpus.py#L154) 的 split → encode-worker → merge 将源/语义结果按 ID 对齐，使用冻结 SAMTok codec 编码，验证每行后写出两阶段 metadata。[regions/build.py](../src/samtok_edit21/regions/build.py#L1) 另生成 coverage，ref/noref 共享同一内容缓存。两者与 Stage 1 adapter 生成的 conditioning cache 是不同产物。
 
 ```text
 sources.jsonl + semantic_runs/..._003/annotations.jsonl
@@ -1021,6 +1021,35 @@ sources.jsonl + semantic_runs/..._003/annotations.jsonl
   → full_regions（冻结 coverage）
   → Stage 1 → conditioning cache → Stage 2
 ```
+
+**相同 ref/noref 指令的去重。** `convert_record` 在两种 UMT 指令完全相同时只保留 noref 行，常见于 global 编辑。例如 `Apply a watercolor style to this image.` 的 ref/noref 都是 `Apply a watercolor style to this image <mask>.`，因此产出 NTP、plain、noref 三行。原批量编码器固定要求四行，会误拒绝这种合法结果。2026-10-01 的复核修复了这一边界；[具体校验](../src/samtok_edit21/preparation/corpus.py#L196) 从 NTP 重新构造 ref，确认确实与 noref 一致才接受三行，真正缺失的 ref 和转换错误仍拒绝：
+
+```python
+expected = [('edit_ntp', None), ('edit', None),
+            ('edit_umt', 'ref'), ('edit_umt', 'noref')]
+if not errors and kinds == [expected[0], expected[1], expected[3]]:
+    reference = render_units(source['instruction'], grouped_units(
+        source['instruction'], parse_cot(rows[0]['mt_cot'])))
+    if reference == rows[-1]['prompt']:
+        expected.pop(2)
+if errors or kinds != expected:
+    raise ValueError(...)
+```
+
+**批量编码的组内空间排序。** 冻结 codec 的单图 `encode` 会排序，但原 `encode_chunk` 直接展平 source 的 mask_ids 顺序，漏掉了这一步。[批量编码循环](../src/samtok_edit21/preparation/corpus.py#L166) 现在对多 mask 组复用同一 `_ordered_masks`，仅调整已有 mask 的顺序，随后仍使用批量编码：
+
+```python
+for group in masks:
+    if len(group) > 1:
+        _, order = codec._ordered_masks(group)
+        group = [group[index] for index in order]
+    for mask in group:
+        pairs.append((image, mask))
+```
+
+这不修改 annotation 的 mask_ids，不改变 mask 内容，也不改变 unit 按指令短语顺序的规则。现有全量文件中的 254 个多 mask 组有 75 组采用历史来源顺序；作为已编码输入，仍按同组连续 span 的已有顺序读取，label、span positions 与 coverage 一致绑定。新准备的数据采用 x 中心优先、y 中心次之的规范顺序。此轮不覆写已启动正式训练所用的历史数据；当前数据的排序现状已明确记录到数据盘点。
+
+当前四源全量数据没有 global 样本，文件内容、行数与现有训练配比不变。全部复核过程与范围见[实验记录第 20 节](02_SAMTokEdit_Qwen21_实验记录.md#20-2026-10-01全量资产复核与新-adapter-完整链路验证)。
 
 [annotation_cluster.py](../src/samtok_edit21/distributed/annotation.py#L1) 在四机上启动 32 个独立 TP=1 vLLM worker，按 `inputs[rank::32]` 分片，按源 ID 合并。训练的 32-rank DDP 与此独立副本模式不同。准确目录、统计和真实行例子见[训练数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)，完整可直接提交的 ARNOLD 命令见[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
 
