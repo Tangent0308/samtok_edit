@@ -13,12 +13,13 @@ def test_cache_identity_and_content_corruption(tmp_path):
         prompt="Turn the car blue.",
     )
     identity = {"te_adapter": None, "metadata_sha256": "example"}
-    shard = tmp_path / "00000000.pt"
+    shard = tmp_path / "0" / "00000000.pt"
+    shard.parent.mkdir()
     shard.write_bytes(b"cached tensor contents")
     manifest = {
         "format": "samtok21-cache-v1",
         "identity": identity,
-        "rows": [{**row, "_cache_file": shard.name}],
+        "rows": [{**row, "_cache_file": "0/00000000.pt"}],
     }
     side = {"row_hash": row_hash(row), "identity": identity, "sha256": file_hash(shard)}
     write_json(shard.with_suffix(".json"), side)

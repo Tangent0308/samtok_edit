@@ -166,15 +166,8 @@ def audit_legacy_cache(directory, manifest):
     from samtok_edit21.training.objectives import verify_cache as verify_old
     if manifest.get("format") != "samtok21-cache-v1":
         raise ValueError("Not a legacy v1 cache")
-    if all(Path(row["_cache_file"]).name == row["_cache_file"] for row in manifest["rows"]):
-        verify_old(directory, manifest)
-    else:
-        for row in manifest["rows"]:
-            path = cache_path(directory, row["_cache_file"])
-            side = json.loads(path.with_suffix(".json").read_text())
-            original = {k: v for k, v in row.items() if not k.startswith("_cache")}
-            validate_row(original)
-            if side.get("sha256") != file_hash(path) or side.get("row_hash") != row_hash(original):
-                raise ValueError("Legacy cache checksum/row mismatch")
+    # The verifier accepts both flat and nested safe-relative shard paths. Keep
+    # one validation path so old layouts cannot silently skip identity checks.
+    verify_old(directory, manifest)
     return {"checksums_valid": True, "training_eligible": False,
             "reason": "v1 did not record verifiable complete model/config provenance; rebuild v2"}

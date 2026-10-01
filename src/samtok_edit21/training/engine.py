@@ -184,7 +184,7 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         base = self.args.attention_weight
         warmup = self.args.attention_warmup_steps
         effective = base * (min(self.completed_updates / warmup, 1.0) if warmup else 1.0)
-        return flow_loss(self.pipe, inputs, region_weight=self.args.region_weight,
+        return flow_loss(self.pipe, inputs, stage=self.stage, region_weight=self.args.region_weight,
                          region_n_min=self.args.region_n_min, attention_weight=effective,
                          attention_layers=self.args.attention_layers if base else (),
                          attention_read_weight=self.args.attention_read_weight)

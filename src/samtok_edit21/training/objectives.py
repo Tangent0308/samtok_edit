@@ -142,6 +142,7 @@ def adapter_identity(path):
 
 def verify_cache(directory, manifest):
     from samtok_edit21.data.protocol import validate_row
+    from samtok_edit21.data.provenance import cache_path
 
     directory = Path(directory)
     if manifest.get("format") != "samtok21-cache-v1":
@@ -149,16 +150,14 @@ def verify_cache(directory, manifest):
     for row in manifest["rows"]:
         original = {k: v for k, v in row.items() if not k.startswith("_cache")}
         validate_row(original)
-        name = row["_cache_file"]
-        if Path(name).name != name:
-            raise ValueError("Cache shard must be a local filename")
-        side = json.loads(directory.joinpath(name).with_suffix(".json").read_text())
+        path = cache_path(directory, row["_cache_file"])
+        side = json.loads(path.with_suffix(".json").read_text())
         if (
             side["row_hash"] != row_hash(original)
             or side["identity"] != manifest["identity"]
         ):
             raise ValueError("Mixed or stale cache metadata")
-        if side["sha256"] != file_hash(directory / name):
+        if side["sha256"] != file_hash(path):
             raise ValueError("Cache checksum mismatch")
 
 
@@ -247,9 +246,13 @@ def prepare_fm(pipe, row, base_path, max_pixels, *, te_grad=False, supervision=N
     return inputs
 
 
-def flow_loss(pipe, inputs, *, timestep_index=None, noise=None, checkpointing=True,
+def flow_loss(pipe, inputs, *, stage, timestep_index=None, noise=None, checkpointing=True,
               region_weight=0.0, region_n_min=16.0, attention_weight=0.0,
               attention_layers=(), attention_read_weight=0.5, return_components=False):
+    if stage not in {"stage1", "stage2"}:
+        raise ValueError("flow_loss requires stage1 or stage2")
+    if stage == "stage1" and (attention_weight or attention_layers):
+        raise ValueError("Attention supervision is Stage 2 only")
     if not math.isfinite(attention_weight) or attention_weight < 0 or not math.isfinite(region_weight) or region_weight < 0:
         raise ValueError("Loss weights must be finite and nonnegative")
     if attention_weight and not attention_layers:

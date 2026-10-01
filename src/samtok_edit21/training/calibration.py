@@ -87,6 +87,7 @@ def main(argv=None):
                 torch.set_rng_state(cpu_rng)
                 torch.cuda.set_rng_state(cuda_rng, args.device)
                 total, metrics, parts = flow_loss(pipe, inputs, timestep_index=timestep, noise=noise,
+                    stage="stage2",
                     region_weight=args.region_weight, region_n_min=args.region_n_min,
                     attention_weight=1, attention_layers=args.attention_layers,
                     attention_read_weight=args.attention_read_weight, return_components=True)

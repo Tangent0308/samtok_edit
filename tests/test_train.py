@@ -11,6 +11,7 @@ from diffsynth.diffusion.training_module import DiffusionTrainingModule
 from samtok_edit21.data.io import make_schedule, row_kind
 from samtok_edit21.training.engine import ScheduledMetadata, verify_cache
 from samtok_edit21.data.io import file_hash, row_hash
+from samtok_edit21.training.objectives import flow_loss
 
 
 def _row(kind):
@@ -28,6 +29,17 @@ def _row(kind):
     if sample_type == "edit_umt":
         row["instr_variant"] = variant
     return row
+
+
+def test_flow_loss_requires_stage_and_rejects_stage1_attention():
+    import pytest
+
+    with pytest.raises(ValueError, match="requires stage1 or stage2"):
+        flow_loss(None, {}, stage="unknown")
+    with pytest.raises(ValueError, match="Stage 2 only"):
+        flow_loss(None, {}, stage="stage1", attention_layers=(7,))
+    with pytest.raises(ValueError, match="Stage 2 only"):
+        flow_loss(None, {}, stage="stage1", attention_weight=0.1, attention_layers=(7,))
 
 
 def test_schedule_is_exact_on_each_rank_when_local_accumulation_is_a_block():
