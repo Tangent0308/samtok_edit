@@ -184,6 +184,13 @@ mkdir -p "$RUN/bootstrap"
 if ! mkdir "$RUN/bootstrap/node${NODE}.claimed"; then
   echo "Worker $NODE already claimed this run" >&2; exit 2
 fi
+export SAMTOK_ENV="${SAMTOK_ENV:-/tmp/samtok21-${SAMTOK_RUN_ID}-node${NODE}-env}"
+export SAMTOK_CUDA_DIAGNOSTICS="${SAMTOK_CUDA_DIAGNOSTICS:-$RUN/bootstrap/node${NODE}-cuda}"
+export SAMTOK_PYTHON="${SAMTOK_PYTHON:-/usr/bin/python3.11}"
+export SAMTOK_CUDA_READY_TIMEOUT="${SAMTOK_CUDA_READY_TIMEOUT:-600}"
+export SAMTOK_CUDA_READY_INTERVAL="${SAMTOK_CUDA_READY_INTERVAL:-15}"
+export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+exec > >(tee -a "$RUN/bootstrap/node${NODE}.log") 2>&1
 export GIT_TERMINAL_PROMPT=0
 git clone --branch "$SAMTOK_EDIT_BRANCH" --single-branch "$SAMTOK_EDIT_REPO_URL" "$REPO"
 cd "$REPO"
