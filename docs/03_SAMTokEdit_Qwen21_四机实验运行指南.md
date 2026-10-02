@@ -161,9 +161,11 @@ export SAMTOK_STAGE1_ADAPTER="$SAMTOK_STAGE1_RUN/stage1/adapter"
 export SAMTOK_CACHE_OUTPUT="$SAMTOK_STAGE1_RUN/cache"
 # resume_001 stopped during bootstrap because the old entry omitted SAMTOK_ENV;
 # resume_002 stopped before checkout because the shared filesystem quota was full;
-# resume_003 stopped after clone because its pinned SHA was mistyped.
-# Use this fresh run ID with the corrected SHA below.
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_004
+# resume_003 stopped after clone because its pinned SHA was mistyped;
+# resume_004 reached cache but stopped with Errno 122 (user quota exhausted)
+# after 65,250 payloads. Free quota for about 228,046 more payload files
+# before retrying, then use this fresh run ID with the corrected SHA below.
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_005
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
 # 用 ARNOLD secret 注入真实 key；不要把真实值写入脚本或日志。

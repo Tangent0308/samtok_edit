@@ -1364,3 +1364,9 @@ BF16 不承诺跨不同计算形状或内核逐位一致，已经用独立数学
 续训修复位于 `src/samtok_edit21/distributed/training.py`、`src/samtok_edit21/training/engine.py` 和 vendored DiffSynth 的 `third_party/diffsynth/diffsynth/diffusion/runner.py`：新 run 通过 `--stage1-adapter` 复用旧 adapter 并跳过 Stage 1；通过 `--cache-output` 指向旧的 partial cache；`--resume-cache` 校验 zip payload 和 `row_index` 后复用已完成文件，损坏或缺失文件重新前向；新的 cache 写入临时文件、`fsync`、原子发布，并带 rank jitter 的指数退避重试。完整入口见四机运行指南的“Stage 1 已完成后的四机续训入口”一节。
 
 本地验证包括 24 个仓库测试、临时故障注入/续写测试、四进程别名创建竞态测试、CLI 参数检查和文档静态检查；实际 partial cache 的抽样 payload 可读且 row index 自洽。续训成功条件是旧 cache 生成完整 `manifest.json`，新 run 完成 Stage 2、全量审计和 `SUCCESS.json`。
+
+### 20.6 2026-10-02 正式四机 `_004` 因用户配额耗尽退出
+
+`qwen21_full_4n_formal_003_resume_004` 已完成 clone、环境安装、CUDA readiness、32-rank collectives，并正确复用旧 `_003/stage1/adapter`。cache 阶段实际写入 65,250 个 `.pth` payload 后，node 0 和 node 3 的进度心跳在原子写入临时 JSON 时收到 `OSError: [Errno 122] Disk quota exceeded`；随后 `failure.json` 也因同一原因无法发布。该错误发生在用户级共享盘配额，不是全局磁盘容量、模型、数据、NCCL 或 loss 错误。`df -h` 仍显示全局空间充足，不能据此判断用户配额。
+
+当前 Stage 2 metadata 有 293,296 行，旧 partial cache 已有 65,250 个 payload，因此还需要约 228,046 个新的普通文件，另加临时写入和最终 manifest 的余量。旧 `_003/cache` 和 `_003/stage1/adapter` 必须保留；`_004` 只保留失败日志即可。重新运行前必须从同一用户配额下清理足够的旧实验小文件，且先让入口中的普通文件配额探针成功。清理后使用新 run ID `qwen21_full_4n_formal_003_resume_005`，继续指向同一 partial cache 并保留 `--resume-cache`；已完成 payload 会被安全复用。
