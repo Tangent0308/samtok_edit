@@ -49,7 +49,14 @@ from samtok_edit21.training.objectives import (  # noqa: E402
     validate_conditioning,
 )
 from samtok_edit21.models.pipeline import load_pipeline, ntp_loss  # noqa: E402
-from samtok_edit21.data.provenance import FORMAT, conditioning_identity, assert_models_match, verify_cache
+from samtok_edit21.data.provenance import (
+    FORMAT,
+    assert_models_match,
+    conditioning_identity,
+    validate_cache_manifest,
+    verify_cache,  # re-exported for existing callers/tests
+    verify_cache_shard,
+)
 
 
 
@@ -448,13 +455,14 @@ def run_train(args):
         manifest = json.loads((Path(args.cache) / "manifest.json").read_text())
         args.max_pixels = manifest["identity"]["max_pixels"]
         def validate():
-            verify_cache(args.cache, manifest)
+            validate_cache_manifest(manifest)
             assert_models_match(manifest["identity"], args.qwen, args.samtok)
             if args.region_weight or args.attention_weight:
                 if not manifest.get("supervision_identity"):
                     raise ValueError("Training requires a conditioning cache built with --region-cache")
         _startup(args, accelerator, "conditioning_cache_validation", "started")
         _main_rank_result(accelerator, validate)
+        _distributed_cache_validation(args.cache, manifest, accelerator)
         _startup(args, accelerator, "conditioning_cache_validation", "complete")
         rows = manifest["rows"]
         schedule, report = _schedule_dataset(args, accelerator, rows)
@@ -548,32 +556,156 @@ def run_train(args):
     accelerator.end_training()
 
 
-def _cache_manifest(args, accelerator, rows):
-    output, entries, seen = Path(args.output), [], set()
-    for rank_dir in sorted(p for p in output.iterdir() if p.is_dir() and p.name.isdigit()):
-        for path in sorted(rank_dir.glob("*.pth"), key=lambda p: int(p.stem)):
-            payload = torch.load(path, map_location="cpu", weights_only=True)
-            index = payload["row_index"]
-            if index in seen or not 0 <= index < len(rows):
-                raise ValueError("Duplicate/out-of-range cache row")
-            seen.add(index)
-            row = rows[index]
-            if payload["row_hash"] != row_hash(row) or payload["identity"] != args.conditioning_identity:
-                raise ValueError("Cache payload row/identity mismatch")
-            write_json(path.with_suffix(".json"), {
-                "row_index": index, "row_hash": row_hash(row),
-                "sha256": file_hash(path), "identity": args.conditioning_identity,
-            })
-            entries.append((index, {**row, "_cache_file": str(path.relative_to(output))}))
-    if seen != set(range(len(rows))):
+def _distributed_call(accelerator, label, function):
+    """Run a local check on every rank and propagate errors without a hang."""
+    error, result = None, None
+    try:
+        result = function()
+    except BaseException as exc:  # every rank must still enter gather_object
+        error = f"{type(exc).__name__}: {exc}"
+    gathered = gather_object([{"rank": accelerator.process_index,
+                              "error": error, "result": result}])
+    errors = [item for item in gathered if item.get("error")]
+    if errors:
+        details = "; ".join(f"rank {item['rank']}: {item['error']}" for item in errors)
+        raise RuntimeError(f"{label} failed: {details}")
+    return gathered
+
+
+def _validate_cache_inputs(payload, row, *, supervision_identity=None):
+    if payload.get("row_hash") != row_hash(row):
+        raise ValueError("Cache payload row hash disagrees with metadata")
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, dict):
+        raise ValueError("Cache payload is missing inputs")
+    if "prompt_embeds_mask" not in inputs:
+        raise ValueError("Missing text attention mask")
+    sources = row["edit_image"]
+    source_count = 1 if isinstance(sources, str) else len(sources)
+    if len(inputs["edit_latents"]) != source_count:
+        raise ValueError("Source latent count differs from metadata image count")
+    validate_conditioning(inputs)
+    supervision = inputs.get("region_supervision")
+    if supervision_identity is not None or supervision is not None:
+        from samtok_edit21.regions.supervision import validate_supervision
+        validate_supervision(supervision, inputs, row, require_positions=True)
+        if supervision["identity"] != supervision_identity:
+            raise ValueError("Conditioning cache supervision identity mismatch")
+
+
+def _cache_manifest_shard(args, accelerator, rows):
+    """Validate and index one rank's payloads in parallel with other ranks."""
+    output = Path(args.output)
+    rank = accelerator.process_index
+    rank_dir = output / str(rank)
+    if not rank_dir.is_dir():
+        raise ValueError(f"Missing cache rank directory: {rank_dir}")
+    supervision_identity = None
+    if args.region_cache:
+        from samtok_edit21.regions.supervision import RegionStore
+        supervision_identity = RegionStore(args.region_cache, args.max_pixels).identity
+    entries, seen = [], set()
+    for path in sorted(rank_dir.glob("*.pth"), key=lambda p: int(p.stem)):
+        if not path.stem.isdigit():
+            raise ValueError(f"Cache payload name is not numeric: {path}")
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        index = payload.get("row_index")
+        if not isinstance(index, int) or index in seen or not 0 <= index < len(rows):
+            raise ValueError("Duplicate/out-of-range cache row")
+        seen.add(index)
+        row = rows[index]
+        if payload.get("identity") != args.conditioning_identity:
+            raise ValueError("Cache payload identity disagrees with conditioning identity")
+        _validate_cache_inputs(payload, row, supervision_identity=supervision_identity)
+        digest = row_hash(row)
+        checksum = file_hash(path)
+        side = {"row_index": index, "row_hash": digest,
+                "sha256": checksum, "identity": args.conditioning_identity}
+        side_path = path.with_suffix(".json")
+        reusable_side = False
+        if side_path.is_file():
+            try:
+                reusable_side = json.loads(side_path.read_text()) == side
+            except (OSError, ValueError, TypeError):
+                reusable_side = False
+        if not reusable_side:
+            write_json(side_path, side)
+        entries.append({"row_index": index,
+                        "row_hash": digest,
+                        "sha256": checksum,
+                        "cache_file": str(path.relative_to(output))})
+    shard_dir = output / "manifest_shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    summary = {"format": FORMAT, "rank": rank,
+               "world_size": accelerator.num_processes,
+               "identity": args.conditioning_identity,
+               "row_count": len(entries), "entries": entries}
+    write_json(shard_dir / f"rank-{rank:02d}.json", summary)
+    # The full entry list stays on the shared filesystem.  Returning it through
+    # gather_object would replicate hundreds of megabytes on every rank.
+    return {"rank": rank, "row_count": len(entries)}
+
+
+def _merge_cache_manifest(args, accelerator, rows):
+    if not accelerator.is_main_process:
+        return
+    output = Path(args.output)
+    shard_dir = output / "manifest_shards"
+    entries, seen_indices, seen_paths = {}, set(), set()
+    for rank in range(accelerator.num_processes):
+        path = shard_dir / f"rank-{rank:02d}.json"
+        summary = json.loads(path.read_text())
+        if (summary.get("format") != FORMAT or summary.get("rank") != rank
+                or summary.get("world_size") != accelerator.num_processes
+                or summary.get("identity") != args.conditioning_identity):
+            raise ValueError(f"Invalid cache manifest shard: {path}")
+        for entry in summary.get("entries", []):
+            index, relative = entry.get("row_index"), entry.get("cache_file")
+            if (not isinstance(index, int) or not 0 <= index < len(rows)
+                    or index in seen_indices or not isinstance(relative, str)
+                    or relative in seen_paths):
+                raise ValueError("Duplicate/out-of-range cache manifest entry")
+            if entry.get("row_hash") != row_hash(rows[index]):
+                raise ValueError("Cache manifest shard row hash mismatch")
+            resolved = Path(output / relative).resolve()
+            try:
+                canonical = resolved.relative_to(output.resolve()).as_posix()
+            except ValueError as exc:
+                raise ValueError("Cache manifest path escapes output") from exc
+            if canonical != relative:
+                raise ValueError("Cache manifest path is not canonical")
+            expected_rank = Path(canonical).parts[0] if Path(canonical).parts else None
+            if expected_rank != str(rank):
+                raise ValueError("Cache manifest shard rank/path mismatch")
+            seen_indices.add(index)
+            seen_paths.add(relative)
+            entries[index] = {**rows[index], "_cache_file": relative}
+    if seen_indices != set(range(len(rows))):
         raise ValueError("Cache does not cover every metadata row exactly once")
     manifest = {"format": FORMAT, "identity": args.conditioning_identity,
-                "row_count": len(rows), "rows": [row for _, row in sorted(entries)]}
+                "row_count": len(rows),
+                "rows": [entries[index] for index in range(len(rows))]}
     if args.region_cache:
         from samtok_edit21.regions.supervision import RegionStore
         manifest["supervision_identity"] = RegionStore(args.region_cache, args.max_pixels).identity
-    verify_cache(output, manifest)
-    write_json(output / "manifest.json", manifest)  # atomic publication after validation
+    validate_cache_manifest(manifest)
+    write_json(output / "manifest.json", manifest)  # atomic publication after distributed validation
+
+
+def _distributed_cache_validation(cache, manifest, accelerator):
+    """Validate cache payloads concurrently, then check global row coverage."""
+    gathered = _distributed_call(
+        accelerator, "conditioning cache validation",
+        lambda: {"indices": verify_cache_shard(
+            cache, manifest, accelerator.process_index, accelerator.num_processes)}
+    )
+    all_indices = []
+    for item in gathered:
+        result = item.get("result") or {}
+        all_indices.extend(result.get("indices", []))
+    expected = set(range(len(manifest["rows"])))
+    if len(all_indices) != len(expected) or set(all_indices) != expected:
+        raise RuntimeError("Distributed cache validation did not cover every row exactly once")
 
 
 def run_cache(args):
@@ -607,7 +739,9 @@ def run_cache(args):
                              save_retries=args.cache_save_retries,
                              save_retry_backoff=args.cache_save_retry_backoff)
     accelerator.wait_for_everyone()
-    _main_rank_result(accelerator, lambda: _cache_manifest(args, accelerator, rows))
+    _distributed_call(accelerator, "cache manifest shard", lambda: _cache_manifest_shard(args, accelerator, rows))
+    accelerator.wait_for_everyone()
+    _main_rank_result(accelerator, lambda: _merge_cache_manifest(args, accelerator, rows))
     accelerator.end_training()
 
 def _parser():

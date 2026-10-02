@@ -96,8 +96,13 @@ def cache_path(directory, relative):
     return path
 
 
-def verify_cache(directory, manifest):
-    from samtok_edit21.training.objectives import validate_conditioning
+def validate_cache_manifest(manifest):
+    """Validate the manifest structure without opening cache payloads.
+
+    The full cache can contain hundreds of thousands of files.  This check is
+    deliberately limited to metadata, so callers can run payload validation in
+    parallel and use this function for the final O(1)-file manifest check.
+    """
     if manifest.get("format") != FORMAT:
         raise ValueError("Stage 2 requires samtok21-cache-v2; legacy cache needs audit/rebuild")
     identity = manifest.get("identity", {})
@@ -117,45 +122,99 @@ def verify_cache(directory, manifest):
         # Read compatibility for intermediate v2 smoke artifacts produced
         # before the compact digest optimization; new writers never use this.
         raise ValueError("Cache is missing source row identities")
-    seen_indices, seen_paths = set(), set()
+    seen_paths = set()
     for row in rows:
         original = {k: v for k, v in row.items() if not k.startswith("_cache")}
         validate_row(original)
         if original["sample_type"] == "edit_ntp":
             raise ValueError("Stage 2 cache cannot contain edit_ntp")
-        path = cache_path(directory, row.get("_cache_file"))
-        if path in seen_paths:
+        relative = row.get("_cache_file")
+        if not isinstance(relative, str) or not relative:
+            raise ValueError("Duplicate or missing cache shard")
+        # Reject absolute paths and paths escaping the cache root before any
+        # rank-specific worker uses the manifest. Track resolved paths so an
+        # equivalent ``a/../b`` spelling cannot duplicate a shard.
+        resolved = cache_path(".", relative)
+        if resolved in seen_paths:
             raise ValueError("Duplicate cache shard")
-        seen_paths.add(path)
+        seen_paths.add(resolved)
+    return identity, rows, ordered_hashes
+
+
+def _verify_cache_row(directory, row, identity, ordered_hashes, *, payload=None, side=None,
+                      supervision_identity=None):
+    """Validate one v2 cache row, optionally using already loaded objects."""
+    from samtok_edit21.training.objectives import validate_conditioning
+    original = {k: v for k, v in row.items() if not k.startswith("_cache")}
+    path = cache_path(directory, row.get("_cache_file"))
+    if side is None:
         side = json.loads(path.with_suffix(".json").read_text())
         index = side.get("row_index")
-        if not isinstance(index, int) or index in seen_indices:
+    else:
+        index = side.get("row_index")
+    if not isinstance(index, int) or not 0 <= index < len(ordered_hashes):
+        raise ValueError("Duplicate/invalid cache row index")
+    if ordered_hashes[index] != row_hash(original):
+        raise ValueError("Cache row index does not match source metadata")
+    if side.get("identity") != identity or side.get("row_hash") != row_hash(original):
+        raise ValueError("Mixed or stale cache identity/row metadata")
+    if side.get("sha256") != file_hash(path):
+        raise ValueError("Cache checksum mismatch")
+    if payload is None:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    if (payload.get("row_index") != index or payload.get("row_hash") != side["row_hash"]
+            or payload.get("identity") != identity):
+        raise ValueError("Cache payload provenance disagrees with sidecar")
+    inputs = payload["inputs"]
+    if "prompt_embeds_mask" not in inputs:
+        raise ValueError("Missing text attention mask")
+    sources = original["edit_image"]
+    source_count = 1 if isinstance(sources, str) else len(sources)
+    if len(inputs["edit_latents"]) != source_count:
+        raise ValueError("Source latent count differs from metadata image count")
+    validate_conditioning(inputs)
+    supervision = inputs.get("region_supervision")
+    if supervision_identity is not None or supervision is not None:
+        from samtok_edit21.regions.supervision import validate_supervision
+        validate_supervision(supervision, inputs, original, require_positions=True)
+        if supervision["identity"] != supervision_identity:
+            raise ValueError("Conditioning cache supervision identity mismatch")
+    return inputs
+
+
+def verify_cache_shard(directory, manifest, rank, world_size):
+    """Validate one rank's cache files for distributed cache/startup checks."""
+    identity, rows, ordered_hashes = validate_cache_manifest(manifest)
+    supervision_identity = manifest.get("supervision_identity")
+    expected_prefix = str(rank)
+    checked = []
+    for row in rows:
+        relative = row["_cache_file"]
+        parts = Path(relative).parts
+        if not parts or parts[0] != expected_prefix:
+            continue
+        if len(parts) < 2 or not parts[1].endswith(".pth"):
+            raise ValueError("Cache shard path must be rank/<index>.pth")
+        side = json.loads(cache_path(directory, relative).with_suffix(".json").read_text())
+        _verify_cache_row(directory, row, identity, ordered_hashes,
+                          side=side, supervision_identity=supervision_identity)
+        checked.append(side.get("row_index"))
+    if not checked:
+        raise ValueError(f"Cache manifest has no rows for rank {rank}/{world_size}")
+    return checked
+
+
+def verify_cache(directory, manifest):
+    identity, rows, ordered_hashes = validate_cache_manifest(manifest)
+    supervision_identity = manifest.get("supervision_identity")
+    seen_indices = set()
+    for row in rows:
+        _verify_cache_row(directory, row, identity, ordered_hashes,
+                          supervision_identity=supervision_identity)
+        index = json.loads((cache_path(directory, row["_cache_file"]).with_suffix(".json")).read_text())["row_index"]
+        if index in seen_indices:
             raise ValueError("Duplicate/invalid cache row index")
         seen_indices.add(index)
-        if not 0 <= index < len(rows) or ordered_hashes[index] != row_hash(original):
-            raise ValueError("Cache row index does not match source metadata")
-        if side.get("identity") != identity or side.get("row_hash") != row_hash(original):
-            raise ValueError("Mixed or stale cache identity/row metadata")
-        if side.get("sha256") != file_hash(path):
-            raise ValueError("Cache checksum mismatch")
-        payload = torch.load(path, map_location="cpu", weights_only=True)
-        if (payload.get("row_index") != index or payload.get("row_hash") != side["row_hash"]
-                or payload.get("identity") != identity):
-            raise ValueError("Cache payload provenance disagrees with sidecar")
-        inputs = payload["inputs"]
-        if "prompt_embeds_mask" not in inputs:
-            raise ValueError("Missing text attention mask")
-        sources = original["edit_image"]
-        source_count = 1 if isinstance(sources, str) else len(sources)
-        if len(inputs["edit_latents"]) != source_count:
-            raise ValueError("Source latent count differs from metadata image count")
-        validate_conditioning(inputs)
-        supervision = inputs.get("region_supervision")
-        if manifest.get("supervision_identity") is not None or supervision is not None:
-            from samtok_edit21.regions.supervision import validate_supervision
-            validate_supervision(supervision, inputs, original, require_positions=True)
-            if supervision["identity"] != manifest.get("supervision_identity"):
-                raise ValueError("Conditioning cache supervision identity mismatch")
     if seen_indices != set(range(len(rows))):
         raise ValueError("Cache row indices are not a complete unique range")
     return True
