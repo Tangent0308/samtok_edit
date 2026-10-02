@@ -1369,4 +1369,8 @@ BF16 不承诺跨不同计算形状或内核逐位一致，已经用独立数学
 
 `qwen21_full_4n_formal_003_resume_004` 已完成 clone、环境安装、CUDA readiness、32-rank collectives，并正确复用旧 `_003/stage1/adapter`。cache 阶段实际写入 65,250 个 `.pth` payload 后，node 0 和 node 3 的进度心跳在原子写入临时 JSON 时收到 `OSError: [Errno 122] Disk quota exceeded`；随后 `failure.json` 也因同一原因无法发布。该错误发生在用户级共享盘配额，不是全局磁盘容量、模型、数据、NCCL 或 loss 错误。`df -h` 仍显示全局空间充足，不能据此判断用户配额。
 
-当前 Stage 2 metadata 有 293,296 行，旧 partial cache 已有 65,250 个 payload，因此还需要约 228,046 个新的普通文件，另加临时写入和最终 manifest 的余量。旧 `_003/cache` 和 `_003/stage1/adapter` 必须保留；`_004` 只保留失败日志即可。重新运行前必须从同一用户配额下清理足够的旧实验小文件，且先让入口中的普通文件配额探针成功。清理后使用新 run ID `qwen21_full_4n_formal_003_resume_005`，继续指向同一 partial cache 并保留 `--resume-cache`；已完成 payload 会被安全复用。
+当前 Stage 2 metadata 有 293,296 行，partial cache 已有 65,250 个 payload。`_004` 只保留失败日志；数据和 `_003/stage1/adapter` 保留在原用户目录。为避免再次命中用户级配额，已创建 intern 实验根目录 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928`，并把 partial cache 从原路径
+`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003/cache`
+移动到
+`/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003/cache`。
+移动后校验为 65,250 个 `.pth`、32 个 rank 目录、0 个临时文件、0 个 `manifest.json`（仍是未完成 cache，符合续训输入）；原 cache 路径已不存在，Stage 1 adapter 和源数据未移动。新的 `qwen21_full_4n_formal_003_resume_005` 入口将数据与 Stage 1 从旧目录读取，并把 cache、Stage 2、日志、W&B 和完成标记全部输出到 intern 实验根目录；已完成 payload 会被 `--resume-cache` 安全复用。完整可复制入口见四机运行指南第 2.1 节。
