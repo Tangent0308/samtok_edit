@@ -1374,3 +1374,9 @@ BF16 不承诺跨不同计算形状或内核逐位一致，已经用独立数学
 移动到
 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003/cache`。
 移动后校验为 65,250 个 `.pth`、32 个 rank 目录、0 个临时文件、0 个 `manifest.json`（仍是未完成 cache，符合续训输入）；原 cache 路径已不存在，Stage 1 adapter 和源数据未移动。新的 `qwen21_full_4n_formal_003_resume_005` 入口将数据与 Stage 1 从旧目录读取，并把 cache、Stage 2、日志、W&B 和完成标记全部输出到 intern 实验根目录；已完成 payload 会被 `--resume-cache` 安全复用。完整可复制入口见四机运行指南第 2.1 节。
+
+### 20.7 2026-10-02 正式四机 `_005` cache payload 完成但串行 manifest 超时
+
+`qwen21_full_4n_formal_003_resume_005` 已成功复用并补齐 intern cache 的全部 293,296 个 `.pth` payload。四个节点的 cache 日志都输出了每个 rank 的 `cache_reused/cache_written` 汇总和 100% 进度；没有新的配额、I/O、CUDA、模型或数据错误。失败发生在旧版 `_cache_manifest`：主 rank 顺序读取全部 payload、写 sidecar 并执行完整校验，其他 31 个 rank 在 `broadcast_object_list` 等待。默认 `SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS=1800` 后，NCCL 报 `OpType=BROADCAST ... Timeout(ms)=1800000`；当时已有 7,637 个 rank-0 sidecar，`manifest.json` 尚未发布。
+
+修复提交 `99c6fc71008f5f52f8e58d43f4a01140893bdfef` 将 cache 汇总改为按 DDP rank 并行：每个 rank 只处理自己的 `cache/<rank>/`，校验 payload/identity/shape/region supervision，复用有效 sidecar 并写入 `manifest_shards/rank-XX.json`；主 rank 只做 shard coverage、row hash、路径规范检查并原子发布最终 manifest。Stage 2 启动校验也改为各 rank 并行读取自己的 payload，最后通过 gathered row indices 检查全局唯一完整覆盖；本地两进程 CPU 分布式模拟和现有 7 项 cache/train 测试均通过。续训入口更新为 `qwen21_full_4n_formal_003_resume_006`，继续指向同一个 intern cache，已完成 `.pth` 不会重新前向。完整入口见[四机运行指南第 2.1 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#21-stage-1-已完成后的四机续训入口)。

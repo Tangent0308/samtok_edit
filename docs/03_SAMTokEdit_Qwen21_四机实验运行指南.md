@@ -39,7 +39,7 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
-export SAMTOK_EDIT_COMMIT=f233581a65ec2390cc938c5ad9b21dd0a0f0be11
+export SAMTOK_EDIT_COMMIT=99c6fc71008f5f52f8e58d43f4a01140893bdfef
 # 如需固定版本，可在四个 worker 上设置同一个已推送的完整 40 位 SAMTOK_EDIT_COMMIT。
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
@@ -48,6 +48,7 @@ export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_full_9b_rules_003"
 export SAMTOK_RUN_ID=qwen21_full_4n_formal_004_layout
+export SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS="${SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS:-86400}"
 
 
 # ----- User settings -----
@@ -146,6 +147,8 @@ bash scripts/training/run_arnold.sh \
 
 续训使用新的 run ID，避免覆盖旧的 node claim 和日志；`--stage1-adapter` 直接指向旧用户目录中的 `_003` Stage 1 adapter，因此不会重新运行 Stage 1。已经生成的 partial cache 已从旧用户目录移动到 intern 目录；`--cache-output` 指向这个新位置，`--resume-cache` 让每个 rank 校验并复用已有 payload。数据和 Stage 1 adapter 仍从旧用户目录读取，新的 cache、Stage 2、日志和审计产物写入 intern 目录。cache 完成后，程序自动在新 run 下建立 `stage1`/`cache` 的引用别名，完整审计仍能检查原 Stage 1 记录和新 cache。旧 `_003` 的其他已完成结果不动；旧 cache 源路径已经移空，不要把它重新创建成第二份 cache。
 
+当前 cache 汇总使用 32-rank 并行：每个 rank 只处理自己的 `cache/<rank>/`，并生成 `manifest_shards/rank-XX.json`；主 rank 只合并这些紧凑索引并原子发布 `manifest.json`。Stage 2 启动时同样由各 rank 并行校验自己的 payload，最后检查全局 row coverage。已有 sidecar 若内容和当前 payload 一致会直接复用。`SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS` 设为 24 小时，只是为共享盘抖动保留控制面余量，正常汇总不应依赖串行等待。
+
 以下完整脚本仍按 ARNOLD 的四个 worker 启动；四个 worker 使用同一组用户变量，平台负责注入各自的 `ARNOLD_ID=0..3` 和 `ARNOLD_WORKER_HOSTS`：
 
 ```bash
@@ -153,7 +156,7 @@ bash scripts/training/run_arnold.sh \
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
-export SAMTOK_EDIT_COMMIT=f233581a65ec2390cc938c5ad9b21dd0a0f0be11
+export SAMTOK_EDIT_COMMIT=99c6fc71008f5f52f8e58d43f4a01140893bdfef
 export SAMTOK_SOURCE_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_TRAIN_DATA="$SAMTOK_SOURCE_EXPERIMENT/data/train_full_9b_rules_003"
@@ -164,10 +167,12 @@ export SAMTOK_CACHE_OUTPUT="$SAMTOK_EXPERIMENT/runs/qwen21_full_4n_formal_003/ca
 # resume_002 stopped before checkout because the shared filesystem quota was full;
 # resume_003 stopped after clone because its pinned SHA was mistyped;
 # resume_004 reached cache but stopped with Errno 122 (user quota exhausted)
-# after 65,250 payloads. Those payloads are now in SAMTOK_CACHE_OUTPUT under
-# the intern experiment root, which has the available quota for continuation.
+# after 65,250 payloads. resume_005 completed all .pth payloads but the old
+# serial manifest pass exceeded the 1800-second NCCL process-group timeout.
+# The payloads are now in SAMTOK_CACHE_OUTPUT under the intern experiment root.
 # Keep the source data and completed Stage 1 adapter in SAMTOK_SOURCE_EXPERIMENT.
-export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_005
+export SAMTOK_RUN_ID=qwen21_full_4n_formal_003_resume_006
+export SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS="${SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS:-86400}"
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
 # 用 ARNOLD secret 注入真实 key；不要把真实值写入脚本或日志。
@@ -228,7 +233,7 @@ bash scripts/training/run_arnold.sh \
   --cache-save-retry-backoff 2 --timeout 604800 --wandb-mode online
 ```
 
-续训产物在 `$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`；Stage 1 是 `$SAMTOK_SOURCE_EXPERIMENT/runs/qwen21_full_4n_formal_003/stage1/adapter` 的引用别名，Stage 2 adapter、W&B run、审计、完成标记和后续日志写入 intern 续训目录。成功条件是 `$SAMTOK_CACHE_OUTPUT/manifest.json` 完整发布，新目录出现 `audit_full.json`、`TRAINING_COMPLETE.json` 和 `SUCCESS.json`。若文件服务再次短暂拒绝写入，单个 rank 会自动退避重试；若作业被外部终止，使用新的续训 run ID，继续指向同一个 intern `SAMTOK_CACHE_OUTPUT` 并保留 `--resume-cache`，已完成 payload 不会重新前向计算。
+续训产物在 `$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`；Stage 1 是 `$SAMTOK_SOURCE_EXPERIMENT/runs/qwen21_full_4n_formal_003/stage1/adapter` 的引用别名，Stage 2 adapter、W&B run、审计、完成标记和后续日志写入 intern 续训目录。成功条件是 `$SAMTOK_CACHE_OUTPUT/manifest.json` 完整发布，新目录出现 `audit_full.json`、`TRAINING_COMPLETE.json` 和 `SUCCESS.json`。若文件服务再次短暂拒绝写入，单个 rank 会自动退避重试；若作业被外部终止，使用新的续训 run ID，继续指向同一个 intern `SAMTOK_CACHE_OUTPUT` 并保留 `--resume-cache`，已完成 payload 不会重新前向计算。`resume_006` 会复用 `resume_005` 已完成的全部 `.pth`，并用新代码并行完成 sidecar/manifest 汇总，不会重新运行 Stage 1 或重新前向已完成 payload。
 
 ## 3. 四机 debug 训练入口
 

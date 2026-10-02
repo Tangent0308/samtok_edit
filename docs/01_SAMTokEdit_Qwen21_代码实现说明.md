@@ -246,7 +246,7 @@ else:
     loss = loss * self.args.fm_weight
 ~~~
 
-缓存由 [run_cache](../src/samtok_edit21/training/engine.py#L560) 用冻结 TE+adapter 和 VAE 调用 prepare_fm(te_grad=False)，保存 prompt_embeds、source/target latents 与可选 region_supervision；噪声和 timestep 不保存，Stage 2 的 [flow_loss](../src/samtok_edit21/training/objectives.py#L261) 每次重新采样。缓存发布前，[cache manifest](../src/samtok_edit21/training/engine.py#L532) 和 [verify_cache](../src/samtok_edit21/data/provenance.py#L99) 核对 row hash、文件 checksum、模型/TE adapter/预处理身份和覆盖的样本行。最终 adapter 的 recipe 与 conditioning identity 由 [save_adapter](../src/samtok_edit21/training/objectives.py#L102) 和 [run_train](../src/samtok_edit21/training/engine.py#L516) 保存；产物字段见第 6 节。
+缓存由 [run_cache](../src/samtok_edit21/training/engine.py#L704) 用冻结 TE+adapter 和 VAE 调用 prepare_fm(te_grad=False)，保存 prompt_embeds、source/target latents 与可选 region_supervision；噪声和 timestep 不保存，Stage 2 的 [flow_loss](../src/samtok_edit21/training/objectives.py#L261) 每次重新采样。缓存发布前，[分片汇总](../src/samtok_edit21/training/engine.py#L596) 由每个 DDP rank 并行核对自己的 payload、sidecar checksum 和 row identity，主 rank 合并紧凑索引并原子发布 `manifest.json`；[verify_cache_shard](../src/samtok_edit21/data/provenance.py#L185) 在 Stage 2 启动时并行完成同样的 payload/模型/预处理检查。最终 adapter 的 recipe 与 conditioning identity 由 [save_adapter](../src/samtok_edit21/training/objectives.py#L102) 和 [run_train](../src/samtok_edit21/training/engine.py#L443) 保存；产物字段见第 6 节。
 
 ### 2.6 推理入口、两次调用与分辨率
 
@@ -1051,7 +1051,7 @@ for group in masks:
 
 当前四源全量数据没有 global 样本，文件内容、行数与现有训练配比不变。全部复核过程与范围见[实验记录第 20 节](02_SAMTokEdit_Qwen21_实验记录.md#20-2026-10-01全量资产复核与新-adapter-完整链路验证)。
 
-**共享文件系统 cache 的续写。** DiffSynth 的 `launch_data_process_task` 仍负责模型前向和 cache 数据格式；[项目适配层](../src/samtok_edit21/training/engine.py#L350) 增加 `--resume-cache`，并把写盘参数传给官方 runner。[写盘实现](../third_party/diffsynth/diffsynth/diffusion/runner.py#L175) 在重启时按 `_row_index` 读取并复用已经完成的 payload，损坏或身份不符的文件重新前向；新 payload 先写进 rank/进程唯一的临时文件，`fsync` 后用 `os.replace` 发布，`torch.save`/rename 的共享盘异常按指数退避和 rank jitter 重试。最后仍由 `_cache_manifest` 和 `verify_cache` 逐条检查 row hash、conditioning identity、tensor shape、sidecar checksum 和完整覆盖，未通过就不会进入 Stage 2。
+**共享文件系统 cache 的续写。** DiffSynth 的 `launch_data_process_task` 仍负责模型前向和 cache 数据格式；[项目适配层](../src/samtok_edit21/training/engine.py#L711) 增加 `--resume-cache`，并把写盘参数传给官方 runner。[写盘实现](../third_party/diffsynth/diffsynth/diffusion/runner.py#L175) 在重启时按 `_row_index` 读取并复用已经完成的 payload，损坏或身份不符的文件重新前向；新 payload 先写进 rank/进程唯一的临时文件，`fsync` 后用 `os.replace` 发布，`torch.save`/rename 的共享盘异常按指数退避和 rank jitter 重试。cache 汇总阶段由 [_cache_manifest_shard](../src/samtok_edit21/training/engine.py#L596) 让每个 rank 并行校验和生成 sidecar，再由 [_merge_cache_manifest](../src/samtok_edit21/training/engine.py#L649) 合并；Stage 2 入口由 [_distributed_cache_validation](../src/samtok_edit21/training/engine.py#L688) 并行验证各 rank 的 payload。已有且内容匹配的 sidecar 会复用，未通过就不会发布 `manifest.json` 或进入 Stage 2。
 
 四机编排器的 `--stage1-adapter` 会跳过 Stage 1 DDP，直接校验并复用已完成的 adapter；`--cache-output` 可以指向失败作业的 partial cache，`--resume-cache` 继续写入同一目录。新 run 根下只建立旧 Stage 1/cache 的引用别名，使正式全量审计仍能检查原 Stage 1 记录和续写后的 cache。入口和故障实例见[四机指南第 2.1 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#21-stage-1-已完成后的四机续训入口)。
 
