@@ -1380,3 +1380,174 @@ BF16 不承诺跨不同计算形状或内核逐位一致，已经用独立数学
 `qwen21_full_4n_formal_003_resume_005` 已成功复用并补齐 intern cache 的全部 293,296 个 `.pth` payload。四个节点的 cache 日志都输出了每个 rank 的 `cache_reused/cache_written` 汇总和 100% 进度；没有新的配额、I/O、CUDA、模型或数据错误。失败发生在旧版 `_cache_manifest`：主 rank 顺序读取全部 payload、写 sidecar 并执行完整校验，其他 31 个 rank 在 `broadcast_object_list` 等待。默认 `SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS=1800` 后，NCCL 报 `OpType=BROADCAST ... Timeout(ms)=1800000`；当时已有 7,637 个 rank-0 sidecar，`manifest.json` 尚未发布。
 
 修复提交 `99c6fc71008f5f52f8e58d43f4a01140893bdfef` 将 cache 汇总改为按 DDP rank 并行：每个 rank 只处理自己的 `cache/<rank>/`，校验 payload/identity/shape/region supervision，复用有效 sidecar 并写入 `manifest_shards/rank-XX.json`；主 rank 只做 shard coverage、row hash、路径规范检查并原子发布最终 manifest。Stage 2 启动校验也改为各 rank 并行读取自己的 payload，最后通过 gathered row indices 检查全局唯一完整覆盖；本地两进程 CPU 分布式模拟和现有 7 项 cache/train 测试均通过。续训入口更新为 `qwen21_full_4n_formal_003_resume_006`，继续指向同一个 intern cache，已完成 `.pth` 不会重新前向。完整入口见[四机运行指南第 2.1 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#21-stage-1-已完成后的四机续训入口)。
+
+## 21. 2026-10-05：正式全量训练与 656-case benchmark 评测（refactor 分支）
+
+本节记录当前正式模型和最新评测的完整配置、结果路径与分析。正式模型是四机 × 八卡运行得到的 `qwen21_full_4n_formal_003_resume_006`；评测是 `qwen21_stage2_benchmark_noref_aligned_20261004`。评测已完成生成、judge、汇总和案例包审计。
+
+**代码分支核对。** 正式训练的 run manifest 和四个节点的 topology 均记录 git commit `99c6fc71008f5f52f8e58d43f4a01140893bdfef`；该提交属于 `refactor/qwen21-layout` 的提交历史。评测脚本和案例包构建脚本实际使用 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`。因此本节训练与评测均以 refactor 分支代码为准；`qwen-image-2.1-dev` 上的同名记录不作为本次作业的代码来源。
+
+### 19.1 全量数据和训练协议
+
+训练读取四源全量数据：
+
+```text
+/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/
+```
+
+源编辑对共 98,574 条：
+
+| 源数据集 | 源编辑对 |
+|---|---:|
+| RefEdit | 7,804 |
+| CrispEdit | 37,728 |
+| ScaleEdit | 25,085 |
+| SAMTok Derived Edit Labeling | 27,957 |
+| 合计 | 98,574 |
+
+源图、目标图和数据集现成 mask 在训练前已经物化；训练阶段不重新做 noref 语义转换，也不重新推断数据类型。最终 metadata 和区域缓存分别为：[`stage1.jsonl`](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/stage1.jsonl>)、[`stage2.jsonl`](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/stage2.jsonl>)、[`regions/`](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/regions>)，数据报告是[`metadata_report.json`](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/metadata_report.json>)。
+
+Stage 1 共 390,657 行，混合 `edit_ntp`、`edit_umt:ref`、`edit_umt:noref` 和 plain `edit`；Stage 2 共 293,296 行，混合 `edit_umt:ref`、`edit_umt:noref` 和 plain `edit`。noref 转换失败的 1,213 条只保留 plain 编辑行，没有伪造 noref 监督。
+
+正式训练使用 Qwen-Image-2.1 DiT/VAE、Qwen3-VL-8B-SAMTok TE 和冻结发布 codec。四机 × 八卡的 world size 是 32；`num_workers=0`；最大图像面积是 `1,048,576` 像素，宽高按 32 的倍数对齐。
+
+### 19.2 两阶段训练配置
+
+Stage 1 联合适配 TE 的定位和编辑条件：
+
+- 每个 update 的全局比例为 `edit_ntp : edit_umt:ref : edit_umt:noref : edit = 3 : 2 : 2 : 1`。
+- `steps=3081`，`accumulation=8`，每 rank 24,648 个 microsteps。
+- LoRA rank=64、dropout=0.05、学习率 `4e-5`、weight decay=0.05、max grad norm=1.0。
+- `ntp_weight=0.05`、`fm_weight=1.0`。
+- cosine scheduler，warmup ratio=0.04，实际 warmup=124 个 optimizer update。
+- 区域加权开启：`region_weight=0.5`，`region_n_min=16`。
+- attention supervision 在 Stage 1 关闭（`attention_weight=0`）。
+- W&B online，project=`samtok-edit`，entity=`2200012743-peking-university`。
+
+Stage 2 冻结 Stage 1 TE 和缓存条件，只训练 DiT LoRA：
+
+- 每个 update 的全局比例为 `edit_umt:ref : edit_umt:noref : edit = 1 : 2 : 1`。
+- `steps=3081`，`accumulation=4`，每 rank 12,324 个 microsteps。
+- LoRA rank=32、dropout=0、学习率 `1e-4`、weight decay=0.01、max grad norm=1.0。
+- constant scheduler，warmup ratio=0.025，实际 warmup=78 个 optimizer update。
+- 区域加权开启：`region_weight=0.5`。
+- attention supervision 开启：`attention_weight=0.1`、`attention_read_weight=0.5`、层 `[7,11,15,19,23]`，前 500 个 optimizer update warmup。
+- W&B online，run 名为 `qwen21_full_4n_formal_003_resume_006-stage2`。
+
+损失方面，Stage 1 对 NTP 行计算 `0.05 × L_NTP`，对 FM 行计算 flow matching loss；合格局部行增加区域内/区域外加权项。Stage 2 从 cache 读取 TE 条件，计算基础 FM、区域加权项和 warmup 后的 attention supervision；plain 行保留基础 FM 路径。训练日志中的 `loss_fm`、`loss_fm_basic`、`loss_total`、`weighted_total`、`region_inside_mse`、`region_outside_mse`、`attn_main` 和 `attn_read` 是不同分量，不能直接相加成另一个总 loss。
+
+正式训练验收：
+
+- Stage 1、Stage 2 均完成 3081 个 optimizer update，完成标志见[`TRAINING_COMPLETE.json`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003_resume_006/TRAINING_COMPLETE.json>)。
+- 293,296 行 Stage 2 cache 的 manifest、row hash、checksum、模型身份和 TE adapter identity 校验通过。
+- Stage 1 梯度审计的 2,505 次零 backward 都标为 `fm_scheduler_weight_zero`；Stage 2 的 505 次标为有限 `finite_zero_backward`。没有 NaN/Inf，冻结参数没有非法梯度，审计总体通过。
+- Stage 2 末步指标为 `loss_fm=0.11063`、`loss_fm_basic=0.10055`、`loss_total=0.11178`、`region_inside_mse=0.18095`、`region_outside_mse=0.10377`、`attn_main=0.00856`、`attn_read=0.01360`。
+
+关键训练结果：[`qwen21_full_4n_formal_003_resume_006`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003_resume_006>)、[`audit_full.json`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003_resume_006/audit_full.json>)、[`stage2/training_metrics.jsonl`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003_resume_006/stage2/training_metrics.jsonl>)、[`stage2/adapter`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003_resume_006/stage2/adapter>)。评测使用的 Stage 1 adapter 是[`stage1/adapter`](</mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003/stage1/adapter>)。
+
+### 19.3 Benchmark、输入和推理设置
+
+评测使用 `/opt/tiger/tanyue/samtok_edit_benchmark` 的 656-case benchmark：532 个 CompBench、24 个 HumanEdit、100 个 MIRAGE。每个 case 有 `text_only`、`mask_annotation`、`box_annotation`、`point_annotation` 四种 setting，编辑类型为 add、remove、replace、mixed。
+
+比较的三个方法是 Qwen-Image-2.1 baseline、SAMTok Stage 2 step-12000 和 SAMTok Stage 2 final（step-12324）。Baseline 遵循 two-image locator protocol：text-only 输入一张干净 source；mask/box/point 输入 `[clean source, locator-only 标记图]`，prompt 指示编辑 Image 1 的 Image 2 区域并移除 locator 标记。baseline 不接收 target 图或 evaluation mask。
+
+SAMTok 输入如下：
+
+- text-only：单张 source，先用 Stage 1 TE localization 生成 mask JSON，再把 span 插回原指令，走 ref conditioning。
+- mask：使用 benchmark mask，经 SAMTok codec 编码为四 token span。
+- box：benchmark box 经 SAM2 生成 proposals，选最高 score，再经 codec 编码。
+- point：benchmark point 经 SAM2 生成 proposals，选最高 score，再经 codec 编码。
+- mask/box/point 最终只向 DiT 传一张干净 source 和 inline SAMTok tokens，不传 locator 可视化图。
+
+显式区域评测 prompt 为：
+
+```text
+remove  → Remove the object in this region <mask>.
+replace → Replace the object in this region <mask> with NEW_CONTENT.
+add     → Add NEW_CONTENT in this region <mask>.
+mixed   → 每个 atomic clause 独立编译，再按 region 顺序插入多个 span。
+```
+
+所有生成使用 native 画布约 1024²、纵横比保持并按 32 对齐、40 denoising steps、CFG=1.0、seed=0、KV cache 开启。native RGBA 先保存；judge 使用白底 alpha composite 后缩放回 source 原始尺寸的 RGB。每个 sidecar 记录实际 prompt、输入图片、checkpoint、尺寸、seed、steps 和 cfg。
+
+需要明确的协议限制是：当前显式区域 prompt 使用 `samtok_native_noref_aligned_v1`，在区域词汇和 token 结构上与训练一致，但 replace/attribute 等句法没有逐字复用训练 metadata 中的 `noref_instruction`。例如训练中有 `Change the object in this region <mask> to ...`，当前评测使用 `Replace the object in this region <mask> with ...`。因此本次结果是语义对齐的 noref 评测，而不是逐字复现训练 prompt 分布。
+
+### 19.4 Judge 评分
+
+官方 judge 使用 Qwen3.8-27B、vLLM 多卡副本和 `pair_v2` rubric。本次共有 7,872 条记录（3 方法 × 4 setting × 656 case），全部 `status=ok`。一条 text-only 记录曾出现 JSON 序列化错误，随后用同一 rubric 做了一次格式重试，没有人工替换分数。
+
+每条输出分别得到三个 0–4 分：
+
+- `edit`（E，编辑完成度）：目标、操作、属性、数量是否完成。
+- `preservation`（P，内容保持度）：未要求修改的内容是否保持。
+- `quality`（Q，视觉质量）：接缝、光晕、涂抹、结构缺陷等。
+
+E=4 表示所有目标和属性完成，P=4 表示未要求内容保持，Q=4 表示无明显新增缺陷。`strict_success` 要求编辑完成且 P/Q 达到 benchmark 阈值；本次不构造 E/P/Q 加权总分。
+
+结果文件：[`qwen21_stage2_benchmark_noref_aligned_20261004`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004>)、[`generation_config.json`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/generation_config.json>)、[`score_summary.json`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/score_summary.json>)、[`EVALUATION_REPORT.md`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/EVALUATION_REPORT.md>)、[`CASE_RECORDS.jsonl`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/CASE_RECORDS.jsonl>)、[`CASE_ANALYSIS.md`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/CASE_ANALYSIS.md>)、[`case_review_package.zip`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/case_review_package.zip>)。
+
+### 19.5 分数和案例分析
+
+每个 setting 的均值（n=656）如下：
+
+| 方法 | setting | E | P | Q | strict success |
+|---|---|---:|---:|---:|---:|
+| Qwen-Image-2.1 | box | 2.8354 | 3.7820 | 3.6601 | 0.5930 |
+| Qwen-Image-2.1 | mask | 2.9939 | 3.8323 | 3.6723 | 0.6448 |
+| Qwen-Image-2.1 | point | 2.0381 | 3.7774 | 3.6905 | 0.3948 |
+| Qwen-Image-2.1 | text | 2.8750 | 3.7637 | 3.7622 | 0.5884 |
+| SAMTok final | box | 3.3095 | 3.4131 | 3.4101 | 0.5808 |
+| SAMTok final | mask | 3.3003 | 3.3948 | 3.4101 | 0.6021 |
+| SAMTok final | point | 3.2058 | 3.3857 | 3.4009 | 0.5686 |
+| SAMTok final | text | 3.1098 | 2.8933 | 3.2774 | 0.4268 |
+| SAMTok step-12000 | box | 3.4024 | 3.2683 | 3.3598 | 0.5732 |
+| SAMTok step-12000 | mask | 3.4085 | 3.2942 | 3.3277 | 0.5808 |
+| SAMTok step-12000 | point | 3.2713 | 3.1966 | 3.3521 | 0.5366 |
+| SAMTok step-12000 | text | 3.1677 | 2.5046 | 3.0549 | 0.3262 |
+
+四 setting 的 macro 平均：
+
+| 方法 | E | P | Q | strict success |
+|---|---:|---:|---:|---:|
+| Qwen-Image-2.1 | 2.6856 | 3.7889 | 3.6963 | 0.5553 |
+| SAMTok final | 3.2313 | 3.2717 | 3.3746 | 0.5446 |
+| SAMTok step-12000 | 3.3125 | 3.0659 | 3.2736 | 0.5042 |
+
+相对 baseline，SAMTok final 的 E 提升为 box +0.4741、mask +0.3064、point +1.1677、text +0.2348；代价是 P/Q 普遍下降。point 的提升最明显，说明 token 对点输入的空间绑定帮助很大，但 P 仍低于 baseline。step-12000 的 E 略高于 final，而 final 的 P/Q 和 strict success 更好，说明后续训练更偏向稳定性和画面质量。
+
+人工查看的典型案例：
+
+- **Case 0000，add 灰色鱼：** text-only 的鱼偏离目标区域；mask/box/point 都能绑定到左侧区域，但头朝下等姿态仍有误差。token 改善了位置，却不能保证全部属性。
+- **Case 0233，remove 左侧鱼：** SAMTok 四种 setting 都能删除左侧鱼并保留大型橙色鱼；baseline 的 mask/box 更容易错绑。这是显式空间条件提升 E 的正例。
+- **Case 0300，remove 左侧狗：** SAMTok 删除目标时也擦除相邻狗或大片背景，说明局部边界和区域外保真不足。
+- **Case 0556，mixed 龟壳：** 两个 span 绑定正确，雪大体落在右侧目标附近，但颜色和雪的范围会扩散；text-only 会把雪放到地面。多区域绑定正确不等于每个 atomic edit 都自然完成。
+- **Case 0557，清扫车部件属性：** 显式条件通常把红色/蓝色绑定到目标车辆部件，baseline 的目标对应关系更不稳定，是多 span 条件有效的正例。
+- **Case 0559，脱雨衣并改衣服颜色：** SAMTok 找对雨衣但删除后损伤人体躯干；右侧颜色编辑更稳定，baseline 的保真更好，是“定位正确但修补过宽”的反例。
+- **Case 0470，replace 骑行者：** SAMTok 能在道路中央替换出白衣人物并保留道路上下文，baseline 的 mask/box/point 边缘伪影更明显。
+
+### 19.6 当前结论
+
+正式训练的工程链路已经跑通：全量数据、两阶段 schedule、Stage 1 TE 到 Stage 2 DiT 的 cache identity、区域加权、Stage 2 attention supervision、W&B、梯度审计和 checkpoint 保存均有记录并通过审计。
+
+方法层面，当前最清楚的收益是显式区域输入下的空间绑定和编辑完成度，尤其是 point、remove 和部分多区域属性编辑。主要问题是区域外保真和局部修补边界：模型经常找对区域但改得过宽，导致 P/Q 下降；mixed、服装去除、相邻同类实例和细小部件仍是高风险场景。当前结果支持“方法对空间绑定有效”，不支持“已经全面优于 Qwen-Image-2.1”。另外，当前 prompt 是语义对齐 noref 而非逐字训练 noref；若研究 prompt 分布影响，应再用训练 metadata 的 noref 编译器做严格对照。
+
+### 19.7 评测结果目录
+
+评测目录已保留配置、条件缓存、native/RGB 输出、sidecar、judge manifest、原始日志、逐 case 记录和案例包；清理了运行结束遗留的 pid、lock、Python 缓存和空 postprocess 日志。目录索引见[`RESULTS_INDEX.md`](</mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/RESULTS_INDEX.md>)。
+
+```text
+qwen21_stage2_benchmark_noref_aligned_20261004/
+├── generation_config.json       # 模型、checkpoint、setting、采样和尺寸配置
+├── prompts/                    # prompt policy 和实际 prompt
+├── conditioning/               # 8 个 rank 的定位/codec 条件缓存
+├── checkpoints/                 # step12000/final 的 RGBA、RGB 和 sidecar
+├── judge/                       # judge manifest、配置、日志和恢复记录
+├── logs/                        # generation/judge/postprocess 日志
+├── code/                        # 评测和汇总脚本
+├── score_summary.json           # 汇总分数
+├── CASE_RECORDS.jsonl           # 7872 条逐样本评分
+├── CASE_ANALYSIS.md             # 656 case 分析
+├── EVALUATION_REPORT.md         # 官方汇总报告
+├── final_audit.json             # 完整性审计
+└── case_review_package.zip      # 离线案例浏览包
+```
