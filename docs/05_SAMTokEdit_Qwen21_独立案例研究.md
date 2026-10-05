@@ -2,7 +2,7 @@
 
 本报告只根据 source、target（有提供时）、Qwen-Image-2.1 baseline 输出、SAMTok Stage 2 step-12000 输出和 final 输出的图像内容做独立判断。写作和筛选过程不读取 Judge 的 E/P/Q/strict 分数；Judge 结果仅作为已有实验记录中的另一条自动化证据，不参与本报告的标签。
 
-本次先对 656 个 case 的 mask setting 生成了全量缩略图巡检，再按数据集和编辑类型均衡抽取 48 个 case，逐一查看四种 setting（text-only、mask、box、point）下的 source / target / baseline / step-12000 / final。详细图像位于评测结果目录的 `independent_case_study/figures/`。MIRAGE 没有统一 target 图时，按 instruction 和 source 的局部结构判断是否完成及是否过度修改。
+本次先对 656 个 case 的 mask setting 生成了全量缩略图巡检，再按数据集和编辑类型均衡抽取 48 个 case，逐一查看四种 setting（text-only、mask、box、point）下的 source / target / SAMTok token decode / baseline / step-12000 / final。详细图像位于评测结果目录的 `independent_case_study/figures/`。MIRAGE 没有统一 target 图时，按 instruction 和 source 的局部结构判断是否完成及是否过度修改。
 
 ## 1. 覆盖范围与案例清单
 
@@ -86,7 +86,33 @@
 
 ## 2. 逐案例图像与观察
 
-每张图包含四行 setting；每行五列依次为 source、target、baseline、step-12000、final。图中 target 为空表示 benchmark 没有统一 target 文件（主要是 MIRAGE），此时按照 instruction 判断。
+## 2.1 mask token 的来源与图中的 token decode 列
+
+图中新增的 **SAMTok token decode** 列不是生成结果，也不是 benchmark 的 target。它是把实际送入 DiT 的 prompt 中的 `<|mt_start|>...<|mt_end|>` token span 再交给冻结的 SAMTok codec 解码，并将解码出的区域以红色叠加到 source 上。因而它回答的是“模型实际收到的空间区域在哪里”，可以用来检查 token 编码/插入是否正确。生成脚本在评测结果目录的 `code/build_case_package.py:134-144`，核心调用是 `codec.decode(source, token_prompt)`；训练/推理条件构造在评测结果目录的 `code/samtok_stage2_benchmark_noref_aligned.py:242-302`。
+
+不同 setting 的 token 来源如下：
+
+- **text-only**：先把原始带位置描述的 `with_location_reference` 指令交给 Stage 1 ref-localization（`samtok_stage2_benchmark_noref_aligned.py:266-272`）。定位器成功时，会把预测的区域 span 插回原始语言 prompt，图中的 token decode 展示这个预测区域；如果定位器没有产生 span，则记录为 `mode=direct`，prompt 可能没有可解码的 mask token。
+- **mask_annotation**：直接读取 benchmark 已提供的 region mask（`...:279-283`），用 SAMTok codec 编码成 token span。这里的输入 mask 就是 benchmark 的数据 mask，不再重新推断或校正。
+- **box_annotation**：把 benchmark 的 box 交给 SAMTok/SAM2 segmentation，取 score 最高的 proposal（`...:284-287`），再用 codec 编码。
+- **point_annotation**：把 benchmark 的 point 交给 segmentation，取 score 最高的 proposal（`...:288-292`），再用 codec 编码。
+- **多区域 case**：每个 region 单独得到一个 span，并按原始 region 顺序重排（`...:293-297`）；noref 编译器再将各 span 插入对应的 atomic clause。token decode 列会把所有 span 解码出的区域叠加显示。
+
+因此，token decode 只验证“token 所表达的空间区域”，不能直接证明最终编辑完成；mask/box/point 的 token decode 也可能因为其输入方式不同而不完全相同。
+
+## 2.2 text-only 与显式区域 setting 的 DiT prompt
+
+两类 setting 共享同一套 mask-token 边界语法和同一个 DiT 编辑接口：source image 加 text prompt，prompt 中有区域时使用 `<|mt_start|>...<|mt_end|>`。但完整 prompt 字符串、token 的来源和 conditioning route 并不相同。
+
+- **text-only** 使用 `prompt_variant=text_only_ref_localization`：保留原始 `with_location_reference` 的自然语言描述，由 Stage 1 定位器在原句中插入预测 span；成功时是 `mode=inline`，失败 fallback 时是 `mode=direct`，可能完全不含 mask token。
+- **mask/box/point** 使用 `prompt_variant=samtok_native_noref_aligned_v1`：由 `build_aligned_noref_prompt`（`...:171-239`）生成 noref 模板，例如 `Remove <token span>.`、`Add ... in this region <token span>.`、`Change this region <token span> to red.`，统一走 `mode=inline`。mask/box/point 的差别只在 token span 的空间来源。
+
+例如 case `0000` 的 text-only prompt 保留“add a gray fish on the leftmost ...”的原始位置语言，显式 mask prompt 则是 `Add a gray fish ... in this region <span>.`；两者的 token 边界格式一致，但自然语言模板和区域来源不同。所以不能把 text-only 与其他 setting 说成“prompt 完全相同”，更准确的说法是：它们在 DiT 侧兼容同一 token 接口，但分别测试语言定位和显式区域条件。
+
+## 2.3 详细图的列定义
+
+每张图包含四行 setting；每行六列依次为 **source、target、SAMTok token decode、baseline、step-12000、final**。其中 token decode 是输入区域可视化，baseline/step-12000/final 才是三组生成输出。图中 target 为空表示 benchmark 没有统一 target 文件（主要是 MIRAGE），此时按照 instruction 判断。
+
 
 ### 0000｜compbench｜add
 
