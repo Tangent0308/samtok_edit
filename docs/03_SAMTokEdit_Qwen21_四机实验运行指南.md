@@ -32,13 +32,13 @@ ARNOLD 作业配置为 4 workers × 8 GPUs。平台向每个 worker 注入 `ARNO
 
 `--full-training` 自动让 Stage 1 复用同目录 `metadata_report.json`：全局 rank 0 核对报告就绪状态、metadata/region manifest hash、分辨率与计数，再广播结果。远程启动不再对全量图片和 coverage 逐条预扫描；正常读取 metadata、构造 schedule 和训练消费时的文件验证保留。Stage 1 之后新生成的 conditioning cache 仍需验证。详细实现见[代码说明第 13 节](01_SAMTokEdit_Qwen21_代码实现说明.md#13-正式训练复用已准备数据的验收报告)。无需重新打标或重建当前数据。
 
-当前实现接受官方零 FM 权重产生的有限零梯度，并仍拒绝梯度断链/非有限值/冻结参数误更新；loss、累积和 LR 配方保持原样。本地 68 项检查、八卡解析模型的更新轨迹对照及完整基座的小分辨率八卡训练路径均通过；完整基座 Stage 1 为 1 update、Stage 2 为 2 updates，Stage 2 只读复用已有 cache，此前修复的验证范围见实验记录第 18 节；本次整理前后的权重/推理一致性及入口验证见第 19 节。旧 `_002` 已失败退出且没有 checkpoint，不能从第三步恢复；请保留 `_001/_002` 的共享日志。本页当前代码来自 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`，分支 `refactor/qwen21-layout`。环境安装会安装项目 src 包及 `third_party/diffsynth`，标注环境仅安装项目基础包，不引入训练依赖。数据和旧日志路径保持原样。源码身份 hash 随布局改变，新任务必须使用新 run ID；不要把新代码用于旧 noref 的原地续写。已有 `_003` 标注与正式 metadata 无需重建。四个 worker 使用下面同一个新 ID 提交，确保 clone 到本次修复后的分支；如果设置了旧 `SAMTOK_EDIT_COMMIT`，须清除或改为当前整理分支的已推送 SHA，不复用旧节点目录。
+当前实现接受官方零 FM 权重产生的有限零梯度，并仍拒绝梯度断链/非有限值/冻结参数误更新；loss、累积和 LR 配方保持原样。本地 68 项检查、八卡解析模型的更新轨迹对照及完整基座的小分辨率八卡训练路径均通过；完整基座 Stage 1 为 1 update、Stage 2 为 2 updates，Stage 2 只读复用已有 cache，此前修复的验证范围见实验记录第 18 节；本次整理前后的权重/推理一致性及入口验证见第 19 节。旧 `_002` 已失败退出且没有 checkpoint，不能从第三步恢复；请保留 `_001/_002` 的共享日志。本页当前代码来自 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev`，分支 `qwen-image-2.1-dev`。环境安装会安装项目 src 包及 `third_party/diffsynth`，标注环境仅安装项目基础包，不引入训练依赖。数据和旧日志路径保持原样。源码身份 hash 随布局改变，新任务必须使用新 run ID；不要把新代码用于旧 noref 的原地续写。已有 `_003` 标注与正式 metadata 无需重建。四个 worker 使用下面同一个新 ID 提交，确保 clone 到本次修复后的分支；如果设置了旧 `SAMTOK_EDIT_COMMIT`，须清除或改为当前整理分支的已推送 SHA，不复用旧节点目录。
 
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
-export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
+export SAMTOK_EDIT_BRANCH=qwen-image-2.1-dev
 export SAMTOK_EDIT_COMMIT=99c6fc71008f5f52f8e58d43f4a01140893bdfef
 # 如需固定版本，可在四个 worker 上设置同一个已推送的完整 40 位 SAMTOK_EDIT_COMMIT。
 export WANDB_ENTITY=2200012743-peking-university
@@ -60,7 +60,7 @@ export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:?Set the shared experiment directo
 export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
 export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-refactor/qwen21-layout}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
 
 # ----- ARNOLD checks -----
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
@@ -155,7 +155,7 @@ bash scripts/training/run_arnold.sh \
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
-export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
+export SAMTOK_EDIT_BRANCH=qwen-image-2.1-dev
 export SAMTOK_EDIT_COMMIT=99c6fc71008f5f52f8e58d43f4a01140893bdfef
 export SAMTOK_SOURCE_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928
@@ -243,7 +243,7 @@ bash scripts/training/run_arnold.sh \
 #!/usr/bin/env bash
 set -Eeuo pipefail
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
-export SAMTOK_EDIT_BRANCH=refactor/qwen21-layout
+export SAMTOK_EDIT_BRANCH=qwen-image-2.1-dev
 # 如需固定版本，可在四个 worker 上设置同一个已推送的完整 40 位 SAMTOK_EDIT_COMMIT。
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
@@ -263,7 +263,7 @@ export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:?Set the shared experiment directo
 export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
 export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-refactor/qwen21-layout}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
 
 # ----- ARNOLD checks -----
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
@@ -363,7 +363,7 @@ export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
 export SAMTOK_ANNOTATION_ATTEMPTS="${SAMTOK_ANNOTATION_ATTEMPTS:-3}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-refactor/qwen21-layout}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
 # Optional: pin a pushed commit. The revised prompt/protocol needs a fresh run.
 # Resume only a run made with identical code, model, input and sharding.
 export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"
@@ -480,4 +480,4 @@ cat "$RUN/TRAINING_COMPLETE.json" "$RUN/SUCCESS.json"
 
 新 clone 的第二轮复核已完成全量所有资产的读取校验、114 项测试，以及 max_pixels=65,536 和正式 1,048,576 的本地八卡新 Stage 1 → 新 cache → Stage 2。新 adapter 推理、默认 1,024² 输出、实际 CLI、Qwen3.5-9B/vLLM、IPv6 NCCL 及上述三套文档入口的 12 个模拟 ARNOLD rank 均通过。发现并修复了数据准备器误拒绝相同 ref/noref 去重及新构建漏组内排序的边界；当前四源数据和正式超参数不变，不必重建 `train_full_9b_rules_003`。
 
-正式入口仍按本文件配置 ARNOLD/W&B、clone `refactor/qwen21-layout` 并运行，不增加远程全量资产预检。此次未提交新的物理四机作业，没有重启既有 `_003`。实际 32-rank 网络与正式运行仍由后续 ARNOLD 实验验收，详细命令、指标与边界见[实验记录第 20 节](02_SAMTokEdit_Qwen21_实验记录.md#20-2026-10-01全量资产复核与新-adapter-完整链路验证)。
+正式入口仍按本文件配置 ARNOLD/W&B、clone `qwen-image-2.1-dev` 并运行，不增加远程全量资产预检。此次未提交新的物理四机作业，没有重启既有 `_003`。实际 32-rank 网络与正式运行仍由后续 ARNOLD 实验验收，详细命令、指标与边界见[实验记录第 20 节](02_SAMTokEdit_Qwen21_实验记录.md#20-2026-10-01全量资产复核与新-adapter-完整链路验证)。

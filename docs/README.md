@@ -9,4 +9,4 @@
 
 历史原始记录保存在 [`archive/`](archive/)；其中的命令和路径用于追溯，不作为当前入口。
 
-当前开发 checkout：`/opt/tiger/tanyue/samtok_edit_qwen21_refactor`，分支 `refactor/qwen21-layout`。实现说明链接指向当前 src/third_party；实验历史保留旧运行证据。
+当前开发 checkout：`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev`，分支 `qwen-image-2.1-dev`。实现说明链接指向当前 src/third_party；实验历史保留旧运行证据。

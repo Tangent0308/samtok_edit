@@ -1,6 +1,6 @@
 # SAMTokEdit Qwen-Image-2.1 实验记录
 
-2026-10-01 当前开发 checkout 为 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`（`refactor/qwen21-layout`），此次整理与验证见第 19 节。此前实验仍来自原分支与旧 checkout，历史 commit、run ID、数据/结果路径保持记录；下文现存模块的代码链接及可复用命令已映射到新布局，早期已移除的临时脚本只用于追溯。正在运行的正式 `_003` 不因此次整理被更新或重启。
+2026-10-01 当前开发 checkout 为 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev`（`qwen-image-2.1-dev`），此次整理与验证见第 19 节。此前实验仍来自原分支与旧 checkout，历史 commit、run ID、数据/结果路径保持记录；下文现存模块的代码链接及可复用命令已映射到新布局，早期已移除的临时脚本只用于追溯。正在运行的正式 `_003` 不因此次整理被更新或重启。
 
 2026-09-30 最新正式 `_002` 零梯度误报修复及本地更新链路验证见第 18 节；此前启动预检修复见第 17 节；全量数据准备结果见第 15 节。2026-09-29 本地 noref 数据转换记录见[9B 规则回退与四机复跑](archive/SAMTokEdit_Qwen21_noref规则回退与四机复跑.md)：最终本地四卡 436 条，398 条模型通过、24 条规则回退通过、14 条仍失败；全量 98,574 条输入关联检查通过。此项是文本数据转换验证，不是两阶段训练结果。
 
@@ -1188,7 +1188,7 @@ PYTHONPATH=src:third_party/diffsynth ACCELERATE_USE_CPU=false OMP_NUM_THREADS=1 
 
 **目的**：把现有方法整理为可安装、可复用的 DiffSynth/SAMTok 扩展，移除根目录兼容转发层，保持训练/推理计算和当前数据不变。没有重启或修改运行中的正式 `_003`。
 
-**代码与备份**：原目录 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev` 保留，其基准 commit 为 `ba9e5e78adf8f97c624e29f3752a28c93bb05fa5`，包含原先未提交的 doc 修改。新 clone 为 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`，独立分支 `refactor/qwen21-layout`。按原工作区逐文件 SHA256 核对，**1,815 个 tracked 文件保持原样**。
+**代码与备份**：此前的整理 checkout 已将内容推送为 `qwen-image-2.1-dev`，当前唯一保留的本地目录为 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev`。原旧目录内容已由当前实现替换；按原工作区逐文件 SHA256 核对，**1,815 个 tracked 文件保持原样**。
 
 **组织改动**：项目实现移至 `src/samtok_edit21/{data,models,training,regions,preparation,distributed}`；DiffSynth 和 SAMTok 分别移至 `third_party/diffsynth`、`third_party/samtok`。脚本分为 `scripts/training`、`scripts/annotation`、`scripts/diagnostics`。新增 `pyproject.toml`、延迟公共 API 和统一 CLI；只为四机 launcher 的 checkout 资产增加根路径解析。API 导出实际实现对象，不再包装模型前向。删除 22 个顶层兼容别名；旧 `python -m samtok_edit21.train` 入口改为 `python -m samtok_edit21 train` 或 `python -m samtok_edit21.training.engine train`。
 
@@ -1210,7 +1210,7 @@ PYTHONPATH=src:third_party/diffsynth ACCELERATE_USE_CPU=false OMP_NUM_THREADS=1 
 本轮全部新增调试脚本、环境与结果位于 `/tmp`。主记录目录：`/tmp/samtok21-layout-refactor-20261001`。独立安装环境 `/tmp/samtok21-layout-env`，wheel 验证环境 `/tmp/samtok21-layout-wheel-env`；两者只读复用已验收训练环境的第三方依赖，不修改原环境。项目和 DiffSynth 分别在新环境重新安装。两种环境依赖检查均为 121 packages compatible。标注单独使用 `/tmp/samtok21-layout-annotation-env`，同样只读复用已验收的 9B/vLLM 依赖；实际标注环境脚本安装当前包后为 185 packages compatible。
 
 ```bash
-cd /opt/tiger/tanyue/samtok_edit_qwen21_refactor
+cd /opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev
 # 可在全新环境按 requirements.txt 安装；本地对照使用独立临时环境。
 uv pip install --python /tmp/samtok21-layout-env/bin/python \
   --no-deps --no-build-isolation -e ./third_party/diffsynth -e .
@@ -1258,7 +1258,7 @@ python /tmp/samtok21-layout-refactor-20261001/check_entries.py
 
 ## 20. 2026-10-01：全量资产复核与新 adapter 完整链路验证
 
-**目的与范围。** 在新克隆 `samtok_edit_qwen21_refactor` 中做第二轮独立复核，补齐第 19 节尚未覆盖的新 Stage 1 → 新条件缓存 → Stage 2 → 推理，并测试正式分辨率。全部新增测试代码、数据、日志、adapter、PNG、wheel 和环境均在 `/tmp`；没有重启或改动远程正式 `_003`，也没有改动原备份和正式数据。主目录为 `/tmp/samtok21-comprehensive-audit-20261001`。
+**目的与范围。** 在当前克隆 `samtok_edit_qwen-image-2.1-dev` 中做第二轮独立复核，补齐第 19 节尚未覆盖的新 Stage 1 → 新条件缓存 → Stage 2 → 推理，并测试正式分辨率。全部新增测试代码、数据、日志、adapter、PNG、wheel 和环境均在 `/tmp`；没有重启或改动远程正式 `_003`，也没有改动原备份和正式数据。主目录为 `/tmp/samtok21-comprehensive-audit-20261001`。
 
 ### 20.1 发现并修复的数据准备边界
 
@@ -1273,7 +1273,7 @@ python /tmp/samtok21-layout-refactor-20261001/check_entries.py
 小样本从当前已通过来源筛选的四源全量数据与编码记录中抽取：24 个 source pairs，refedit/crispedit/scaleedit/derived 分别为 4/7/8/5。覆盖 add/remove/replace/attribute/action/text/composite 七种实际类型和多实例 composite；含 21 个成功语义转换及 3 个历史失败的 plain-only 样本。形成 Stage 1=87 行、Stage 2=66 行。图片和已有 mask 只读引用正式资产；临时 JSONL、区域缓存及训练输出均在上述 `/tmp` 目录。
 
 ```bash
-cd /opt/tiger/tanyue/samtok_edit_qwen21_refactor
+cd /opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev
 export PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1
 AUDIT=/tmp/samtok21-comprehensive-audit-20261001
 PY=/tmp/samtok21-layout-env/bin/python
@@ -1385,7 +1385,7 @@ BF16 不承诺跨不同计算形状或内核逐位一致，已经用独立数学
 
 本节记录当前正式模型和最新评测的完整配置、结果路径与分析。正式模型是四机 × 八卡运行得到的 `qwen21_full_4n_formal_003_resume_006`；评测是 `qwen21_stage2_benchmark_noref_aligned_20261004`。评测已完成生成、judge、汇总和案例包审计。
 
-**代码分支核对。** 正式训练的 run manifest 和四个节点的 topology 均记录 git commit `99c6fc71008f5f52f8e58d43f4a01140893bdfef`；该提交属于 `refactor/qwen21-layout` 的提交历史。评测脚本和案例包构建脚本实际使用 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`。因此本节训练与评测均以 refactor 分支代码为准；`qwen-image-2.1-dev` 上的同名记录不作为本次作业的代码来源。
+**代码分支核对。** 正式训练的 run manifest 和四个节点的 topology 均记录 git commit `99c6fc71008f5f52f8e58d43f4a01140893bdfef`；该提交属于 `qwen-image-2.1-dev` 的提交历史。评测脚本和案例包构建脚本实际使用 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev`。因此本节训练与评测使用的是当前 `qwen-image-2.1-dev` 分支内容；历史 manifest 中的原始 commit 和 run 记录仍保留用于追溯。
 
 ### 19.1 全量数据和训练协议
 

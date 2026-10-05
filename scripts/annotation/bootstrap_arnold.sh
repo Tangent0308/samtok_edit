@@ -9,7 +9,7 @@ export SAMTOK_ANNOTATION_MODEL="${SAMTOK_ANNOTATION_MODEL:-/mnt/bn/strategy-mllm
 export SAMTOK_ANNOTATION_BATCH_SIZE="${SAMTOK_ANNOTATION_BATCH_SIZE:-64}"
 export SAMTOK_ANNOTATION_ATTEMPTS="${SAMTOK_ANNOTATION_ATTEMPTS:-3}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-refactor/qwen21-layout}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
 # Optional: pin a pushed commit. The revised prompt/protocol needs a fresh run.
 # Resume only a run made with identical code, model, input and sharding.
 export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"

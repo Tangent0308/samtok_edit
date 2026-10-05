@@ -41,7 +41,7 @@
 
 ### 1.3 当前目录组织与库扩展边界（2026-10-01）
 
-当前开发目录为 `/opt/tiger/tanyue/samtok_edit_qwen21_refactor`，分支 `refactor/qwen21-layout`。原目录 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev` 保留为备份；正在运行的旧实验使用节点 `/tmp` 中的独立 checkout。此次只调整模块与入口组织，不改数据协议、mask、模型计算、loss、梯度更新、scheduler 或训练配方。
+当前开发目录为 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev`，分支 `qwen-image-2.1-dev`。当前目录是唯一保留的本地 checkout；它替换了原先同名目录中的旧内容。正在运行的旧实验使用节点 `/tmp` 中的独立 checkout。此次只调整模块与入口组织，不改数据协议、mask、模型计算、loss、梯度更新、scheduler 或训练配方。
 
 ```text
 pyproject.toml                     # 安装包、可选依赖、samtok-edit CLI

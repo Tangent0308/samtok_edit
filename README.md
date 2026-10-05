@@ -5,9 +5,9 @@ An installable SAMTok extension for the fixed DiffSynth Qwen-Image-2.1 editing p
 ## Install
 
 ```bash
-git clone --branch refactor/qwen21-layout --single-branch \
-  https://github.com/Tangent0308/samtok_edit.git samtok_edit_qwen21_refactor
-cd samtok_edit_qwen21_refactor
+git clone --branch qwen-image-2.1-dev --single-branch \
+  https://github.com/Tangent0308/samtok_edit.git samtok_edit_qwen-image-2.1-dev
+cd samtok_edit_qwen-image-2.1-dev
 uv venv --python /usr/bin/python3.11 /path/to/samtok21-env
 uv pip install --python /path/to/samtok21-env/bin/python -r requirements.txt
 source /path/to/samtok21-env/bin/activate

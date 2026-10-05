@@ -2,7 +2,7 @@
 
 本文盘点当前正式训练使用的四个源数据集、过滤规则、路径、字段映射、noref 转换、最终文件结构和训练读取方式。源数据 mask 视为数据集提供的准确标注；项目只读取、物化和编码，不重新计算或核对 mask 几何。
 
-当前开发 checkout：`/opt/tiger/tanyue/samtok_edit_qwen21_refactor`（`refactor/qwen21-layout`）。代码整理只改变 `src` 模块路径和脚本入口；下面的来源路径、图片组织、正式 metadata、region/conditioning cache 格式与统计不变。不复制大数据进入 Git 仓库，也不重新计算数据集 mask。
+当前开发 checkout：`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-dev`（`qwen-image-2.1-dev`）。代码整理只改变 `src` 模块路径和脚本入口；下面的来源路径、图片组织、正式 metadata、region/conditioning cache 格式与统计不变。不复制大数据进入 Git 仓库，也不重新计算数据集 mask。
 
 ## 1. 四个源数据集
 
