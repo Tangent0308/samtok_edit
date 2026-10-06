@@ -174,7 +174,7 @@ PYTHONPATH=$REPO/src $PY -m samtok_edit21.evaluation.compile compile --cases $EV
 | attribute（152） | 抽查 40 条，属性名词保留（`Change the color/material/texture of this region {region} to X`），修复了 v1 评测编译器丢失属性名词的问题 |
 | add（263） | 随机 30 条：15 条正确（只替换放置描述，保留新物体外观/姿态）；6 条（20%）把新物体的姿态/外观一起删了（如 `with its back to us and head facing left`、`with its back facing`、`that is the same as other planes`）；4–6 条保留了部分放置描述并追加 `in this region` |
 
-add 的问题来自 9B 转换器对放置短语后的从句的处理。训练 noref 数据由同一转换器生成，所以评测与训练分布一致（D2 的初衷）；但交互 setting 下模型收到的要求可能少于 judge 看到的原指令。为此编译结果同时提供 `ref_template`（原指令 + 区域 token，同样是训练格式，709/715 个 case 可用，其余 6 个是模板回退的 case），推理可用 `--prompt-variant ref`（输出目录加 `+ref` 后缀）。建议交互 setting 下的 add 两种都评：noref 为计划默认，ref 作对照。训练数据中 add noref 行的同类信息丢失，记为下一阶段数据改进项。
+add 的问题来自 9B 转换器对放置短语之后的从句的处理：CompBench 的 add 指令常把新物体的姿态写在放置短语之后（`add a yellow cow on the right side of the brown cow with its back to us ...`），转换器把放置短语连同其后内容一起删掉。训练数据的指令多把外观写在放置短语之前：随机抽查训练集 30 条 add 的原指令与 noref 行，没有一条丢失新物体自身的外观/姿态（6 条保留了部分放置描述）。所以这是评测指令风格带来的问题，交互 setting 下模型收到的要求会少于 judge 看到的原指令，在这一点上评测 noref prompt 与训练分布并不一致。为此编译结果同时提供 `ref_template`（原指令 + 区域 token，同样是训练格式，709/715 个 case 可用，其余 6 个是模板回退的 case），推理可用 `--prompt-variant ref`（输出目录加 `+ref` 后缀）。建议交互 setting 下的 add 两种都评：noref 为计划默认，ref 作对照；若两者差异明显，以 ref 结果作为 add 的主要参考。
 
 ### 6.2 推理、stock、judge 与汇总
 
