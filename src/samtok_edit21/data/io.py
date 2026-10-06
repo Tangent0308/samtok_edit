@@ -14,12 +14,15 @@ from PIL import Image
 from samtok_edit21.data.protocol import TYPE_WEIGHTS, validate_row
 
 EXPERIMENT_ROOT = (
-    "/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen_image_2_1"
+    "/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2"
 )
+# Stage 1 (v2) is NTP only: edit localization plus 1/8 box-grounding replay.
 RATIOS = {
-    "stage1": {"edit_ntp": 3, "edit_umt:ref": 2, "edit_umt:noref": 2, "edit": 1},
+    "stage1": {"edit_ntp": 7, "rec_ntp": 1},
     "stage2": {"edit_umt:ref": 1, "edit_umt:noref": 2, "edit": 1},
 }
+# Pools drawn by their natural type distribution instead of TYPE_WEIGHTS.
+NATURAL_POOLS = {"edit", "rec_ntp"}
 
 
 def row_kind(row):
@@ -102,8 +105,9 @@ def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0):
     """Return global position-major row indices; slice [rank::world_size].
 
     Homogeneous rank steps are preferred when accumulation allows them; otherwise
-    the exact ratio is distributed across ranks. Stage 2 always follows its ratio,
-    including ref:noref=1:2, rather than globally shuffling an imbalanced cache.
+    the exact ratio is distributed across ranks. Each stage always follows its
+    ratio (Stage 2 ref:noref:plain=1:2:1, Stage 1 edit_ntp:rec_ntp=7:1) rather
+    than globally shuffling an imbalanced pool. Rows of other kinds are rejected.
     """
     if world_size < 1 or accumulation < 1 or (steps is not None and steps < 1):
         raise ValueError("world_size, accumulation and steps must be positive")
@@ -111,10 +115,9 @@ def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0):
     pools = defaultdict(lambda: defaultdict(list))
     for i, row in enumerate(rows):
         kind = row_kind(row)
-        if kind in ratio:
-            pools[kind][row["edit_type"]].append(i)
-        elif stage == "stage2":
-            raise ValueError("Stage 2 metadata/cache must exclude NTP")
+        if kind not in ratio:
+            raise ValueError(f"{stage} metadata/cache cannot contain {kind} rows")
+        pools[kind][row["edit_type"]].append(i)
     missing = set(ratio) - set(pools)
     if missing:
         raise ValueError(f"Requested sampling pools are absent: {sorted(missing)}")
@@ -132,8 +135,9 @@ def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0):
     def draw(kind):
         types = sorted(pools[kind])
         weights = [TYPE_WEIGHTS[t] for t in types]
-        if kind == "edit":
+        if kind in NATURAL_POOLS:
             weights = [len(pools[kind][t]) for t in types]
+        if kind == "edit":
             # Natural distribution with individual background/global cap 15%.
             weights = capped_plain_weights(types, weights)
         typ = rng.choices(types, weights=weights)[0]

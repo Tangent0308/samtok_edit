@@ -1,4 +1,11 @@
-"""Content-addressed cache contract. Paths locate files; hashes identify them."""
+"""Content-addressed cache contract. Paths locate files; hashes identify them.
+
+v2 conditioning (cache format v3) is produced by the raw SAMTok TE: the
+identity records ``te_adapter: None`` plus the codec and binding geometry used
+for the region payloads.  The pass-1 localization adapter is not part of the
+conditioning identity; inference checks it separately.  Format v2 identities
+(v1 runs, Stage-1 TE conditioning) remain readable for inference only.
+"""
 from __future__ import annotations
 
 import json
@@ -7,10 +14,12 @@ from pathlib import Path
 import torch
 
 from samtok_edit21.data.io import file_hash, row_hash
-from samtok_edit21.data.protocol import validate_row
+from samtok_edit21.data.protocol import regions_in, validate_row
 
-FORMAT = "samtok21-cache-v2"
-PREPROCESSING = "qwen21-samtok-inline-v2-prenorm4096-rgba-resize32"
+FORMAT = "samtok21-cache-v3"
+PREPROCESSING = "qwen21-samtok-inline-v3-rawte-prenorm4096-rgba-resize32"
+LEGACY_FORMAT = "samtok21-cache-v2"
+LEGACY_PREPROCESSING = "qwen21-samtok-inline-v2-prenorm4096-rgba-resize32"
 
 
 def tree_identity(directory, *, weights=True):
@@ -26,7 +35,7 @@ def tree_identity(directory, *, weights=True):
 
 
 def model_identity(qwen, samtok):
-    # Do not hash the unused official TE or the SAM2/codec used only for masks.
+    # Do not hash the unused official TE; the codec is recorded with the binding.
     return {
         "dit": tree_identity(Path(qwen) / "transformer"),
         "vae": tree_identity(Path(qwen) / "vae"),
@@ -36,12 +45,20 @@ def model_identity(qwen, samtok):
     }
 
 
-def conditioning_identity(qwen, samtok, adapter, max_pixels, metadata=None):
-    from samtok_edit21.training.objectives import adapter_identity
+def codec_identity(samtok):
+    from samtok_edit21.models.binding import GEOMETRY, SCHEMA
+    return {"schema": SCHEMA, "geometry": GEOMETRY,
+            "codec_sha256": file_hash(Path(samtok) / "mask_tokenizer_256x2.pth"),
+            "sam2_sha256": file_hash(Path(samtok) / "sam2.1_hiera_large.pt")}
+
+
+def conditioning_identity(qwen, samtok, max_pixels, metadata=None):
+    """Raw-TE conditioning identity of a v2 Stage 2 cache."""
     identity = {
         "schema": FORMAT, "preprocessing": PREPROCESSING,
         "models": model_identity(qwen, samtok),
-        "te_adapter": normalize_adapter_identity(adapter_identity(adapter)),
+        "te_adapter": None,
+        "binding": codec_identity(samtok),
         "max_pixels": max_pixels,
     }
     if metadata is not None:
@@ -63,27 +80,33 @@ def normalize_adapter_identity(value):
     return {k: value[k] for k in ("sha256", "config_sha256") if k in value}
 
 
-def normalize_conditioning_identity(identity):
-    if identity.get("schema") == FORMAT:
-        return identity
-    adapter = identity.get("te_adapter_identity", identity.get("te_adapter"))
-    return {**identity, "te_adapter": normalize_adapter_identity(adapter)}
-
-
-def assert_models_match(identity, qwen, samtok):
-    if identity.get("schema") != FORMAT or identity.get("preprocessing") != PREPROCESSING:
-        raise ValueError("Legacy/unknown conditioning identity; audit and rebuild cache as v2")
+def assert_models_match(identity, qwen, samtok, *, allow_legacy=False):
+    known = {(FORMAT, PREPROCESSING)}
+    if allow_legacy:
+        known.add((LEGACY_FORMAT, LEGACY_PREPROCESSING))
+    if (identity.get("schema"), identity.get("preprocessing")) not in known:
+        raise ValueError("Unknown conditioning identity; rebuild the cache with v2 code")
     if identity["models"] != model_identity(qwen, samtok):
         raise ValueError("Base model / tokenizer / processor content differs from cache")
 
 
-def assert_inference_identity(identity, qwen, samtok, adapter):
+def pass2_text_encoder(identity, qwen, samtok, te_adapter):
+    """Which TE a Stage 2 DiT adapter expects in pass 2: ``raw`` or ``adapter``.
+
+    v2 adapters were trained on raw-TE conditioning, so pass 2 must disable any
+    loaded localization adapter.  v1 adapters (legacy identity) were trained on
+    Stage-1-TE conditioning and require exactly that adapter in pass 2.
+    """
     from samtok_edit21.training.objectives import adapter_identity
-    identity = normalize_conditioning_identity(identity)
-    assert_models_match(identity, qwen, samtok)
-    actual = normalize_adapter_identity(adapter_identity(adapter))
-    if identity["te_adapter"] != actual:
-        raise ValueError("TE adapter weights/config differ from Stage 2 conditioning identity")
+    assert_models_match(identity, qwen, samtok, allow_legacy=True)
+    if identity["schema"] == FORMAT:
+        if identity.get("te_adapter") is not None:
+            raise ValueError("v2 conditioning must come from the raw TE")
+        return "raw"
+    expected = normalize_adapter_identity(identity.get("te_adapter_identity", identity.get("te_adapter")))
+    if expected != normalize_adapter_identity(adapter_identity(te_adapter)):
+        raise ValueError("v1 Stage 2 adapters need the exact Stage 1 TE adapter in pass 2")
+    return "adapter"
 
 
 def cache_path(directory, relative):
@@ -104,30 +127,27 @@ def validate_cache_manifest(manifest):
     parallel and use this function for the final O(1)-file manifest check.
     """
     if manifest.get("format") != FORMAT:
-        raise ValueError("Stage 2 requires samtok21-cache-v2; legacy cache needs audit/rebuild")
+        raise ValueError(f"Stage 2 requires {FORMAT}; rebuild older caches with v2 code")
     identity = manifest.get("identity", {})
     if identity.get("schema") != FORMAT or identity.get("preprocessing") != PREPROCESSING:
         raise ValueError("Unknown cache conditioning/preprocessing protocol")
-    if not identity.get("models") or not identity.get("metadata_sha256"):
-        raise ValueError("Cache is missing source provenance")
+    if not identity.get("models") or not identity.get("metadata_sha256") or not identity.get("binding"):
+        raise ValueError("Cache is missing source or binding provenance")
+    if identity.get("te_adapter") is not None:
+        raise ValueError("v2 cache conditioning must come from the raw TE")
     rows = manifest.get("rows", [])
     if not rows or manifest.get("row_count") != len(rows):
         raise ValueError("Missing cache rows")
     ordered_hashes = [row_hash({k: v for k, v in row.items() if not k.startswith("_cache")})
                       for row in rows]
-    if "rows_sha256" in identity:
-        if identity["rows_sha256"] != row_hash(ordered_hashes):
-            raise ValueError("Manifest rows disagree with ordered source row digest")
-    elif identity.get("row_hashes") != ordered_hashes:
-        # Read compatibility for intermediate v2 smoke artifacts produced
-        # before the compact digest optimization; new writers never use this.
-        raise ValueError("Cache is missing source row identities")
+    if identity.get("rows_sha256") != row_hash(ordered_hashes):
+        raise ValueError("Manifest rows disagree with ordered source row digest")
     seen_paths = set()
     for row in rows:
         original = {k: v for k, v in row.items() if not k.startswith("_cache")}
         validate_row(original)
-        if original["sample_type"] == "edit_ntp":
-            raise ValueError("Stage 2 cache cannot contain edit_ntp")
+        if original["sample_type"] not in {"edit", "edit_umt"}:
+            raise ValueError("Stage 2 cache holds only edit/edit_umt rows")
         relative = row.get("_cache_file")
         if not isinstance(relative, str) or not relative:
             raise ValueError("Duplicate or missing cache shard")
@@ -141,17 +161,27 @@ def validate_cache_manifest(manifest):
     return identity, rows, ordered_hashes
 
 
-def _verify_cache_row(directory, row, identity, ordered_hashes, *, payload=None, side=None,
-                      supervision_identity=None):
-    """Validate one v2 cache row, optionally using already loaded objects."""
+def validate_cache_inputs(inputs, row):
+    """Payload checks shared by cache publication and Stage 2 startup."""
     from samtok_edit21.training.objectives import validate_conditioning
+    if not isinstance(inputs, dict) or "prompt_embeds_mask" not in inputs:
+        raise ValueError("Cache payload is missing inputs or the text attention mask")
+    sources = row["edit_image"]
+    source_count = 1 if isinstance(sources, str) else len(sources)
+    if len(inputs["edit_latents"]) != source_count:
+        raise ValueError("Source latent count differs from metadata image count")
+    if bool(regions_in(row["prompt"])) != (inputs.get("region_binding") is not None):
+        raise ValueError("Region rows must carry a binding payload, plain rows none")
+    validate_conditioning(inputs)
+
+
+def _verify_cache_row(directory, row, identity, ordered_hashes, *, side=None):
+    """Validate one cache row against its sidecar, checksum and payload."""
     original = {k: v for k, v in row.items() if not k.startswith("_cache")}
     path = cache_path(directory, row.get("_cache_file"))
     if side is None:
         side = json.loads(path.with_suffix(".json").read_text())
-        index = side.get("row_index")
-    else:
-        index = side.get("row_index")
+    index = side.get("row_index")
     if not isinstance(index, int) or not 0 <= index < len(ordered_hashes):
         raise ValueError("Duplicate/invalid cache row index")
     if ordered_hashes[index] != row_hash(original):
@@ -160,45 +190,27 @@ def _verify_cache_row(directory, row, identity, ordered_hashes, *, payload=None,
         raise ValueError("Mixed or stale cache identity/row metadata")
     if side.get("sha256") != file_hash(path):
         raise ValueError("Cache checksum mismatch")
-    if payload is None:
-        payload = torch.load(path, map_location="cpu", weights_only=True)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
     if (payload.get("row_index") != index or payload.get("row_hash") != side["row_hash"]
             or payload.get("identity") != identity):
         raise ValueError("Cache payload provenance disagrees with sidecar")
-    inputs = payload["inputs"]
-    if "prompt_embeds_mask" not in inputs:
-        raise ValueError("Missing text attention mask")
-    sources = original["edit_image"]
-    source_count = 1 if isinstance(sources, str) else len(sources)
-    if len(inputs["edit_latents"]) != source_count:
-        raise ValueError("Source latent count differs from metadata image count")
-    validate_conditioning(inputs)
-    supervision = inputs.get("region_supervision")
-    if supervision_identity is not None or supervision is not None:
-        from samtok_edit21.regions.supervision import validate_supervision
-        validate_supervision(supervision, inputs, original, require_positions=True)
-        if supervision["identity"] != supervision_identity:
-            raise ValueError("Conditioning cache supervision identity mismatch")
-    return inputs
+    validate_cache_inputs(payload["inputs"], original)
+    return index
 
 
 def verify_cache_shard(directory, manifest, rank, world_size):
-    """Validate one rank's cache files for distributed cache/startup checks."""
+    """Validate rows ``index % world_size == rank``; any world size can verify any cache."""
     identity, rows, ordered_hashes = validate_cache_manifest(manifest)
-    supervision_identity = manifest.get("supervision_identity")
-    expected_prefix = str(rank)
     checked = []
-    for row in rows:
-        relative = row["_cache_file"]
-        parts = Path(relative).parts
-        if not parts or parts[0] != expected_prefix:
-            continue
-        if len(parts) < 2 or not parts[1].endswith(".pth"):
-            raise ValueError("Cache shard path must be rank/<index>.pth")
-        side = json.loads(cache_path(directory, relative).with_suffix(".json").read_text())
-        _verify_cache_row(directory, row, identity, ordered_hashes,
-                          side=side, supervision_identity=supervision_identity)
-        checked.append(side.get("row_index"))
+    for position in range(rank, len(rows), world_size):
+        row = rows[position]
+        parts = Path(row["_cache_file"]).parts
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].endswith(".pth"):
+            raise ValueError("Cache shard path must be <rank>/<index>.pth")
+        index = _verify_cache_row(directory, row, identity, ordered_hashes)
+        if index != position:
+            raise ValueError("Manifest row order disagrees with cache row indices")
+        checked.append(index)
     if not checked:
         raise ValueError(f"Cache manifest has no rows for rank {rank}/{world_size}")
     return checked
@@ -206,27 +218,7 @@ def verify_cache_shard(directory, manifest, rank, world_size):
 
 def verify_cache(directory, manifest):
     identity, rows, ordered_hashes = validate_cache_manifest(manifest)
-    supervision_identity = manifest.get("supervision_identity")
-    seen_indices = set()
-    for row in rows:
-        _verify_cache_row(directory, row, identity, ordered_hashes,
-                          supervision_identity=supervision_identity)
-        index = json.loads((cache_path(directory, row["_cache_file"]).with_suffix(".json")).read_text())["row_index"]
-        if index in seen_indices:
-            raise ValueError("Duplicate/invalid cache row index")
-        seen_indices.add(index)
-    if seen_indices != set(range(len(rows))):
+    indices = [_verify_cache_row(directory, row, identity, ordered_hashes) for row in rows]
+    if sorted(indices) != list(range(len(rows))):
         raise ValueError("Cache row indices are not a complete unique range")
     return True
-
-
-def audit_legacy_cache(directory, manifest):
-    """Read-only audit of both historical layouts; never authorizes training."""
-    from samtok_edit21.training.objectives import verify_cache as verify_old
-    if manifest.get("format") != "samtok21-cache-v1":
-        raise ValueError("Not a legacy v1 cache")
-    # The verifier accepts both flat and nested safe-relative shard paths. Keep
-    # one validation path so old layouts cannot silently skip identity checks.
-    verify_old(directory, manifest)
-    return {"checksums_valid": True, "training_eligible": False,
-            "reason": "v1 did not record verifiable complete model/config provenance; rebuild v2"}

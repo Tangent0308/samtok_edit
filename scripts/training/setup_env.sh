@@ -25,8 +25,8 @@ assert transformers.__version__ == '5.12.1'
 assert accelerate.__version__ == '1.14.0'
 assert peft.__version__ == '0.20.0'
 assert wandb.__version__ == '0.13.98'
-from samtok_edit21.training.attention import require_attention_backend
-require_attention_backend()
+from samtok_edit21.models.binding import require_flex_attention
+require_flex_attention()
 print('Cluster packages validated: Python 3.11 / torch 2.8 / W&B / FlexAttention')
 PY
 PYTHONPATH="$REPO/src:$REPO/third_party/diffsynth" "$SAMTOK_ENV/bin/python" -m samtok_edit21.distributed.cuda_readiness \

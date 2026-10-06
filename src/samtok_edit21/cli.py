@@ -4,42 +4,23 @@ import json
 import sys
 from pathlib import Path
 
-from samtok_edit21.data.io import EXPERIMENT_ROOT, read_rows, write_json, write_rows, row_hash, file_hash
+from samtok_edit21.data.io import read_rows, write_json, write_rows, row_hash, file_hash
 from samtok_edit21.models.pipeline import DEFAULT_QWEN, DEFAULT_SAMTOK
 
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] == "prepare-regions":
-        from samtok_edit21.regions.supervision import main as region_main
-        return region_main(argv[1:])
-    if argv and argv[0] == "calibrate-attention":
-        from samtok_edit21.training.calibration import main as calibration_main
-        return calibration_main(argv[1:])
+    if argv and argv[0] == "convert-v2":
+        from samtok_edit21.preparation.v2_data import main as convert_v2_main
+        return convert_v2_main(argv[1:])
     if argv and argv[0] in {"train", "cache"}:
         from samtok_edit21.training.engine import main as training_main
         return training_main(argv)
     parser = argparse.ArgumentParser(description="SAMTok + Qwen-Image-2.1")
     subs = parser.add_subparsers(dest="command", required=True)
     subs.add_parser("train", help="Delegate to the canonical DiffSynth training entry point")
-    subs.add_parser("cache", help="Delegate to the canonical cache-v2 builder")
-    subs.add_parser("prepare-regions", help="Prepare frozen region supervision for both training stages")
-    subs.add_parser("calibrate-attention", help="Calibrate A against actual C gradients without optimizer updates")
-    build = subs.add_parser("build-debug")
-    build.add_argument("--output", default=EXPERIMENT_ROOT + "/data")
-    base = "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/"
-    build.add_argument("--crisp", default=base + "CrispEdit-2M")
-    build.add_argument("--masks", default=base + "CrispEdit-2M-mask")
-    build.add_argument("--gres", help="Qwen3-VL-SAMTok GRES/GRefCOCO conversation JSON")
-    build.add_argument("--gres-mask-tokenizer-sha256", help="Encoder checksum recorded by the GRES source builder")
-    build.add_argument(
-        "--gres-images",
-        default="/mnt/bn/strategy-mllm-train/intern/common_datasets/Sa2VA-Training/osprey-724k",
-    )
-    build.add_argument("--per-type", type=int, default=2)
-    build.add_argument("--gres-count", type=int, default=4)
-    build.add_argument("--samtok", default=DEFAULT_SAMTOK)
-    build.add_argument("--device", default="cuda")
+    subs.add_parser("cache", help="Delegate to the canonical raw-TE cache builder")
+    subs.add_parser("convert-v2", help="Convert v1 training metadata to the v2 contract")
     convert = subs.add_parser("convert")
     convert.add_argument(
         "--input", required=True, help="JSONL common records with units/mask_codes"
@@ -107,15 +88,23 @@ def main(argv=None):
                 p.add_argument("--steps", type=int, default=40)
                 p.add_argument("--cfg", type=float, default=1.0)
                 p.add_argument("--no-kv-cache", action="store_true")
+                p.add_argument("--binding", choices=("adapter", "none", "bias_span", "bias_clause", "region_rope", "region_embed"),
+                               default="adapter", help="Region binding; 'adapter' uses the DiT adapter's training recipe")
+                p.add_argument("--binding-beta", type=float)
+                p.add_argument("--binding-eps", type=float)
+                blend = p.add_mutually_exclusive_group()
+                blend.add_argument("--blend-mask", help="Latent blending outside this source-pixel mask (PNG)")
+                blend.add_argument("--blend-box", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"),
+                                   help="Latent blending outside this 0-1000 box (expanded by 10%%)")
+                blend.add_argument("--blend-prompt", action="store_true",
+                                   help="Latent blending outside the regions of the encoded edit prompt")
+                p.add_argument("--blend-dilate", type=int, default=2, help="Dilation in latent tokens")
+                p.add_argument("--blend-feather", type=float, default=1.0, help="Gaussian std in latent tokens")
             else:
                 p.add_argument("--candidates", type=int, default=1)
                 p.add_argument("--decode-masks", action="store_true")
     args = parser.parse_args(argv)
-    if args.command == "build-debug":
-        from samtok_edit21.preparation.converters import build_debug
-
-        build_debug(args)
-    elif args.command == "regions":
+    if args.command == "regions":
         from PIL import Image
         from samtok_edit21.models.codec import SamtokCodec
         from samtok_edit21.regions.selection import segment, save_candidates
@@ -211,24 +200,24 @@ def main(argv=None):
 
 def inference(args):
     import numpy as np
-    import torch
     from PIL import Image
+    from samtok_edit21.models.binding import BindingConfig
     from samtok_edit21.models.pipeline import load_pipeline, edit, localize
-    from samtok_edit21.training.objectives import load_adapter
+    from samtok_edit21.training.objectives import adapter_binding, load_adapter
 
     if args.command == "localize" and args.candidates < 1:
         raise ValueError("candidates must be positive")
     from accelerate.utils import set_seed
-    from samtok_edit21.data.protocol import spans_in
+    from samtok_edit21.data.protocol import box_of, regions_in
     set_seed(args.seed)
-    masks = spans_in(args.prompt)
+    regions = regions_in(args.prompt)
     mode = getattr(args, "mode", None)
-    if (args.command == "localize" or mode in {"online", "oracle", "interactive"} or masks) and len(args.image) != 1:
-        raise ValueError("Mask/localization modes require exactly one source image")
-    if mode in {"direct", "stock"} and masks:
-        raise ValueError("direct/stock are plain modes; masks require inline")
-    if mode == "inline" and not masks:
-        raise ValueError("inline requires mask spans")
+    if (args.command == "localize" or mode in {"online", "oracle", "interactive"} or regions) and len(args.image) != 1:
+        raise ValueError("Region/localization modes require exactly one source image")
+    if mode in {"direct", "stock"} and regions:
+        raise ValueError("direct/stock are plain modes; region tokens require inline")
+    if mode == "inline" and not regions:
+        raise ValueError("inline requires region tokens")
     if mode == "oracle" and not args.cot_file:
         raise ValueError("oracle requires --cot-file")
     if mode == "interactive" and not args.mask:
@@ -244,13 +233,25 @@ def inference(args):
         if not 0 <= reference < len(args.image):
             raise ValueError("Invalid reference image index")
     reviewed = json.loads(Path(args.units_file).read_text()) if args.units_file else None
+    # Pass-2 TE and binding follow the DiT adapter's own provenance/recipe.
+    pass2_te, binding = "raw", None
     if getattr(args, "dit_adapter", None):
-        from samtok_edit21.data.provenance import assert_inference_identity
+        from samtok_edit21.data.provenance import pass2_text_encoder
         config = json.loads((Path(args.dit_adapter) / "adapter.json").read_text())
         if config["stage"] != "stage2":
             raise ValueError("--dit-adapter must belong to Stage 2")
-        assert_inference_identity(config.get("conditioning_identity", {}),
-                                  args.qwen, args.samtok, args.te_adapter)
+        pass2_te = pass2_text_encoder(config.get("conditioning_identity", {}),
+                                      args.qwen, args.samtok, args.te_adapter)
+        binding = adapter_binding(config)
+    if args.command == "infer" and args.binding != "adapter":
+        trained = binding or BindingConfig()
+        if (args.binding == "region_embed") != (trained.mode == "region_embed"):
+            raise ValueError("region_embed exists only in an adapter trained with it")
+        binding = BindingConfig(args.binding,
+                                trained.beta if args.binding_beta is None else args.binding_beta,
+                                trained.eps if args.binding_eps is None else args.binding_eps, trained.rank)
+    elif args.command == "infer" and (args.binding_beta is not None or args.binding_eps is not None):
+        raise ValueError("--binding-beta/--binding-eps override needs an explicit --binding mode")
 
     if args.command == "infer" and Path(args.output).suffix.lower() != ".png":
         raise ValueError("Save RGBA output as .png")
@@ -271,6 +272,19 @@ def inference(args):
     if getattr(args, "dit_adapter", None):
         load_adapter(pipe.dit, args.dit_adapter)
     pipe.eval()
+    codec = None
+
+    def get_codec():
+        nonlocal codec
+        if codec is None:
+            from samtok_edit21.models.codec import SamtokCodec
+            codec = SamtokCodec(
+                str(Path(args.samtok) / "sam2.1_hiera_large.pt"),
+                str(Path(args.samtok) / "mask_tokenizer_256x2.pth"),
+                device=args.device,
+            )
+        return codec
+
     if args.command == "localize":
         results = [
             localize(
@@ -286,16 +300,9 @@ def inference(args):
             for _ in range(args.candidates)
         ]
         if args.decode_masks:
-            from samtok_edit21.models.codec import SamtokCodec
             from samtok_edit21.regions.selection import decode_localizations
-
-            codec = SamtokCodec(
-                str(Path(args.samtok) / "sam2.1_hiera_large.pt"),
-                str(Path(args.samtok) / "mask_tokenizer_256x2.pth"),
-                device=args.device,
-            )
             decode_localizations(
-                codec, images[0], results, Path(args.output).with_suffix("")
+                get_codec(), images[0], results, Path(args.output).with_suffix("")
             )
         write_json(args.output, results)
         # Each sample is an alternative hypothesis. Items within one sample can
@@ -305,24 +312,27 @@ def inference(args):
     prompt = args.prompt
     mode = "direct" if stock else args.mode
     if mode == "interactive":
-        from samtok_edit21.models.codec import SamtokCodec
         from samtok_edit21.data.protocol import interactive_prompt
 
         if len(images) != 1 or not args.mask:
             raise ValueError("Interactive mode requires one source image and --mask")
-        codec = SamtokCodec(
-            str(Path(args.samtok) / "sam2.1_hiera_large.pt"),
-            str(Path(args.samtok) / "mask_tokenizer_256x2.pth"),
-            device=args.device,
-        )
         masks = [np.asarray(Image.open(p).convert("L")) > 0 for p in args.mask]
         # Preserve selected-region order; codec sorting is applied only inside a group.
-        groups = [codec.encode(images[0], [m])[0] for m in masks]
+        groups = [get_codec().encode(images[0], [m])[0] for m in masks]
         prompt = interactive_prompt(
             prompt, groups, whole_image=len(masks) == 1 and bool(masks[0].all())
         )
-        del codec
         mode = "inline"
+    blend_region = None
+    if args.blend_mask:
+        blend_region = np.asarray(Image.open(args.blend_mask).convert("L")) > 0
+    elif args.blend_box:
+        from samtok_edit21.models.binding import box_pixels
+        blend_region = box_pixels(box_of(args.blend_box), images[0].width, images[0].height, expand=0.1)
+    elif args.blend_prompt:
+        blend_region = "prompt"
+    if (binding is not None and binding.mode != "none") or isinstance(blend_region, str):
+        get_codec()
     cot = Path(args.cot_file).read_text() if args.cot_file else None
     image, report = edit(
         pipe,
@@ -332,6 +342,8 @@ def inference(args):
         cot=cot,
         variant=args.variant, reviewed_units=reviewed, strict_noref=args.strict_noref,
         max_new_tokens=args.max_new_tokens,
+        pass2_te=pass2_te, binding=binding, codec=codec,
+        blend_region=blend_region, blend_dilate=args.blend_dilate, blend_feather=args.blend_feather,
         height=args.height,
         width=args.width,
         num_inference_steps=args.steps,
@@ -365,7 +377,6 @@ def inference(args):
         },
     )
     print(json.dumps(report, ensure_ascii=False))
-
 
 if __name__ == "__main__":
     main()

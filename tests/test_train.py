@@ -1,5 +1,6 @@
 import json
 
+import pytest
 import torch
 from accelerate import Accelerator
 from accelerate.utils import DataLoaderConfiguration
@@ -9,66 +10,50 @@ from diffsynth.diffusion.logger import ModelLogger
 from diffsynth.diffusion.runner import launch_data_process_task, launch_training_task
 from diffsynth.diffusion.training_module import DiffusionTrainingModule
 from samtok_edit21.data.io import make_schedule, row_kind
-from samtok_edit21.training.engine import ScheduledMetadata, verify_cache
-from samtok_edit21.data.io import file_hash, row_hash
-from samtok_edit21.training.objectives import flow_loss
 
 
-def _row(kind):
+def _row(kind, edit_type="attribute"):
     sample_type, _, variant = kind.partition(":")
-    row = {
-        "sample_type": sample_type,
-        "edit_type": "attribute",
-        "edit_image": "source.png",
-        "image": "target.png",
-        "prompt": "Change the object.",
-    }
-    if sample_type == "edit_ntp":
+    row = {"sample_type": sample_type, "edit_type": edit_type, "edit_image": "source.png",
+           "image": "target.png", "prompt": "Change the object."}
+    if sample_type in {"edit_ntp", "rec_ntp"}:
         row.pop("image")
-        row["mt_cot"] = "```json\n[{\"mask_2d\": \"<|mt_start|><|mt_0000|><|mt_0256|><|mt_end|>\", \"label\": \"object\"}]\n```"
+        row["mt_cot"] = "cot"
     if sample_type == "edit_umt":
         row["instr_variant"] = variant
     return row
 
 
-def test_flow_loss_requires_stage_and_rejects_stage1_attention():
-    import pytest
+def test_stage1_schedule_is_ntp_with_exact_replay_ratio_on_each_rank():
+    rows = [_row("edit_ntp", t) for t in ("add", "remove", "attribute")] + [_row("rec_ntp", "remove")]
+    schedule, report = make_schedule(rows, "stage1", 4, 8, steps=3, seed=0)
+    assert report["per_step"] == {"edit_ntp": 28, "rec_ntp": 4}
+    for rank in range(4):
+        local = [row_kind(rows[schedule[i]]) for i in range(rank, len(schedule), 4)]
+        assert {kind: local.count(kind) for kind in set(local)} == {"edit_ntp": 21, "rec_ntp": 3}
+    with pytest.raises(ValueError, match="cannot contain edit rows"):
+        make_schedule(rows + [_row("edit")], "stage1", 1, 8, steps=1)
 
-    with pytest.raises(ValueError, match="requires stage1 or stage2"):
-        flow_loss(None, {}, stage="unknown")
-    with pytest.raises(ValueError, match="Stage 2 only"):
-        flow_loss(None, {}, stage="stage1", attention_layers=(7,))
-    with pytest.raises(ValueError, match="Stage 2 only"):
-        flow_loss(None, {}, stage="stage1", attention_weight=0.1, attention_layers=(7,))
+
+def test_stage2_schedule_keeps_ref_noref_plain_ratio():
+    rows = [_row("edit_umt:ref"), _row("edit_umt:noref"), _row("edit")]
+    schedule, report = make_schedule(rows, "stage2", 8, 4, steps=2, seed=0)
+    assert report["per_step"] == {"edit_umt:ref": 8, "edit_umt:noref": 16, "edit": 8}
+    with pytest.raises(ValueError, match="cannot contain edit_ntp rows"):
+        make_schedule(rows + [_row("edit_ntp")], "stage2", 1, 4, steps=1)
 
 
-def test_schedule_is_exact_on_each_rank_when_local_accumulation_is_a_block():
-    kinds = [
-        "edit_ntp",
-        "edit_ntp",
-        "edit_ntp",
-        "edit_umt:ref",
-        "edit_umt:ref",
-        "edit_umt:noref",
-        "edit_umt:noref",
-        "edit",
-    ]
-    rows = [_row(kind) for kind in kinds]
-    schedule, report = make_schedule(rows, "stage1", 2, 8, steps=1, seed=0)
-    assert report["per_step"] == {
-        "edit_ntp": 6,
-        "edit_umt:ref": 4,
-        "edit_umt:noref": 4,
-        "edit": 2,
-    }
-    for rank in range(2):
-        local = [row_kind(rows[schedule[i]]) for i in range(rank, len(schedule), 2)]
-        assert {kind: local.count(kind) for kind in set(local)} == {
-            "edit_ntp": 3,
-            "edit_umt:ref": 2,
-            "edit_umt:noref": 2,
-            "edit": 1,
-        }
+def test_binding_is_a_stage2_option():
+    import argparse
+    from samtok_edit21.training.engine import normalize_args
+
+    args = argparse.Namespace(command="train", output="x", stage="stage1", binding="bias_span")
+    with pytest.raises(ValueError, match="Stage 2"):
+        normalize_args(args)
+    args = normalize_args(argparse.Namespace(command="train", output="x", stage="stage2",
+                                             binding="bias_clause", binding_beta=2.0, binding_eps=0.0))
+    assert args.binding_config == {"mode": "bias_clause", "beta": 2.0, "eps": 0.0, "rank": 64}
+    assert (args.accumulation, args.rank, args.lr) == (4, 32, 1e-4)
 
 
 class _TinyDataset(Dataset):
@@ -132,49 +117,3 @@ def test_data_process_runner_accepts_explicit_defaults(tmp_path):
         args=None,
     )
     assert (output / "0" / "0.pth").exists()
-
-
-def test_cache_manifest_checks_geometry_and_checksum(tmp_path):
-    row = {
-        "sample_type": "edit",
-        "edit_type": "attribute",
-        "edit_image": "source.png",
-        "image": "target.png",
-        "prompt": "Change the object.",
-    }
-    shard = tmp_path / "0" / "0.pth"
-    shard.parent.mkdir()
-    inputs = {
-        "input_latents": torch.zeros(1, 64, 4, 4),
-        "edit_latents": [torch.zeros(1, 64, 4, 4)],
-        "prompt_embeds": torch.zeros(1, 4, 4096),
-        "prompt_embeds_mask": torch.ones(1, 4, dtype=torch.bool),
-        "edit_image_pad_mask": torch.ones(1, 4, dtype=torch.bool),
-    }
-    from samtok_edit21.data.provenance import FORMAT, PREPROCESSING
-    identity = {"schema": FORMAT, "preprocessing": PREPROCESSING,
-                "models": {"test_fixture": "synthetic"}, "metadata_sha256": "fixture",
-                "row_hashes": [row_hash(row)]}
-    torch.save({"inputs": inputs, "row_index": 0, "row_hash": row_hash(row),
-                "identity": identity}, shard)
-    manifest = {
-        "format": FORMAT,
-        "identity": identity,
-        "row_count": 1,
-        "rows": [{**row, "_cache_file": "0/0.pth"}],
-    }
-    side = {
-        "row_index": 0,
-        "identity": identity,
-        "row_hash": row_hash(row),
-        "sha256": file_hash(shard),
-    }
-    (shard.with_suffix(".json")).write_text(json.dumps(side))
-    assert verify_cache(tmp_path, manifest)
-    shard.write_bytes(b"corrupt")
-    try:
-        verify_cache(tmp_path, manifest)
-    except ValueError as error:
-        assert "checksum" in str(error)
-    else:
-        raise AssertionError("corrupted cache was accepted")

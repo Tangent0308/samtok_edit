@@ -38,9 +38,7 @@ def audit_backward(module):
     zero = peak == 0 and bool(peaks)
     zero_reason = None
     if zero:
-        zero_reason = ("fm_scheduler_weight_zero"
-                       if current.get("training_weight") == 0
-                       and current.get("attention_weight", 0) == 0
+        zero_reason = ("fm_scheduler_weight_zero" if current.get("training_weight") == 0
                        else "finite_zero_backward")
     module._audit_microsteps = getattr(module, "_audit_microsteps", 0) + 1
     errors = []
@@ -66,7 +64,7 @@ def audit_backward(module):
         "accumulated_grad_zero": total == 0, "zero_gradient_reason": zero_reason,
         **{key: current[key] for key in ("weighted_total", "timestep", "timestep_index",
                                         "timestep_before_cast", "training_weight",
-                                        "attention_weight", "loss_fm", "loss_ntp") if key in current},
+                                        "bound_units", "loss_fm", "loss_ntp") if key in current},
     }
     # Publish failures too, before raising; JSON remains valid for NaN/Inf errors.
     with (Path(module.args.output) / f"gradients-rank{os.environ.get('RANK', '0')}.jsonl").open("a") as stream:

@@ -260,13 +260,16 @@ def test_global_optimizer_batch_ratios(stage, world, acc):
         dict(sample_type=k, edit_type="attribute", **v)
         for k, v in [
             ("edit_ntp", {}),
+            ("rec_ntp", {}),
+        ]
+    ] if stage == "stage1" else [
+        dict(sample_type=k, edit_type="attribute", **v)
+        for k, v in [
             ("edit_umt", {"instr_variant": "ref"}),
             ("edit_umt", {"instr_variant": "noref"}),
             ("edit", {}),
         ]
     ]
-    if stage == "stage2":
-        rows = rows[1:]
     schedule, report = make_schedule(rows, stage, world, acc, steps=3, seed=17)
     assert len(schedule) == world * acc * 3
     for offset in range(0, len(schedule), world * acc):

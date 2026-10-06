@@ -3,6 +3,14 @@
 The DiffSynth runner owns DDP, optimizer, accumulation, logging, checkpointing,
 and the two split-training tasks.  This module supplies the SAMTok-specific
 model forward, metadata schedule, and cache manifest around those interfaces.
+
+v2 recipe:
+* Stage 1 trains the localization LoRA on the TE with next-token prediction
+  only (edit_ntp + rec_ntp); no DiT or VAE is loaded.
+* The conditioning cache is built with the raw SAMTok TE and stores a region
+  binding payload for every region row.
+* Stage 2 trains the DiT LoRA with the official flow-matching loss, plus an
+  optional structural region binding (``--binding``).
 """
 
 from __future__ import annotations
@@ -11,7 +19,6 @@ import argparse
 import json
 import math
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +36,7 @@ from diffsynth.diffusion.runner import (  # noqa: E402
 from diffsynth.diffusion.training_module import DiffusionTrainingModule  # noqa: E402
 
 from samtok_edit21.data.io import (  # noqa: E402
+    RATIOS,
     file_hash,
     load_images,
     make_schedule,
@@ -37,10 +45,12 @@ from samtok_edit21.data.io import (  # noqa: E402
     row_kind,
     write_json,
 )
-from samtok_edit21.models.pipeline import DEFAULT_QWEN, DEFAULT_SAMTOK  # noqa: E402
+from samtok_edit21.data.protocol import LOC_REQUEST  # noqa: E402
+from samtok_edit21.models.binding import BINDING_MODES, BindingConfig  # noqa: E402
+from samtok_edit21.models.pipeline import DEFAULT_QWEN, DEFAULT_SAMTOK, load_pipeline, ntp_loss  # noqa: E402
 from samtok_edit21.training.objectives import (  # noqa: E402
-    adapter_identity,
     add_adapter,
+    adapter_binding,
     flow_loss,
     load_adapter,
     prepare_fm,
@@ -48,16 +58,15 @@ from samtok_edit21.training.objectives import (  # noqa: E402
     save_adapter,
     validate_conditioning,
 )
-from samtok_edit21.models.pipeline import load_pipeline, ntp_loss  # noqa: E402
 from samtok_edit21.data.provenance import (
     FORMAT,
     assert_models_match,
     conditioning_identity,
+    validate_cache_inputs,
     validate_cache_manifest,
     verify_cache,  # re-exported for existing callers/tests
     verify_cache_shard,
 )
-
 
 
 def _cpu(value: Any):
@@ -119,6 +128,7 @@ class ScheduledCache(Dataset):
         payload = torch.load(path, map_location="cpu", weights_only=True)
         inputs = payload["inputs"]
         inputs["_sample_kind"] = row_kind(row)
+        inputs["_sample_edit_type"] = row["edit_type"]
         inputs["_sample_row_sha256"] = payload["row_hash"]
         return inputs
 
@@ -133,33 +143,32 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         self.stage = args.stage
         self.completed_updates = 0
         self.pending_metrics = []
-        self.region_store = None
-        if getattr(args, "region_cache", None) and (args.stage == "stage1" or task == "sft:data_process"):
-            from samtok_edit21.regions.supervision import RegionStore
-            self.region_store = RegionStore(args.region_cache, args.max_pixels)
+        self.binding = BindingConfig(**args.binding_config)
+        self.codec = None
         if task == "sft:data_process":
             components = ("text_encoder", "vae")
         elif args.stage == "stage2":
             components = ("dit",)
         else:
-            components = ("text_encoder", "dit", "vae")
+            components = ("text_encoder",)
         self.pipe = load_pipeline(
             args.qwen, args.samtok, device=args.device, components=components
         )
         self.pipe.scheduler.set_timesteps(1000, training=True)
 
         if task == "sft:data_process":
-            if not args.te_adapter:
-                raise ValueError("cache requires --te-adapter")
-            load_adapter(self.pipe.text_encoder, args.te_adapter, trainable=False)
+            from samtok_edit21.models.codec import SamtokCodec
+            # Raw TE conditioning: no adapter is loaded for the cache.
+            self.codec = SamtokCodec(Path(args.samtok) / "sam2.1_hiera_large.pt",
+                                     Path(args.samtok) / "mask_tokenizer_256x2.pth", device=args.device)
         elif args.init_adapter:
             target = self.pipe.text_encoder if args.stage == "stage1" else self.pipe.dit
             loaded = load_adapter(target, args.init_adapter, trainable=True)
-            if loaded["stage"] != args.stage:
-                raise ValueError("--init-adapter belongs to a different stage")
+            if loaded["stage"] != args.stage or adapter_binding(loaded) != self.binding:
+                raise ValueError("--init-adapter belongs to a different stage or binding")
         else:
             target = self.pipe.text_encoder if args.stage == "stage1" else self.pipe.dit
-            add_adapter(target, args.stage, args.rank, args.dropout)
+            add_adapter(target, args.stage, args.rank, args.dropout, binding=self.binding)
 
         if task == "sft:data_process":
             self.pipe.eval()
@@ -184,18 +193,6 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         # microsteps. Zero LoRA-A gradients at initialization remain valid.
         self._branch_grad_peaks.append(gradient.detach().abs().amax().float())
 
-    def _supervision(self, row):
-        return None if self.region_store is None else self.region_store.load(row, self.args.base_path)
-
-    def _flow(self, inputs):
-        base = self.args.attention_weight
-        warmup = self.args.attention_warmup_steps
-        effective = base * (min(self.completed_updates / warmup, 1.0) if warmup else 1.0)
-        return flow_loss(self.pipe, inputs, stage=self.stage, region_weight=self.args.region_weight,
-                         region_n_min=self.args.region_n_min, attention_weight=effective,
-                         attention_layers=self.args.attention_layers if base else (),
-                         attention_read_weight=self.args.attention_read_weight)
-
     def on_optimizer_step(self, completed_updates, accelerator, skipped=False, learning_rate=None):
         """One collective per accumulation window; logs are per-sample means."""
         self.completed_updates = completed_updates
@@ -213,16 +210,13 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             entry = {"optimizer_step": completed_updates, "skipped": skipped,
                      "samples": len(records), "world_size": accelerator.num_processes,
                      "branches": dict(Counter(r["_branch"] for r in records)),
+                     "edit_types": dict(Counter(r["_edit_type"] for r in records)),
                      "rank_samples": dict(Counter(str(r["_rank"]) for r in records)),
                      "metrics": {k: sum(v) / len(v) for k, v in values.items()},
                      "counts": {k: len(v) for k, v in values.items()},
-                     "gradient_zero_reasons": dict(Counter(r["_gradient_zero_reason"] for r in records if "_gradient_zero_reason" in r)),
-                     "skip_reasons": dict(Counter(r["region_skip_reason"] for r in records if "region_skip_reason" in r))}
+                     "gradient_zero_reasons": dict(Counter(r["_gradient_zero_reason"] for r in records if "_gradient_zero_reason" in r))}
             with (Path(self.args.output) / "training_metrics.jsonl").open("a") as stream:
                 stream.write(json.dumps(entry) + "\n")
-            if self.args.region_weight or self.args.attention_weight:
-                with (Path(self.args.output) / "supervision_metrics.jsonl").open("a") as stream:
-                    stream.write(json.dumps(entry) + "\n")
         else:
             entry = None
         if hasattr(self, "tracker"):
@@ -231,11 +225,8 @@ class SamtokTrainingModule(DiffusionTrainingModule):
     def forward(self, data, inputs=None):
         self._branch_grad_peaks = []
         if self.task == "sft:data_process":
-            prepared = prepare_fm(
-                self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=False,
-                supervision=self._supervision(data)
-            )
-            validate_conditioning(prepared)
+            prepared = prepare_fm(self.pipe, data, self.args.base_path, self.args.max_pixels,
+                                  codec=self.codec)
             original = {k: v for k, v in data.items() if k != "_row_index"}
             return {"inputs": _cpu(prepared), "row_index": data["_row_index"],
                     "row_hash": row_hash(original), "identity": self.args.conditioning_identity}
@@ -244,33 +235,28 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             if inputs is None:
                 raise ValueError("Stage 2 training expects cached inputs")
             inputs = dict(inputs)
-            cached_branch = inputs.pop("_sample_kind", "cached_fm")
+            branch = inputs.pop("_sample_kind", "cached_fm")
+            edit_type = inputs.pop("_sample_edit_type", None)
             sample_hash = inputs.pop("_sample_row_sha256", None)
             validate_conditioning(inputs)
-            loss, metrics = self._flow(inputs)
-        elif data["sample_type"] == "edit_ntp":
+            loss, metrics = flow_loss(self.pipe, inputs, binding=self.binding)
+        elif data["sample_type"] in {"edit_ntp", "rec_ntp"}:
+            branch, edit_type, sample_hash = row_kind(data), data["edit_type"], row_hash(data)
             images, _, height, width = load_images(
                 data, self.args.base_path, self.args.max_pixels
             )
             images = resize_sources(self.pipe, images, height, width)
-            loss, metrics = ntp_loss(self.pipe, data["prompt"], images, data["mt_cot"])
+            request = LOC_REQUEST if data["sample_type"] == "edit_ntp" else None
+            loss, metrics = ntp_loss(self.pipe, data["prompt"], images, data["mt_cot"], request=request)
             loss = loss * self.args.ntp_weight
         else:
-            prepared = prepare_fm(
-                self.pipe, data, self.args.base_path, self.args.max_pixels, te_grad=True,
-                supervision=self._supervision(data)
-            )
-            if not prepared["prompt_embeds"].requires_grad:
-                raise RuntimeError("FM lost its gradient connection to TE")
-            loss, metrics = self._flow(prepared)
-            loss = loss * self.args.fm_weight
+            raise ValueError("v2 Stage 1 trains only edit_ntp/rec_ntp rows")
         if not torch.isfinite(loss).all() or not loss.requires_grad:
             raise RuntimeError('Loss must be finite and differentiable')
         self.last_metrics = metrics
-        branch = cached_branch if self.stage == "stage2" else row_kind(data)
         self.pending_metrics.append({**metrics, "weighted_total": loss.detach().item(),
-                                     "_row_sha256": sample_hash if self.stage == "stage2" else row_hash(data),
-                                     "_branch": branch, "_rank": int(os.environ.get("RANK", 0))})
+                                     "_row_sha256": sample_hash, "_branch": branch,
+                                     "_edit_type": edit_type, "_rank": int(os.environ.get("RANK", 0))})
         return loss
 
     def after_backward_audit(self):
@@ -308,7 +294,7 @@ def verify_rank_parameters(model, accelerator, output):
 
 
 def _schedule_dataset(args, accelerator, rows):
-    block_len = 8 if args.stage == "stage1" else 4
+    block_len = sum(RATIOS[args.stage].values())
     if accelerator.num_processes > 1 and args.accumulation % block_len:
         raise ValueError(
             f"For per-rank exact {args.stage} ratios, accumulation must be a multiple "
@@ -418,48 +404,19 @@ def _startup(args, accelerator, phase, state, **details):
             stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
-def _region_preflight(args, accelerator, rows):
-    _startup(args, accelerator, "region_preflight", "started",
-             mode="prepared_report" if args.prepared_data_report else "full_scan")
-    if args.prepared_data_report:
-        from samtok_edit21.data.preflight import verify_prepared_region_report
-        result = _main_rank_result(accelerator, lambda: verify_prepared_region_report(
-            args.prepared_data_report, args.metadata, args.region_cache,
-            args.max_pixels, len(rows)))
-    else:
-        from samtok_edit21.regions.supervision import RegionStore
-        store = RegionStore(args.region_cache, args.max_pixels)
-        for index, row in enumerate(rows, 1):
-            if row["sample_type"] != "edit_ntp":
-                store.load(row, args.base_path)
-            if index % 1000 == 0 and accelerator.is_main_process:
-                _startup(args, accelerator, "region_preflight", "progress",
-                         rows_checked=index, rows_total=len(rows))
-        result = {"mode": "full_scan", "rows": len(rows)}
-    _startup(args, accelerator, "region_preflight", "complete", **result)
-    return result
-
-
 def run_train(args):
-    if args.attention_weight:
-        from samtok_edit21.training.attention import require_attention_backend
-        require_attention_backend()
     validate_training_length_and_saves(args)
     accelerator = _accelerator(args.accumulation)
     args.device = str(accelerator.device)
     if not args.plan_only:
         _fresh_output(args, accelerator)
     set_seed(args.seed)  # same adapter initialization on every rank
-    data_preflight = None
     if args.stage == "stage2":
         manifest = json.loads((Path(args.cache) / "manifest.json").read_text())
         args.max_pixels = manifest["identity"]["max_pixels"]
         def validate():
             validate_cache_manifest(manifest)
             assert_models_match(manifest["identity"], args.qwen, args.samtok)
-            if args.region_weight or args.attention_weight:
-                if not manifest.get("supervision_identity"):
-                    raise ValueError("Training requires a conditioning cache built with --region-cache")
         _startup(args, accelerator, "conditioning_cache_validation", "started")
         _main_rank_result(accelerator, validate)
         _distributed_cache_validation(args.cache, manifest, accelerator)
@@ -472,8 +429,6 @@ def run_train(args):
         _startup(args, accelerator, "metadata_load", "started", metadata=args.metadata)
         rows = read_rows(args.metadata)
         _startup(args, accelerator, "metadata_load", "complete", rows=len(rows))
-        if args.region_weight or args.prepared_data_report:
-            data_preflight = _region_preflight(args, accelerator, rows)
         schedule, report = _schedule_dataset(args, accelerator, rows)
         dataset = ScheduledMetadata(rows, schedule)
         from samtok_edit21.data.provenance import model_identity
@@ -501,6 +456,7 @@ def run_train(args):
         "microsteps_per_rank": microsteps_per_rank,
         "save_steps_microsteps": args.save_steps,
         "planned_step_checkpoints": planned_step_checkpoints,
+        "binding": args.binding_config,
         "pool_exposure": report["pool_exposure"],
     }
     if accelerator.is_main_process:
@@ -508,7 +464,6 @@ def run_train(args):
             write_json(Path(args.output) / "schedule.json", report)
             write_json(Path(args.output) / "run.json", {
                 "args": vars(args), "base_identity": base_identity, "optimizer_updates": updates,
-                "data_preflight": data_preflight,
                 "effective_warmup_steps": warmup_steps,
                 "microsteps_per_rank": microsteps_per_rank,
                 "planned_step_checkpoints": planned_step_checkpoints,
@@ -541,13 +496,10 @@ def run_train(args):
     accelerator.wait_for_everyone()
     verify_rank_parameters(model, accelerator, args.output)
     def save():
-        config = {"stage": args.stage, "base_identity": base_identity,
-                  "supervision": {k: getattr(args, k) for k in ("region_weight", "region_n_min", "attention_weight", "attention_read_weight", "attention_layers", "attention_warmup_steps")}}
-        if args.stage == "stage1" and args.region_cache:
-            config["supervision_identity"] = model.region_store.identity
+        config = {"stage": args.stage, "base_identity": base_identity}
         if args.stage == "stage2":
             config["conditioning_identity"] = manifest["identity"]
-            config["supervision_identity"] = manifest.get("supervision_identity")
+            config["binding"] = args.binding_config
         pipe = accelerator.unwrap_model(model).pipe
         save_adapter(pipe.text_encoder if args.stage == "stage1" else pipe.dit,
                      Path(args.output) / "adapter", config)
@@ -572,25 +524,10 @@ def _distributed_call(accelerator, label, function):
     return gathered
 
 
-def _validate_cache_inputs(payload, row, *, supervision_identity=None):
+def _validate_cache_inputs(payload, row):
     if payload.get("row_hash") != row_hash(row):
         raise ValueError("Cache payload row hash disagrees with metadata")
-    inputs = payload.get("inputs")
-    if not isinstance(inputs, dict):
-        raise ValueError("Cache payload is missing inputs")
-    if "prompt_embeds_mask" not in inputs:
-        raise ValueError("Missing text attention mask")
-    sources = row["edit_image"]
-    source_count = 1 if isinstance(sources, str) else len(sources)
-    if len(inputs["edit_latents"]) != source_count:
-        raise ValueError("Source latent count differs from metadata image count")
-    validate_conditioning(inputs)
-    supervision = inputs.get("region_supervision")
-    if supervision_identity is not None or supervision is not None:
-        from samtok_edit21.regions.supervision import validate_supervision
-        validate_supervision(supervision, inputs, row, require_positions=True)
-        if supervision["identity"] != supervision_identity:
-            raise ValueError("Conditioning cache supervision identity mismatch")
+    validate_cache_inputs(payload.get("inputs"), row)
 
 
 def _cache_manifest_shard(args, accelerator, rows):
@@ -600,10 +537,6 @@ def _cache_manifest_shard(args, accelerator, rows):
     rank_dir = output / str(rank)
     if not rank_dir.is_dir():
         raise ValueError(f"Missing cache rank directory: {rank_dir}")
-    supervision_identity = None
-    if args.region_cache:
-        from samtok_edit21.regions.supervision import RegionStore
-        supervision_identity = RegionStore(args.region_cache, args.max_pixels).identity
     entries, seen = [], set()
     for path in sorted(rank_dir.glob("*.pth"), key=lambda p: int(p.stem)):
         if not path.stem.isdigit():
@@ -616,7 +549,7 @@ def _cache_manifest_shard(args, accelerator, rows):
         row = rows[index]
         if payload.get("identity") != args.conditioning_identity:
             raise ValueError("Cache payload identity disagrees with conditioning identity")
-        _validate_cache_inputs(payload, row, supervision_identity=supervision_identity)
+        _validate_cache_inputs(payload, row)
         digest = row_hash(row)
         checksum = file_hash(path)
         side = {"row_index": index, "row_hash": digest,
@@ -685,9 +618,6 @@ def _merge_cache_manifest(args, accelerator, rows):
     manifest = {"format": FORMAT, "identity": args.conditioning_identity,
                 "row_count": len(rows),
                 "rows": [entries[index] for index in range(len(rows))]}
-    if args.region_cache:
-        from samtok_edit21.regions.supervision import RegionStore
-        manifest["supervision_identity"] = RegionStore(args.region_cache, args.max_pixels).identity
     validate_cache_manifest(manifest)
     write_json(output / "manifest.json", manifest)  # atomic publication after distributed validation
 
@@ -721,16 +651,10 @@ def run_cache(args):
         _fresh_output(args, accelerator)
     set_seed(args.seed)
     rows = read_rows(args.metadata)
-    if any(row["sample_type"] == "edit_ntp" for row in rows):
-        raise ValueError("Cache only accepts FM metadata, never edit_ntp")
+    if any(row["sample_type"] not in {"edit", "edit_umt"} for row in rows):
+        raise ValueError("Cache only accepts Stage 2 FM metadata (edit/edit_umt)")
     args.conditioning_identity = _main_rank_result(
-        accelerator, lambda: conditioning_identity(args.qwen, args.samtok, args.te_adapter,
-                                                   args.max_pixels, args.metadata))
-    te_config = json.loads((Path(args.te_adapter) / "adapter.json").read_text())
-    if te_config.get("base_identity") is not None and te_config["base_identity"] != args.conditioning_identity["models"]:
-        raise ValueError("TE adapter base model differs from cache provenance")
-    if te_config["stage"] != "stage1":
-        raise ValueError("--te-adapter must be a Stage 1 adapter")
+        accelerator, lambda: conditioning_identity(args.qwen, args.samtok, args.max_pixels, args.metadata))
     dataset = ScheduledMetadata(rows, list(range(len(rows))), cache=True)
     model = SamtokTrainingModule(args, "sft:data_process")
     launch_data_process_task(accelerator, dataset, model, ModelLogger(args.output),
@@ -758,7 +682,6 @@ def _parser():
         p.add_argument("--device", default="cuda")
         p.add_argument("--metadata")
         p.add_argument("--cache")
-        p.add_argument("--te-adapter")
         p.add_argument("--resume-cache", action="store_true",
                        help="Resume an incomplete cache, reusing readable row payloads")
         p.add_argument("--cache-save-retries", type=int, default=8,
@@ -772,8 +695,8 @@ def _parser():
         p.add_argument("--dropout", type=float)
         p.add_argument("--lr", type=float)
         p.add_argument("--weight-decay", type=float)
-        p.add_argument("--ntp-weight", type=float, default=0.05)
-        p.add_argument("--fm-weight", type=float, default=1.0)
+        p.add_argument("--ntp-weight", type=float, default=1.0,
+                       help="Stage 1 loss scale; Stage 1 is NTP only in v2")
         p.add_argument("--max-grad-norm", type=float, default=1.0)
         p.add_argument("--seed", type=int, default=20260920)
         p.add_argument("--save-steps", "--save-every", type=int, default=2000,
@@ -786,14 +709,11 @@ def _parser():
         warmup.add_argument("--warmup-steps", type=int,
                             help="Explicit optimizer updates, overriding the stage default ratio")
         p.add_argument("--init-adapter")
-        p.add_argument("--region-cache", help="Independent frozen region cache (Stage 1 and conditioning cache builder)")
-        p.add_argument("--prepared-data-report", help="Stage 1: reuse offline metadata_report.json instead of scanning all image/coverage assets")
-        p.add_argument("--region-weight", type=float, default=0.0, help="C coefficient; suggested 0.5, zero disables")
-        p.add_argument("--region-n-min", type=float, default=16.0)
-        p.add_argument("--attention-weight", type=float, default=0.0, help="Calibrated final A coefficient; Stage 2 only")
-        p.add_argument("--attention-read-weight", type=float, default=0.5)
-        p.add_argument("--attention-layers", type=int, nargs="+", default=[7, 11, 15, 19, 23], help="Zero-based DiT layers")
-        p.add_argument("--attention-warmup-steps", type=int, default=500, help="Successful optimizer updates, independent of LR warmup")
+        p.add_argument("--binding", choices=BINDING_MODES, default="none",
+                       help="Stage 2 structural region binding (see models.binding)")
+        p.add_argument("--binding-beta", type=float, default=1.0, help="Attention bias scale (bias_* modes)")
+        p.add_argument("--binding-eps", type=float, default=0.05, help="Outside-region floor (bias_* modes)")
+        p.add_argument("--binding-rank", type=int, default=64, help="region_embed low-rank width")
         if command == "train":
             p.add_argument("--wandb-mode", choices=("disabled", "offline", "online"), default="disabled")
             p.add_argument("--wandb-project", default="samtok-edit")
@@ -817,6 +737,9 @@ def normalize_args(args):
     for key, value in vars(parser_defaults).items():
         if not hasattr(args, key):
             setattr(args, key, value)
+    binding = BindingConfig(args.binding, args.binding_beta, args.binding_eps, args.binding_rank)
+    if args.stage == "stage1" and binding.mode != "none":
+        raise ValueError("--binding is a Stage 2 (DiT) option")
     if getattr(args, 'init_adapter', None):
         config = json.loads((Path(args.init_adapter) / 'adapter.json').read_text())
         if config['stage'] != args.stage:
@@ -825,6 +748,9 @@ def normalize_args(args):
             if getattr(args, key, None) is not None and getattr(args, key) != config[key]:
                 raise ValueError(f'Explicit --{key} conflicts with warm-start adapter')
             setattr(args, key, config[key])
+        if adapter_binding(config) != binding:
+            raise ValueError('--binding conflicts with the warm-start adapter')
+    args.binding_config = binding.as_dict()
     defaults = {
         "stage1": {"accumulation": 8, "rank": 64, "dropout": 0.05, "lr": 4e-5, "weight_decay": 0.05},
         "stage2": {"accumulation": 4, "rank": 32, "dropout": 0.0, "lr": 1e-4, "weight_decay": 0.01},
@@ -846,30 +772,16 @@ def normalize_args(args):
             setattr(args, key, value)
     if args.accumulation < 1 or (args.steps is not None and args.steps < 1):
         raise ValueError("accumulation/steps must be positive")
-    for key in ("ntp_weight", "fm_weight", "region_weight", "attention_weight", "attention_read_weight"):
-        if not math.isfinite(getattr(args, key)) or getattr(args, key) < 0:
-            raise ValueError(f"{key} must be finite and nonnegative")
-    if not math.isfinite(args.region_n_min) or args.region_n_min <= 0 or args.attention_warmup_steps < 0:
-        raise ValueError("Invalid region n_min / attention warmup")
-    if not args.attention_layers or len(set(args.attention_layers)) != len(args.attention_layers) or any(i < 0 or i >= 32 for i in args.attention_layers):
-        raise ValueError("Attention layers must be unique indices in [0,31]")
-    args.attention_layers = sorted(args.attention_layers)
-    if args.stage == "stage1" and args.attention_weight:
-        raise ValueError("Attention supervision is Stage 2 only")
-    if args.prepared_data_report and (args.command != "train" or args.stage != "stage1" or not args.region_cache):
-        raise ValueError("--prepared-data-report requires Stage 1 train and --region-cache")
-    if args.command == "train" and args.stage == "stage1" and args.region_weight and not args.region_cache:
-        raise ValueError("Stage 1 C requires --region-cache")
-    if args.command == "train" and args.stage == "stage2" and args.region_cache:
-        raise ValueError("Stage 2 reads regions from conditioning cache; use --region-cache during cache construction")
+    if not math.isfinite(args.ntp_weight) or args.ntp_weight <= 0:
+        raise ValueError("ntp_weight must be finite and positive")
     return args
 
 
 def main(argv=None):
     args = normalize_args(_parser().parse_args(argv))
     if args.command == "cache":
-        if not args.metadata or not args.te_adapter:
-            raise SystemExit("cache requires --metadata and --te-adapter")
+        if not args.metadata:
+            raise SystemExit("cache requires --metadata")
         run_cache(args)
     else:
         if args.stage == "stage1" and not args.metadata:
