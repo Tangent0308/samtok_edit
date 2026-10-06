@@ -195,7 +195,7 @@ python -m samtok_edit21 infer --mode inline ... --binding bias_clause --binding-
 | 步骤 | 模块 | 说明 |
 |---|---|---|
 | case | [cases.py](../src/samtok_edit21/evaluation/cases.py#L63) | 517 个单区域 case + MIRAGE 99 个双区域 case 拆成 198 个原子编辑（[`mirage_atomic`](../src/samtok_edit21/evaluation/cases.py#L35)：带位置指令按 ", and " 拆分，region-only 指令按 "For {region_k}," 拆分，第 k 个子句对应第 k 个区域），共 715 个；按源图 hash 固定划分 30% dev / 70% test（[`split_of`](../src/samtok_edit21/evaluation/cases.py#L23)） |
-| 编译（D2） | [compile.py](../src/samtok_edit21/evaluation/compile.py#L41) | `sources` 把 case 写成转换器输入（add/remove 类型钉住，replace 由规则判定）；在 vLLM 0.17.1 环境运行**训练数据用的同一个** `preparation.semantic`（Qwen3.5-9B + 规则回退）；`compile` 生成带 `{region}` 的 noref 模板，失败时退回确定性的 `interactive_prompt`；所有模板用训练 noref 语法校验；`review.md` 每类抽样供人工检查 |
+| 编译（D2） | [compile.py](../src/samtok_edit21/evaluation/compile.py#L41) | `sources` 把 case 写成转换器输入（add/remove 类型钉住，replace 由规则判定）；在 vLLM 0.17.1 环境运行**训练数据用的同一个** `preparation.semantic`（Qwen3.5-9B + 规则回退）；`compile` 生成带 `{region}` 的 noref 模板，失败时退回确定性的 `interactive_prompt`；所有模板用训练 noref 语法校验；`review.md` 每类抽样供人工检查。2026-10-06 起转换器对 add 多一条规则（删除整个放置、保留新物体的姿态/外观，见实验记录 6.3），其他类型的 prompt 不变；训练数据仍是旧 prompt 的结果 |
 | 推理 | [run.py](../src/samtok_edit21/evaluation/run.py#L139) | torchrun 每卡一个进程，可断点续跑；设置与区域处理见下表；`--stock` 用 benchmark 仓库的 two-image 定位协议跑 stock |
 | judge | [manifest.py](../src/samtok_edit21/evaluation/manifest.py) | 生成原 pair_v2 judge 的 manifest（字段与 input digest 与 judge 自带 prepare 一致）；未改动的 517 个 case 直接复用已有 stock 输出 |
 | 汇总 | [score.py](../src/samtok_edit21/evaluation/score.py) | 方法 × setting × 编译类型 × dev/test 的 E/P/Q/strict；`--compare A B` 给出按 case 配对的 bootstrap 区间 |

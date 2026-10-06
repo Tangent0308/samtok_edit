@@ -176,6 +176,20 @@ PYTHONPATH=$REPO/src $PY -m samtok_edit21.evaluation.compile compile --cases $EV
 
 add 的问题来自 9B 转换器对放置短语之后的从句的处理：CompBench 的 add 指令常把新物体的姿态写在放置短语之后（`add a yellow cow on the right side of the brown cow with its back to us ...`），转换器把放置短语连同其后内容一起删掉。训练数据的指令多把外观写在放置短语之前：随机抽查训练集 30 条 add 的原指令与 noref 行，没有一条丢失新物体自身的外观/姿态（6 条保留了部分放置描述）。所以这是评测指令风格带来的问题，交互 setting 下模型收到的要求会少于 judge 看到的原指令，在这一点上评测 noref prompt 与训练分布并不一致。为此编译结果同时提供 `ref_template`（原指令 + 区域 token，同样是训练格式，709/715 个 case 可用，其余 6 个是模板回退的 case），推理可用 `--prompt-variant ref`（输出目录加 `+ref` 后缀）。建议交互 setting 下的 add 两种都评：noref 为计划默认，ref 作对照；若两者差异明显，以 ref 结果作为 add 的主要参考。
 
+### 6.3 noref 转换 prompt 的 add 规则优化
+
+6.1 中的 add 问题是 9B 转换器没有遵守已有要求（保留新物体外观/姿态，只删放置描述）：姿态写在放置短语之后时，会连同放置一起删掉。优化过程（每次都用 Qwen3.5-9B、vLLM 0.17.1、temperature 0，同时跑 715 个评测 case 和训练集随机 300 条 RefEdit/CrispEdit/ScaleEdit add 指令；产物 `$EVAL/prompt_addfix{,2,3}/`）：
+
+| 尝试 | 改动 | 评测 add（抽查的 30 条） | 训练风格 add（299 条，与 v1 结果比较） | 非 add |
+|---|---|---|---|---|
+| 1 | 在共享 prompt 中加 add 规则，换 add 示例 | 7 条修复，但 5 条把放置短语移到 `in this region` 之后 | 135 条改变，较多变差（放置残留、丢 "leaping off the cliff" 等） | 19 条改变，其中 1 条丢属性名词（"Change the fur color of…" → "Change this region to blue"） |
+| 2 | 共享 prompt 不变；只在 add 专用部分加规则和两个示例（删除整个放置、保留尾部姿态） | 8 条改变全部为修复；放置残留消失 | 34 条内容改变，约一半变差（"perched/hanging/nestled/parked" 随放置一起被删） | 不变 |
+| 3（采用） | 在 2 的规则中加一句：放置前的姿态词保留（"perched on the log" → "perched in this region"） | 8 条改变全部为修复（如 `Add a yellow cow in this region ⟨B⟩ with its back to us and head facing left.`）；仍漏 2 条歧义从句 | 263 条不变；36 条改变中约 24 条更好（删净放置、保留 perched/sitting/standing/walking 等）、约 9 条中性、3 条变差（1 条放置残留、丢 "nestled"、丢 "medium size"） | 内容不变 |
+
+采用尝试 3（commit `874c9a1`）。用它重跑评测编译：715/715 由转换器接受（模型 714、规则 1），不再有模板回退，全部有 ref 模板；相对旧 prompt，263 个 add 中 67 个改写改变，非 add 不变。当前 `$EVAL/compiled.jsonl`、`review.md`、`semantic/` 为新结果；旧结果保留为 `compiled_promptv1.jsonl`、`review_promptv1.md`、`semantic_promptv1/`。
+
+训练数据按决定暂不改动，仍是旧 prompt 的转换结果。如果下一轮数据改进用新 prompt 重跑，约 12% 的 add noref 行会改变，按上面的抽查以改进为主。由于评测与训练现在用的转换 prompt 只在 add 部分不同，评测 noref 的 add 改写比训练行略"干净"（放置删得更彻底、姿态保留更完整），两者仍是同一种格式。
+
 ### 6.2 推理、stock、judge 与汇总
 
 用全分辨率 smoke 的 B0 adapter（只训练 3 步，结果数值无意义，只检查流程），6 个 dev case（CompBench add 2、remove 2，MIRAGE attribute 1、add 1）× 全部 setting × 融合开/关，共 51 张图（8 卡，约 25 s/张）：
@@ -207,7 +221,7 @@ PYTHONPATH=$REPO/src $PY -m samtok_edit21.evaluation.score --records $EVAL/smoke
 
 ## 7. 下一步
 
-1. 人工复核 `$EVAL/review.md`（初查结果见 6.1；确认 add 的交互 setting 是否同时评 ref 变体）。
+1. 人工复核 `$EVAL/review.md`（已用 6.3 的新 prompt 重新生成；确认 add 的交互 setting 是否同时评 ref 变体）。
 2. 四机运行 A（E1 + E2 + E3 seed 1），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
 3. E1 完成后：pass-1 评测（非 add 的 mask IoU 不低于 v1：remove 0.72、replace 0.66；add 的 bbox 格式率 ≥ 95%）。
 4. E3 完成后：dev 评测（B0 × 2 seed、融合开/关）、E4 推理期偏置扫描，然后 E5–E7。
