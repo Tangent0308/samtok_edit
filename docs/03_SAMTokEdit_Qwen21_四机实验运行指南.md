@@ -24,11 +24,15 @@ set -Eeuo pipefail
 export SAMTOK_RUN_ID=qwen21_v2_4n_A_s1_b0_001
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
-ARGS=(--full-training --phases stage1,cache,stage2
-      --stage1-steps 1300 --stage1-save-steps 1600 --stage1-rank 64
-      --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
-      --binding none --seed 20261006
-      --max-pixels 1048576 --timeout 604800 --wandb-mode online)
+ARGS=(
+  --full-training
+  --phases stage1,cache,stage2
+  --stage1-steps 1300 --stage1-save-steps 1600 --stage1-rank 64
+  --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
+  --binding none --seed 20261006
+  --max-pixels 1048576 --timeout 604800 --wandb-mode online
+)
+
 # ===== 固定设置 =====
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=qwen-image-2.1-v2
@@ -121,10 +125,13 @@ export SAMTOK_RUN_ID=qwen21_v2_4n_S2_b0_s2_001
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
 CACHE="$SAMTOK_EXPERIMENT/runs/qwen21_v2_4n_A_s1_b0_001/cache"
-ARGS=(--full-training --phases stage2 --cache "$CACHE"
-      --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
-      --binding none --seed 20261007
-      --max-pixels 1048576 --timeout 604800 --wandb-mode online)
+ARGS=(
+  --full-training
+  --phases stage2 --cache "$CACHE"
+  --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
+  --binding none --seed 20261007
+  --max-pixels 1048576 --timeout 604800 --wandb-mode online
+)
 ```
 
 | 臂（计划编号） | `SAMTOK_RUN_ID` 建议 | `--binding` 及参数 |
@@ -145,9 +152,11 @@ E4（只在 B0 上做推理期偏置，不训练）不需要四机，见[代码�
 export SAMTOK_RUN_ID=qwen21_v2_4n_smoke_001
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/smoke/data_smoke_001"
-ARGS=(--phases stage1,cache,stage2
-      --stage1-steps 2 --stage1-save-steps 8 --stage2-steps 3 --stage2-save-steps 4
-      --binding none --max-pixels 65536 --timeout 7200 --wandb-mode online)
+ARGS=(
+  --phases stage1,cache,stage2
+  --stage1-steps 2 --stage1-save-steps 8 --stage2-steps 3 --stage2-save-steps 4
+  --binding none --max-pixels 65536 --timeout 7200 --wandb-mode online
+)
 ```
 
 ## 5. 产物、验收与失败处理
