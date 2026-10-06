@@ -18,7 +18,9 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from samtok_edit21.data.io import write_json
-from samtok_edit21.data.protocol import REGION_KIND, box_of, interactive_prompt, span_of, validate_inline
+from samtok_edit21.data.protocol import (
+    REGION_KIND, Unit, box_of, interactive_prompt, render_units, span_of, validate_inline,
+)
 
 SENTINEL = {"mask": span_of([0, 256]), "box": box_of((0, 0, 1000, 1000))}
 PINNED_TYPES = {"add": "add", "remove": "remove"}  # like dataset-mapped training types
@@ -55,11 +57,23 @@ def compile_case(case, result):
         entry.update(method="template", ref_phrase=None, type_resolution="benchmark_type",
                      converter_status=(result or {}).get("status", "missing"))
     entry.update(edit_type=edit_type, region_kind=REGION_KIND[edit_type], noref_template=template)
+    sentinel = SENTINEL[entry["region_kind"]]
     try:
-        validate_inline(template.replace("{region}", SENTINEL[entry["region_kind"]]), "noref", edit_type)
+        validate_inline(template.replace("{region}", sentinel), "noref", edit_type)
         entry["valid_noref"], entry["invalid_reason"] = True, None
     except ValueError as exc:
         entry["valid_noref"], entry["invalid_reason"] = False, str(exc)
+    # The ref variant (original instruction + region tokens) is the other
+    # trained format; it keeps every attribute the noref rewrite may drop.
+    entry["ref_template"] = None
+    if entry["ref_phrase"]:
+        try:
+            unit = Unit(entry["ref_phrase"], (sentinel,), edit_type, units[0].get("anchor_phrase"))
+            ref = render_units(case["instruction"], [unit], variant="ref")
+            validate_inline(ref, "ref", edit_type)
+            entry["ref_template"] = ref.replace(sentinel, "{region}")
+        except ValueError:
+            pass
     return entry
 
 
@@ -74,10 +88,12 @@ def review_markdown(compiled, cases, per_type=50, seed=0):
         rows = sorted(groups[edit_type], key=lambda e: e["case_id"])
         random.Random(seed).shuffle(rows)
         lines += [f"## {edit_type} ({len(groups[edit_type])} cases, showing {min(per_type, len(rows))})", "",
-                  "| case | benchmark type | instruction | noref template | method | valid |", "|---|---|---|---|---|---|"]
+                  "| case | benchmark type | instruction | noref template | ref template | method | valid |",
+                  "|---|---|---|---|---|---|---|"]
         for entry in rows[:per_type]:
             cells = [entry["case_id"], by_case[entry["case_id"]]["benchmark_type"], entry["instruction"],
-                     entry["noref_template"], entry["method"], "yes" if entry["valid_noref"] else entry["invalid_reason"]]
+                     entry["noref_template"], entry.get("ref_template") or "—", entry["method"],
+                     "yes" if entry["valid_noref"] else entry["invalid_reason"]]
             lines.append("| " + " | ".join(str(c).replace("|", "\\|") for c in cells) + " |")
         lines.append("")
     return "\n".join(lines)
@@ -111,7 +127,8 @@ def main(argv=None):
                "edit_types": dict(Counter(e["edit_type"] for e in compiled)),
                "benchmark_to_compiled_type": dict(Counter(
                    f"{c['benchmark_type']}->{e['edit_type']}" for c, e in zip(cases, compiled))),
-               "invalid": [e["case_id"] for e in compiled if not e["valid_noref"]]}
+               "invalid": [e["case_id"] for e in compiled if not e["valid_noref"]],
+               "without_ref_template": [e["case_id"] for e in compiled if not e["ref_template"]]}
     write_json(output.with_suffix(".summary.json"), summary)
     print(json.dumps(summary, ensure_ascii=False))
 

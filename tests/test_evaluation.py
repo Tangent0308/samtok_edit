@@ -61,6 +61,7 @@ def test_compile_uses_converter_and_falls_back_to_templates():
         "noref_instruction": "Remove the object in this region {mask_0}."}}
     entry = compile_case(case, accepted)
     assert entry["noref_template"] == "Remove the object in this region {region}." and entry["valid_noref"]
+    assert entry["ref_template"] == "Remove the left cup {region}."
     attribute = {**accepted, "annotation": {"units": [{"edit_type": "attribute", "ref_phrase": "shell"}],
                                             "noref_instruction": "Change the color of this region {mask_0} to red."}}
     assert compile_case({**case, "benchmark_type": "replace"}, attribute)["region_kind"] == "mask"
@@ -68,6 +69,7 @@ def test_compile_uses_converter_and_falls_back_to_templates():
                             {"status": "failed"})
     assert fallback["method"] == "template" and fallback["region_kind"] == "box"
     assert fallback["noref_template"] == "Add a cup in this region {region}." and fallback["valid_noref"]
+    assert fallback["ref_template"] is None
     prompt = fallback["noref_template"].replace("{region}", SENTINEL["box"])
     assert regions_in(prompt) == [SENTINEL["box"]]
 

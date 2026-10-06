@@ -143,6 +143,8 @@ def main(argv=None):
     parser.add_argument("--output", required=True)
     parser.add_argument("--settings", nargs="+", choices=SETTINGS, default=list(SETTINGS))
     parser.add_argument("--blend", choices=("off", "on", "both"), default="both")
+    parser.add_argument("--prompt-variant", choices=("noref", "ref"), default="noref",
+                        help="Interactive prompt format: noref rewrite (plan default) or instruction + region")
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
     parser.add_argument("--datasets", nargs="+", help="Restrict to these source datasets")
     parser.add_argument("--limit", type=int, help="First N cases after filtering (smoke)")
@@ -214,7 +216,8 @@ def main(argv=None):
                                          "dit_adapter_config": config.get("binding") if config else "stock"})
     from samtok_edit21.models.pipeline import edit
     for done, (case, setting, blend) in enumerate(jobs, 1):
-        directory = output / (setting + ("+blend" if blend else ""))
+        suffix = "+ref" if args.prompt_variant == "ref" and setting in {"mask", "box", "point"} else ""
+        directory = output / (setting + suffix + ("+blend" if blend else ""))
         path = directory / f"{case['case_id']}.png"
         if path.is_file() and path.with_suffix(".json").is_file():
             continue
@@ -235,7 +238,11 @@ def main(argv=None):
             details = {}
             if setting in {"mask", "box", "point"}:
                 token, region, details = region_inputs(case, setting, entry["region_kind"], source, codec)
-                prompt, mode = entry["noref_template"].replace("{region}", token), "inline"
+                template = entry["noref_template"]
+                if args.prompt_variant == "ref":
+                    template = entry.get("ref_template") or template
+                    details["prompt_variant"] = "ref" if entry.get("ref_template") else "noref_fallback"
+                prompt, mode = template.replace("{region}", token), "inline"
                 kwargs["blend_region"] = region if blend else None
             elif setting == "text":
                 prompt, mode = case["instruction"], "online"
