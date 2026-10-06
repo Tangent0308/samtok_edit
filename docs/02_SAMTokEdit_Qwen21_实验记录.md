@@ -9,7 +9,7 @@
 | 里程碑 | 状态 |
 |---|---|
 | M0：代码、测试、数据转换、评测编译器 | 完成，本地八卡 smoke 全部通过；`review.md` 待人工抽检 |
-| M1：E1 Stage 1 + pass-1 评测 | 待四机运行 A（[四机指南第 2 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#2-运行-astage-1e1-缓存e2-stage-2-b0-seed-1e3)） |
+| M1：E1 Stage 1 + pass-1 评测 | 运行 A 首次提交（2026-10-06）因 intern 配额已满在入口处失败，入口已修复，等配额恢复后重新提交（第 7 节） |
 | M2–M4 | 未开始 |
 
 ## 1. 环境
@@ -219,9 +219,26 @@ PYTHONPATH=$REPO/src $PY -m samtok_edit21.evaluation.score --records $EVAL/smoke
   --compiled $EVAL/compiled.jsonl --output $EVAL/smoke/report.json --compare stock smoke_b0
 ```
 
-## 7. 下一步
+## 7. 四机运行 A 首次提交（2026-10-06）
+
+入口为[四机指南第 2 节](03_SAMTokEdit_Qwen21_四机实验运行指南.md#2-运行-astage-1e1-缓存e2-stage-2-b0-seed-1e3)，run ID `qwen21_v2_4n_A_s1_b0_001`，代码 `5443a7b`。
+
+- **现象**：Merlin 作业 `65f2a3f151b31f87`（trial `303524216`）13:49 提交，13:54 以 exit code 1 失败。ARNOLD 日志页的最后几行是常驻脚本 `run0926.sh` 的输出，看不到入口报错；共享盘上没有 `runs/qwen21_v2_4n_A_s1_b0_001/`。
+- **原因**：intern 目录的 NAS 配额已满。入口在 `mkdir -p "$RUN/bootstrap"` 处收到 `Disk quota exceeded`，以 exit code 1 退出。这一步在节点日志创建之前，所以共享盘上没有任何记录。ARNOLD 用 `bash /tmp/full_script_bash_file.sh` 执行用户脚本，stdout 和 stderr 分开记录（`/opt/tiger/rh2/rh2/init/bootstrap/user_script/runner.py`），而 mkdir 的报错只写到了 stderr。
+- **证据**：
+  - 作业实际执行的脚本（用 `mlx job get` 取回）与指南相同，只在开头多了一行 `bash /mnt/bn/strategy-mllm-train/user/tanyue/run0926.sh`。`mlx job log` 连不上（websocket bad handshake），未能取回 stderr。
+  - 14:20 在开发机上测试：`qwen21_v2/runs/` 和 `intern/users/tanyue/` 下新建文件都报 `Disk quota exceeded`，`user/tanyue/` 下可以写。`df` 显示整卷只用了 6%，看不出这个配额。
+  - 退出码对照（本机 bash 5.2）：`mkdir` 失败为 1；入口里其他的显式检查都是 2，只有 `${VAR:?}` 和未定义变量也会得到 1，而这几个变量与 v1 调通的作业相同。
+- **为什么不是我们自己占满的**：我们在 intern 下共约 40 GB（`qwen21_v2` 19.7 GB、`qwen21_full4_20260928` 3.4 GB、两个 benchmark 输出目录约 16 GB）。v1 缓存（2.8 TB）11:57 已删除，12:09 仍能正常写入。所以这个配额按比 `intern/users/tanyue` 更大的范围计算，满了之后需要管理员清理或扩容，我们这边删东西解决不了。
+- **修复**（commit `9530dbb`，只改入口脚本和指南，训练代码不变，`SAMTOK_EDIT_COMMIT` 仍为 `5443a7b`）：
+  - 入口第一行起把 stderr 并入 stdout，所有报错都会出现在 ARNOLD 日志页上。
+  - 创建 run 目录前先在 `$SAMTOK_EXPERIMENT/runs/` 下写一个探针文件；写不进去就打印原因、以退出码 3 退出，不留下任何文件。
+  - 本地验证（伪造四机 ARNOLD 变量，临时 run ID）：对当前的 intern 根目录，退出码 3，stdout 中有 `Disk quota exceeded` 和说明，stderr 为空，没有新建任何文件；对可写的临时目录并故意让 clone 失败，正常认领节点，写出 `failure.json`（阶段 checkout，退出码 128）。
+- **状态**：等 intern 配额恢复。因为这次什么都没有写，恢复后可以沿用同一个 run ID 重新提交。
+
+## 8. 下一步
 
 1. 人工复核 `$EVAL/review.md`（已用 6.3 的新 prompt 重新生成；确认 add 的交互 setting 是否同时评 ref 变体）。
-2. 四机运行 A（E1 + E2 + E3 seed 1），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
+2. intern 配额恢复后（四机指南第 1 节有一行可写性检查），重新提交四机运行 A（E1 + E2 + E3 seed 1），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
 3. E1 完成后：pass-1 评测（非 add 的 mask IoU 不低于 v1：remove 0.72、replace 0.66；add 的 bbox 格式率 ≥ 95%）。
 4. E3 完成后：dev 评测（B0 × 2 seed、融合开/关）、E4 推理期偏置扫描，然后 E5–E7。
