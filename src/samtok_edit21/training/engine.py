@@ -37,6 +37,7 @@ from diffsynth.diffusion.training_module import DiffusionTrainingModule  # noqa:
 
 from samtok_edit21.data.io import (  # noqa: E402
     RATIOS,
+    TYPE_WEIGHT_SCHEMES,
     file_hash,
     load_images,
     make_schedule,
@@ -307,6 +308,7 @@ def _schedule_dataset(args, accelerator, rows):
         args.accumulation,
         steps=args.steps,
         seed=args.seed,
+        type_weights=args.type_weights,
     )
     return schedule, report
 
@@ -457,6 +459,8 @@ def run_train(args):
         "save_steps_microsteps": args.save_steps,
         "planned_step_checkpoints": planned_step_checkpoints,
         "binding": args.binding_config,
+        "type_weights": args.type_weights,
+        "type_probabilities": report["type_probabilities"],
         "pool_exposure": report["pool_exposure"],
     }
     if accelerator.is_main_process:
@@ -709,6 +713,8 @@ def _parser():
         warmup.add_argument("--warmup-steps", type=int,
                             help="Explicit optimizer updates, overriding the stage default ratio")
         p.add_argument("--init-adapter")
+        p.add_argument("--type-weights", choices=TYPE_WEIGHT_SCHEMES,
+                       help="Edit-type mix of region pools; defaults to natural (Stage 1) / main4 (Stage 2)")
         p.add_argument("--binding", choices=BINDING_MODES, default="none",
                        help="Stage 2 structural region binding (see models.binding)")
         p.add_argument("--binding-beta", type=float, default=1.0, help="Attention bias scale (bias_* modes)")
@@ -757,6 +763,11 @@ def normalize_args(args):
     }[args.stage]
     if args.lr_schedule is None:
         args.lr_schedule = "cosine" if args.stage == "stage1" else "constant"
+    if args.type_weights is None:
+        # Stage 1 makes several passes: no type is repeated more than its rows
+        # allow. Stage 2 makes under one pass: add/remove/replace/attribute
+        # keep the v1 balance and every other type stays at its natural share.
+        args.type_weights = "natural" if args.stage == "stage1" else "main4"
     if args.lr_schedule not in {"constant", "cosine"}:
         raise ValueError("lr-schedule must be constant or cosine")
     if args.warmup_steps is not None and args.warmup_ratio is not None:

@@ -270,6 +270,7 @@ class Pipeline:
             self.distributed("stage1", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage1",
                 "--metadata", str(data/"stage1.jsonl"), "--steps", str(a.stage1_steps),
                 "--save-steps", str(a.stage1_save_steps), "--accumulation", "8", "--rank", str(a.stage1_rank),
+                *(["--type-weights", a.stage1_type_weights] if a.stage1_type_weights else []),
                 "--output", str(self.root/"stage1"), *shared, *tracking("stage1")])
         cache_output = self.root / "cache"
         if "cache" in phases:
@@ -290,7 +291,9 @@ class Pipeline:
                 "--binding-beta", str(a.binding_beta), "--binding-eps", str(a.binding_eps),
                 "--binding-rank", str(a.binding_rank),
                 "--steps", str(a.stage2_steps), "--save-steps", str(a.stage2_save_steps), "--accumulation", "4",
-                "--rank", str(a.stage2_rank), "--output", str(self.root/"stage2"), *shared, *tracking("stage2")])
+                "--rank", str(a.stage2_rank),
+                *(["--type-weights", a.stage2_type_weights] if a.stage2_type_weights else []),
+                "--output", str(self.root/"stage2"), *shared, *tracking("stage2")])
         if self.rank == 0:
             self.command("audit", [sys.executable, str(self.audit_script), "--run-root", str(self.root)])
         self.barrier("audit")
@@ -337,6 +340,10 @@ def main():
     p.add_argument("--stage2-save-steps", type=int, default=4, help="Per-rank microsteps, multiple of 4")
     p.add_argument("--binding", default="none",
                    choices=("none", "bias_span", "bias_clause", "region_embed", "region_rope"))
+    p.add_argument("--stage1-type-weights", choices=("v1", "natural", "main4"),
+                   help="Default natural (engine): every NTP row equally often")
+    p.add_argument("--stage2-type-weights", choices=("v1", "natural", "main4"),
+                   help="Default main4 (engine): add/remove/replace/attribute dominate")
     p.add_argument("--binding-beta", type=float, default=1.0)
     p.add_argument("--binding-eps", type=float, default=0.05)
     p.add_argument("--binding-rank", type=int, default=64)

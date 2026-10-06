@@ -43,6 +43,27 @@ def test_stage2_schedule_keeps_ref_noref_plain_ratio():
         make_schedule(rows + [_row("edit_ntp")], "stage2", 1, 4, steps=1)
 
 
+def test_type_weight_schemes():
+    from samtok_edit21.data.io import type_probabilities
+
+    sizes = {"add": 150, "remove": 300, "replace": 200, "attribute": 300, "action": 30, "text": 20}  # 1,000 rows
+    natural = type_probabilities("edit_ntp", sizes, "natural")
+    assert natural["remove"] == pytest.approx(0.3) and natural["text"] == pytest.approx(0.02)
+    main4 = type_probabilities("edit_umt:noref", sizes, "main4")
+    assert main4["action"] == pytest.approx(0.03) and main4["text"] == pytest.approx(0.02)
+    assert main4["add"] == pytest.approx(0.95 * 14 / 62) and main4["attribute"] == pytest.approx(0.95 * 20 / 62)
+    v1 = type_probabilities("edit_ntp", sizes, "v1")
+    assert v1["action"] == pytest.approx(10 / 82)
+    # Plain and replay pools stay natural under every scheme.
+    assert type_probabilities("edit", sizes, "main4") == type_probabilities("edit", sizes, "natural")
+    rows = [_row("edit_ntp", t) for t, n in sizes.items() for _ in range(n)] + [_row("rec_ntp", "remove")] * 50
+    _, report = make_schedule(rows, "stage1", 4, 8, steps=20, seed=0, type_weights="natural")
+    assert report["type_weights"] == "natural"
+    assert report["type_probabilities"]["edit_ntp"]["remove"] == pytest.approx(0.3, abs=1e-4)
+    with pytest.raises(ValueError):
+        make_schedule(rows, "stage1", 4, 8, steps=1, type_weights="uniform")
+
+
 def test_binding_is_a_stage2_option():
     import argparse
     from samtok_edit21.training.engine import normalize_args
@@ -53,7 +74,9 @@ def test_binding_is_a_stage2_option():
     args = normalize_args(argparse.Namespace(command="train", output="x", stage="stage2",
                                              binding="bias_clause", binding_beta=2.0, binding_eps=0.0))
     assert args.binding_config == {"mode": "bias_clause", "beta": 2.0, "eps": 0.0, "rank": 64}
-    assert (args.accumulation, args.rank, args.lr) == (4, 32, 1e-4)
+    assert (args.accumulation, args.rank, args.lr, args.type_weights) == (4, 32, 1e-4, "main4")
+    stage1 = normalize_args(argparse.Namespace(command="train", output="x", stage="stage1"))
+    assert stage1.type_weights == "natural"
 
 
 class _TinyDataset(Dataset):

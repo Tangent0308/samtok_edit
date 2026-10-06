@@ -21,8 +21,15 @@ RATIOS = {
     "stage1": {"edit_ntp": 7, "rec_ntp": 1},
     "stage2": {"edit_umt:ref": 1, "edit_umt:noref": 2, "edit": 1},
 }
-# Pools drawn by their natural type distribution instead of TYPE_WEIGHTS.
+# Pools drawn by their natural type distribution regardless of the scheme.
 NATURAL_POOLS = {"edit", "rec_ntp"}
+# How region pools (edit_ntp, edit_umt) pick an edit type:
+#   v1       TYPE_WEIGHTS (rare action/text are heavily repeated)
+#   natural  in proportion to the type's rows: every row equally often
+#   main4    other types at their natural share (never oversampled); the
+#            rest is split among MAIN_TYPES in TYPE_WEIGHTS proportions
+TYPE_WEIGHT_SCHEMES = ("v1", "natural", "main4")
+MAIN_TYPES = ("add", "remove", "replace", "attribute")
 
 
 def row_kind(row):
@@ -101,13 +108,37 @@ def load_images(row, base_path, max_pixels):
     return images, target, height, width
 
 
-def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0):
+def type_probabilities(kind, sizes, scheme):
+    """Edit-type sampling probabilities for one pool ({type: rows} -> {type: p})."""
+    if scheme not in TYPE_WEIGHT_SCHEMES:
+        raise ValueError(f"Unknown type-weight scheme {scheme!r}")
+    types = sorted(sizes)
+    total = sum(sizes.values())
+    if kind in NATURAL_POOLS or scheme == "natural":
+        weights = [sizes[t] for t in types]
+    elif scheme == "v1":
+        weights = [TYPE_WEIGHTS[t] for t in types]
+    else:
+        main = [t for t in types if t in MAIN_TYPES]
+        minor = {t: sizes[t] / total for t in types if t not in MAIN_TYPES}
+        rest, mass = 1.0 - sum(minor.values()), sum(TYPE_WEIGHTS[t] for t in main)
+        weights = [minor[t] if t in minor else rest * TYPE_WEIGHTS[t] / mass for t in types]
+    if kind == "edit":
+        # Natural distribution with individual background/global cap 15%.
+        weights = capped_plain_weights(types, weights)
+    total_weight = sum(weights)
+    return {t: w / total_weight for t, w in zip(types, weights)}
+
+
+def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0, type_weights="v1"):
     """Return global position-major row indices; slice [rank::world_size].
 
     Homogeneous rank steps are preferred when accumulation allows them; otherwise
     the exact ratio is distributed across ranks. Each stage always follows its
     ratio (Stage 2 ref:noref:plain=1:2:1, Stage 1 edit_ntp:rec_ntp=7:1) rather
     than globally shuffling an imbalanced pool. Rows of other kinds are rejected.
+    ``type_weights`` picks the edit-type mix inside region pools (see
+    TYPE_WEIGHT_SCHEMES); plain and replay pools are always natural.
     """
     if world_size < 1 or accumulation < 1 or (steps is not None and steps < 1):
         raise ValueError("world_size, accumulation and steps must be positive")
@@ -131,16 +162,12 @@ def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0):
             math.ceil(sum(map(len, pools[k].values())) / per_step[k]) for k in ratio
         )
     rng, queues = random.Random(seed), {}
+    probabilities = {kind: type_probabilities(kind, {t: len(v) for t, v in pools[kind].items()}, type_weights)
+                     for kind in ratio}
 
     def draw(kind):
-        types = sorted(pools[kind])
-        weights = [TYPE_WEIGHTS[t] for t in types]
-        if kind in NATURAL_POOLS:
-            weights = [len(pools[kind][t]) for t in types]
-        if kind == "edit":
-            # Natural distribution with individual background/global cap 15%.
-            weights = capped_plain_weights(types, weights)
-        typ = rng.choices(types, weights=weights)[0]
+        types = list(probabilities[kind])
+        typ = rng.choices(types, weights=[probabilities[kind][t] for t in types])[0]
         key = (kind, typ)
         if not queues.get(key):
             queues[key] = pools[kind][typ].copy()
@@ -199,6 +226,8 @@ def make_schedule(rows, stage, world_size, accumulation, *, steps=None, seed=0):
         "absent_edit_types": {
             k: sorted(set(TYPE_WEIGHTS) - set(pools[k])) for k in ratio
         },
+        "type_weights": type_weights,
+        "type_probabilities": {k: {t: round(p, 4) for t, p in v.items()} for k, v in probabilities.items()},
         "sampling": "weighted with shuffled per-type pools; pool recycling is explicit",
     }
     return schedule, report
