@@ -18,7 +18,7 @@ from samtok_edit21.data.protocol import (
     Unit,
     EDIT_TYPES,
     phrase_span,
-    is_valid_span,
+    is_valid_region,
     parse_cot,
     grouped_units,
     render_units,
@@ -198,8 +198,8 @@ def convert_record(record):
             raise ValueError("Each unit must have an atomic edit_type")
         if not isinstance(unit.ref_phrase, str) or not unit.ref_phrase.strip():
             raise ValueError("Missing unit reference")
-        if not unit.codes or not all(is_valid_span(x) for x in unit.codes):
-            raise ValueError("Unit needs valid mask_codes")
+        if not unit.codes or not all(is_valid_region(x) for x in unit.codes):
+            raise ValueError("Unit needs valid mask_codes (mask spans or, for add, boxes)")
         if unit.edit_type in {"background", "global"} and len(unit.codes) != 1:
             raise ValueError("Background/global require one mask")
     annotation_order = list(units)

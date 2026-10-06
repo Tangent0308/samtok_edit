@@ -14,7 +14,7 @@ import time
 
 from samtok_edit21.data.io import file_hash, row_hash, write_json
 from samtok_edit21.preparation.converters import convert_record, canonical_reference
-from samtok_edit21.data.protocol import EDIT_TYPES, span_of, phrase_span
+from samtok_edit21.data.protocol import EDIT_TYPES, REGION_KIND, box_of, span_of, phrase_span
 from samtok_edit21.preparation.fallback import VERSION as FALLBACK_VERSION, candidates as rule_candidates
 
 PROMPT = '''Convert the input image-edit instruction into a mask-located version.
@@ -290,7 +290,9 @@ def validate_annotation(source, annotation, *, check_masks=True):
         used.extend(ids)
         units.append({'edit_type': typ, 'ref_phrase': canonical_reference(spec['ref_phrase'], typ),
                       'anchor_phrase': spec.get('anchor_phrase'),
-                      'mask_codes': [span_of([i % 256, 256 + i % 256])]})
+                      # Diagnostic regions in the v2 kind of each type (add binds a box).
+                      'mask_codes': [box_of((100, 100, 900, 900)) if REGION_KIND[typ] == 'box'
+                                     else span_of([i % 256, 256 + i % 256])]})
     if check_masks and len(specs) > 1 and (len(used) != len(set(used)) or set(used) != instance_ids):
         raise ValueError('Composite mask assignment must cover each supplied instance exactly once')
     diagnostic = {'instruction': source['instruction'], 'edit_image': source['edit_image'],
