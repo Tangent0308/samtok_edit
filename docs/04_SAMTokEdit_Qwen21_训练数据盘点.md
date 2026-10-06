@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 |---|---|
-| 数据目录 | `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/data/train_v2_box_001/` |
+| 数据目录 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/data/train_v2_box_001/`（2026-10-06 从 intern 旧根目录逐字节复制，三个 sha256 与 `metadata_report.json` 一致；原件仍在 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/data/train_v2_box_001/`） |
 | 来源 | v1 `train_full_9b_rules_003`（98,574 个源编辑对，按计划只做格式转换和剔除） |
 | 源编辑对 | 保留 97,368；剔除 composite 1,206 |
 | Stage 1（`stage1.jsonl`） | 110,079 行：edit_ntp 96,319 + rec_ntp 13,760 |
@@ -129,7 +129,7 @@ mask 占框面积的中位数为 0.51–0.60。全部 add 框的中位宽、高�
 cd /opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2
 export PYTHONPATH=$PWD/src:$PWD/third_party/diffsynth:$PWD/third_party
 PY=/tmp/samtok21-fixes-dUnbt5/venv/bin/python   # 或集群 setup_env.sh 建立的环境
-V2=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
+V2=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
 
 # v1 → v2 转换（输出目录必须为空；结果与 train_v2_box_001 逐字节一致）
 $PY -m samtok_edit21.preparation.v2_data --output $V2/data/<new_dir>

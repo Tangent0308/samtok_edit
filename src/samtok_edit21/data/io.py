@@ -14,7 +14,7 @@ from PIL import Image
 from samtok_edit21.data.protocol import TYPE_WEIGHTS, validate_row
 
 EXPERIMENT_ROOT = (
-    "/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2"
+    "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2"
 )
 # Stage 1 (v2) is NTP only: edit localization plus 1/8 box-grounding replay.
 RATIOS = {

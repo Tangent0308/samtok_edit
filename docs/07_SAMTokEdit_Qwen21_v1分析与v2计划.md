@@ -526,12 +526,12 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 
 ## 8. v2 分支实施计划
 
-状态：2026-10-06 已确认，执行中。第 8.10 节的决策点全部按建议执行（推送也由我完成）。M0（代码、测试、数据转换、评测编译器）已完成，本地八卡 smoke 全部通过；下一步是四机运行 A（E1 + E2 + E3）；第一次提交因 intern 配额已满失败，正在等配额恢复。进度见第 8.11 节，实现见 [代码实现说明](01_SAMTokEdit_Qwen21_代码实现说明.md)，实验见 [实验记录](02_SAMTokEdit_Qwen21_实验记录.md)。
+状态：2026-10-06 已确认，执行中。第 8.10 节的决策点全部按建议执行（推送也由我完成）。M0（代码、测试、数据转换、评测编译器）已完成，本地八卡 smoke 全部通过；下一步是四机运行 A（E1 + E2 + E3）；第一次提交因 intern 配额已满失败，实验根目录已改到 user 目录，待重新提交。进度见第 8.11 节，实现见 [代码实现说明](01_SAMTokEdit_Qwen21_代码实现说明.md)，实验见 [实验记录](02_SAMTokEdit_Qwen21_实验记录.md)。
 
 ### 8.1 分支与范围
 
 - 新分支 `qwen-image-2.1-v2` 基于 `qwen-image-2.1-dev` 的 a93fe56，本地 checkout 在 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2`。`qwen-image-2.1-dev` 保持不变；v2 的代码与文档只提交到新分支。
-- v2 实验产物（数据、smoke、正式训练、评测、日志）统一放在 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`。
+- v2 实验产物（数据、正式训练、评测、日志）放在 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/`（2026-10-06 起）。此前在 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`，intern 配额满后迁出：数据和评测已逐字节复制，本地 smoke 运行和日志留在原处。
 - 本轮做五件事：
   1. add 改用框，并补上对应的训练数据，保证所有编辑类型训推一致；
   2. pass-2 的 TE 与 Stage 1 解耦（方案 A）；
@@ -653,7 +653,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
   - Derived add 的“小贴纸”偏置如果不按 D3 处理，会延续“新增物体偏小”。
 - **纯文本 add 的放置本身有歧义**：见第 6 节 P1-3，原始 Instruct 零样本 Acc@0.5 只有 0.05。pass-1 给出的框以合理性评估为主。
 - **point 输入对 add 缺少尺寸信息**：默认框只能给出粗略结果。
-- **共享盘配额**：运行 A 的缓存约 2.8 TB，写在 intern。intern 的 NAS 配额不只计我们的目录，`df` 看不出是否已满；2026-10-06 第一次提交就因此失败。提交前先确认可写（四机指南第 1 节）。
+- **共享盘配额**：运行 A 的缓存约 2.8 TB。intern 的 NAS 配额不只计我们的目录，2026-10-06 第一次提交就因此失败，之后实验根目录移到 user 目录；user 目录也有配额（v1 写缓存时在约 0.63 TB 处碰到过），`df` 看不出余量。提交前先确认（四机指南第 1 节）。
 
 ### 8.10 需要你确认的决策点
 
@@ -678,7 +678,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 | 2026-10-06 | 计划确认、建立 v2 分支 | 完成 |
 | 2026-10-06 | M0：协议（⟨B⟩、rec_ntp）、v1 → v2 数据转换（`qwen21_v2/data/train_v2_box_001`）、Stage 1 纯 NTP、raw-TE 缓存（v3，含绑定 payload）、Stage 2 去 C/A 并加入四种绑定、推理 pass-2 解耦与 latent 融合、评测协议 v2（case/编译/推理/manifest/汇总）、四机编排按阶段运行 | 完成。45 项单元测试；GPU 等价性检查（pass-2 关闭 adapter = raw TE、零初始化 region_embed 与全 1 融合为 no-op、KV cache 下偏置一致、v1 adapter 经 v2 代码与 v1 代码逐位一致）；八卡 smoke：256² 下 B0 全流程与四个绑定臂、1M 像素下 B0 全流程与三个绑定臂（约 21 GiB/卡）；评测管线 smoke（715 case、转换器 709/715 接受、judge 30/30）。详见实验记录第 2–6 节 |
 | 2026-10-06 | M0 余项：`eval/protocol_v2_001/review.md` 人工抽检 | 初查完成：remove/replace/attribute 正确；add 约 20% 的 noref 改写删掉了新物体的姿态/外观（CompBench 指令把姿态写在放置短语之后所致；训练数据抽查 30 条无此问题）。已增加 ref 变体（`--prompt-variant ref`）作对照。随后优化了转换器 prompt 的 add 规则（commit `874c9a1`，只影响 add），评测编译已用新 prompt 重跑：715/715 由转换器接受，67 个 add 改写修复（实验记录 6.3）；训练数据暂不重跑 |
-| 2026-10-06 | M1：四机运行 A（E1 + E2 + E3 seed 1） | 首次提交在入口处失败：intern 的 NAS 配额已满（我们只占约 40 GB，配额按更大范围计算），创建 run 目录时报 `Disk quota exceeded`。入口已修复：报错并入 stdout，写共享盘前先做写探针（commit `9530dbb`，训练代码不变）。等配额恢复后用同一 run ID 重新提交（实验记录第 7 节） |
+| 2026-10-06 | M1：四机运行 A（E1 + E2 + E3 seed 1） | 首次提交在入口处失败：intern 的 NAS 配额已满（我们只占约 40 GB，配额按更大范围计算），创建 run 目录时报 `Disk quota exceeded`。入口已修复：报错并入 stdout，写共享盘前先做写探针（commit `9530dbb`，训练代码不变）。等配额恢复后用同一 run ID 重新提交（实验记录第 7 节）。随后实验根目录改到 `user/tanyue/experiments2/SAMTokEdit/qwen21_v2`，待重新提交 |
 
 **实施中的具体取值与偏差。**
 

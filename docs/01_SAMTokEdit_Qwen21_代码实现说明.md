@@ -252,9 +252,10 @@ GPU 检查（结果见[实验记录第 4 节](02_SAMTokEdit_Qwen21_实验记录.
 
 | 类别 | 路径 |
 |---|---|
-| v2 实验根目录 | `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/` |
+| v2 实验根目录 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/`（2026-10-06 起；代码中为 `data/io.py` 的 `EXPERIMENT_ROOT`） |
+| 旧根目录（存档，intern 配额已满） | `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`：本地 smoke 运行和日志（`smoke/runs/`、`smoke/logs/`）只在这里；数据、评测和 smoke 数据已逐字节复制到新根目录 |
 | v2 训练数据 | `qwen21_v2/data/train_v2_box_001/` |
-| smoke 数据 / 运行 / 日志 | `qwen21_v2/smoke/data_smoke_001/`、`qwen21_v2/smoke/runs/`、`qwen21_v2/smoke/logs/` |
+| smoke 数据 | `qwen21_v2/smoke/data_smoke_001/`（运行和日志见旧根目录） |
 | 正式运行 | `qwen21_v2/runs/<SAMTOK_RUN_ID>/` |
 | 评测 | `qwen21_v2/eval/protocol_v2_001/`（cases、转换器输出、编译模板、smoke） |
 | v1 数据（转换输入） | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/` |

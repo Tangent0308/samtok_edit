@@ -5,14 +5,14 @@
 ## 1. 约定
 
 - **代码**：分支 `qwen-image-2.1-v2`，固定 `SAMTOK_EDIT_COMMIT=5443a7b069a1c6c946739541bd9328cb157d32fa`（已推送；四台机器必须相同）。
-- **实验根目录**：`SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2`；每次运行写入 `$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`。
+- **实验根目录**：`SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2`；每次运行写入 `$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`。
 - **数据**：`$SAMTOK_EXPERIMENT/data/train_v2_box_001`（[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)）。
 - **阶段**：`--phases` 取 `stage1,cache,stage2` 的子集。Stage 2 不依赖 Stage 1（缓存用 raw TE），所以第一次运行建缓存，之后所有 Stage 2 臂用 `--cache` 复用。
 - **run ID**：每次提交用新的共同 `SAMTOK_RUN_ID`；已用过的 ID 会被拒绝（防止调度器重试覆盖日志）。
 - **W&B**：通过 ARNOLD secret 注入 `WANDB_API_KEY`；run 名为 `<RUN_ID>-stage1/-stage2`。
-- **存储**：全量缓存约 2.8 TB（每行约 9.6 MB），写在 intern 目录。intern 的 NAS 配额不只计我们自己的目录（2026-10-06 我们只占约 40 GB 时写入已被拒绝，见[实验记录第 7 节](02_SAMTokEdit_Qwen21_实验记录.md#7-四机运行-a-首次提交2026-10-06)），`df` 也看不出是否已满。提交前在开发机上确认可写：
+- **存储**：全量缓存约 2.8 TB（每行约 9.6 MB）。2026-10-06 起实验根目录从 intern 移到 user 目录，因为 intern 的 NAS 配额已满（[实验记录第 7 节](02_SAMTokEdit_Qwen21_实验记录.md#7-四机运行-a-首次提交2026-10-06)）。NAS 配额从 `df` 看不出来，入口的写探针也只能发现"已经写不进"，发现不了"余量不够"；v1 往 user 目录写缓存时曾在约 0.63 TB 处碰到配额，提交前请确认余量。可写性检查（在开发机上）：
   ```bash
-  P=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/runs/.probe_$$; printf x > $P && rm $P && echo writable
+  P=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/runs/.probe_$$; printf x > $P && rm $P && echo writable
   ```
 - **耗时估计**（本地八卡、GPU 与其他任务共享时的实测；集群独占时应更短）：Stage 1 约 10 s/update，1,300 update 约 3.6 小时；缓存约 1.7 s/行/卡，32 卡约 4–5 小时；Stage 2 约 28 s/update（bias 类慢约 10–15%），1,000 update 约 8 小时。峰值显存约 21 GiB/卡。
 
@@ -26,7 +26,7 @@ set -Eeuo pipefail
 exec 2>&1  # ARNOLD's log page shows stdout; route every shell error there as well.
 # ===== 运行设置（各运行只改这一块） =====
 export SAMTOK_RUN_ID=qwen21_v2_4n_A_s1_b0_001
-export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
 ARGS=(
   --full-training
@@ -132,7 +132,7 @@ bash scripts/training/run_arnold.sh "${ARGS[@]}"
 ```bash
 # ===== 运行设置：B0 seed 2（E3 的第二个 seed） =====
 export SAMTOK_RUN_ID=qwen21_v2_4n_S2_b0_s2_001
-export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
 CACHE="$SAMTOK_EXPERIMENT/runs/qwen21_v2_4n_A_s1_b0_001/cache"
 ARGS=(
@@ -160,7 +160,7 @@ E4（只在 B0 上做推理期偏置，不训练）不需要四机，见[代码�
 ```bash
 # ===== 运行设置：四机 smoke =====
 export SAMTOK_RUN_ID=qwen21_v2_4n_smoke_001
-export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/smoke/data_smoke_001"
 ARGS=(
   --phases stage1,cache,stage2
