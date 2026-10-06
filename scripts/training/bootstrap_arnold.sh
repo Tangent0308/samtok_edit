@@ -7,8 +7,10 @@ exec 2>&1  # ARNOLD's log page shows stdout; route every shell error there as we
 export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:?Set the shared experiment directory}"
 # Set this explicitly and identically on all workers; use a fresh ID per attempt.
 : "${SAMTOK_RUN_ID:?Set one fresh common SAMTOK_RUN_ID on all workers}"
-# Inject WANDB_API_KEY as an ARNOLD secret on every worker.
-: "${WANDB_API_KEY:?Inject WANDB_API_KEY through ARNOLD secrets}"
+# W&B key: an ARNOLD secret if injected, else the private key file on the shared disk. Never commit the key.
+WANDB_KEY_FILE="${WANDB_KEY_FILE:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/.secrets/wandb.env}"
+[[ -n "${WANDB_API_KEY:-}" || ! -f "$WANDB_KEY_FILE" ]] || source "$WANDB_KEY_FILE"
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
 export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
@@ -22,7 +24,7 @@ export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-v2}"
 [[ "$ARNOLD_WORKER_NUM" == 4 && "$ARNOLD_WORKER_GPU" == 8 ]] || { echo 'Expected 4 workers x 8 GPUs' >&2; exit 2; }
 [[ "$ARNOLD_ID" =~ ^[0-3]$ ]] || { echo 'ARNOLD_ID must be 0, 1, 2, or 3' >&2; exit 2; }
 [[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
-[[ -n "$WANDB_API_KEY" && "$WANDB_API_KEY" != FILL_IN* ]] || { echo 'Set WANDB_API_KEY as an ARNOLD secret' >&2; exit 2; }
+[[ -n "$WANDB_API_KEY" ]] || { echo "No W&B key: inject WANDB_API_KEY or create $WANDB_KEY_FILE" >&2; exit 2; }
 
 # ARNOLD_WORKER_HOSTS carries the common rendezvous port; generic PORT varies by worker.
 unset PORT MASTER_ADDR MASTER_PORT NODE_RANK NNODES GPUS_PER_NODE

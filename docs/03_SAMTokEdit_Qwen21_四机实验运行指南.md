@@ -9,7 +9,7 @@
 - **数据**：`$SAMTOK_EXPERIMENT/data/train_v2_box_001`（[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)）。
 - **阶段**：`--phases` 取 `stage1,cache,stage2` 的子集。Stage 2 不依赖 Stage 1（缓存用 raw TE），所以第一次运行建缓存，之后所有 Stage 2 臂用 `--cache` 复用。
 - **run ID**：每次提交用新的共同 `SAMTOK_RUN_ID`；已用过的 ID 会被拒绝（防止调度器重试覆盖日志）。
-- **W&B**：通过 ARNOLD secret 注入 `WANDB_API_KEY`；run 名为 `<RUN_ID>-stage1/-stage2`。
+- **W&B**：入口优先用 ARNOLD 注入的 `WANDB_API_KEY`，没有时读取共享盘上的私有文件 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/.secrets/wandb.env`（内容为 `export WANDB_API_KEY=...`，权限 600）。仓库是公开的，key 不要写进脚本或提交。run 名为 `<RUN_ID>-stage1/-stage2`。
 - **存储**：全量缓存约 2.8 TB（每行约 9.6 MB）。2026-10-06 起实验根目录从 intern 移到 user 目录，因为 intern 的 NAS 配额已满（[实验记录第 7 节](02_SAMTokEdit_Qwen21_实验记录.md#7-四机运行-a-首次提交2026-10-06)）。NAS 配额从 `df` 看不出来，入口的写探针也只能发现"已经写不进"，发现不了"余量不够"；v1 往 user 目录写缓存时曾在约 0.63 TB 处碰到配额，提交前请确认余量。可写性检查（在开发机上）：
   ```bash
   P=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/runs/.probe_$$; printf x > $P && rm $P && echo writable
@@ -44,7 +44,10 @@ export SAMTOK_EDIT_COMMIT=5443a7b069a1c6c946739541bd9328cb157d32fa
 export SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS="${SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS:-86400}"
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
-export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"   # 推荐用 ARNOLD secret 注入
+# W&B key: an ARNOLD secret if injected, else the private key file on the shared disk. Never commit the key.
+WANDB_KEY_FILE=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/.secrets/wandb.env
+[[ -n "${WANDB_API_KEY:-}" || ! -f "$WANDB_KEY_FILE" ]] || source "$WANDB_KEY_FILE"
+export WANDB_API_KEY="${WANDB_API_KEY:-}"
 
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
 : "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM=4}"
@@ -53,7 +56,7 @@ export WANDB_API_KEY="${WANDB_API_KEY:-FILL_IN_WANDB_API_KEY}"   # 推荐用 ARN
 [[ "$ARNOLD_WORKER_NUM" == 4 && "$ARNOLD_WORKER_GPU" == 8 ]] || { echo 'Expected 4 workers x 8 GPUs' >&2; exit 2; }
 [[ "$ARNOLD_ID" =~ ^[0-3]$ ]] || { echo 'ARNOLD_ID must be 0, 1, 2, or 3' >&2; exit 2; }
 [[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
-[[ -n "$WANDB_API_KEY" && "$WANDB_API_KEY" != FILL_IN* ]] || { echo 'Set WANDB_API_KEY as an ARNOLD secret' >&2; exit 2; }
+[[ -n "$WANDB_API_KEY" ]] || { echo "No W&B key: inject WANDB_API_KEY or create $WANDB_KEY_FILE" >&2; exit 2; }
 [[ -f "$SAMTOK_TRAIN_DATA/metadata_report.json" ]] || { echo "Missing data: $SAMTOK_TRAIN_DATA" >&2; exit 2; }
 
 # ARNOLD_WORKER_HOSTS carries the common rendezvous port; generic PORT varies by worker.
