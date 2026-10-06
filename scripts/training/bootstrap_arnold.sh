@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Pre-clone ARNOLD entrypoint: run the same script on all four workers.
 set -Eeuo pipefail
+exec 2>&1  # ARNOLD's log page shows stdout; route every shell error there as well.
 
 # ----- User settings -----
 export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:?Set the shared experiment directory}"
@@ -35,6 +36,12 @@ REPO="/tmp/samtok-edit-${SAMTOK_RUN_ID}-node${NODE}"
 if [[ -e "$RUN/nodes/$NODE" || -e "$RUN/SUCCESS.json" ]]; then
   echo "Run already used: $RUN. Set a NEW common SAMTOK_RUN_ID; old logs are preserved." >&2
   exit 2
+fi
+# A full NAS directory quota rejects every new file while df still reports free space.
+PROBE="$SAMTOK_EXPERIMENT/runs/.write_probe_${SAMTOK_RUN_ID}_node${NODE}"
+if ! (mkdir -p "$SAMTOK_EXPERIMENT/runs" && printf 'probe\n' > "$PROBE" && rm -f "$PROBE"); then
+  echo "Cannot write under $SAMTOK_EXPERIMENT/runs (NAS quota exceeded?). Nothing was started." >&2
+  exit 3
 fi
 mkdir -p "$BOOTSTRAP"
 # Atomic per-node claim: reject scheduler retries BEFORE cloning/installing or appending logs.

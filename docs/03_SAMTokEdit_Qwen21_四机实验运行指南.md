@@ -1,6 +1,6 @@
 # SAMTokEdit（Qwen-Image-2.1）v2 四机实验运行指南
 
-本页是 v2 的四机启动入口。ARNOLD 作业配置为 4 workers × 8 GPUs，四个 worker 运行同一段脚本；代码由各节点从 GitHub clone 到 `/tmp`，共享盘只存数据、日志和产物。启动脚本与 v1 调通的入口相同（节点 claim、失败记录、环境安装、CUDA/NCCL 检查），只更新了分支、数据和阶段参数。v1 的入口和排错记录见 [archive/v1](archive/v1/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
+本页是 v2 的四机启动入口。ARNOLD 作业配置为 4 workers × 8 GPUs，四个 worker 运行同一段脚本；代码由各节点从 GitHub clone 到 `/tmp`，共享盘只存数据、日志和产物。启动脚本与 v1 调通的入口相同（节点 claim、失败记录、环境安装、CUDA/NCCL 检查），只更新了分支、数据和阶段参数；另外把所有报错并入 stdout，并在写共享盘之前做一次写探针。v1 的入口和排错记录见 [archive/v1](archive/v1/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
 
 ## 1. 约定
 
@@ -10,7 +10,10 @@
 - **阶段**：`--phases` 取 `stage1,cache,stage2` 的子集。Stage 2 不依赖 Stage 1（缓存用 raw TE），所以第一次运行建缓存，之后所有 Stage 2 臂用 `--cache` 复用。
 - **run ID**：每次提交用新的共同 `SAMTOK_RUN_ID`；已用过的 ID 会被拒绝（防止调度器重试覆盖日志）。
 - **W&B**：通过 ARNOLD secret 注入 `WANDB_API_KEY`；run 名为 `<RUN_ID>-stage1/-stage2`。
-- **存储**：全量缓存约 2.8 TB（每行约 9.6 MB）。启动前确认 intern 目录配额。
+- **存储**：全量缓存约 2.8 TB（每行约 9.6 MB），写在 intern 目录。intern 的 NAS 配额不只计我们自己的目录（2026-10-06 我们只占约 40 GB 时写入已被拒绝，见[实验记录第 7 节](02_SAMTokEdit_Qwen21_实验记录.md#7-四机运行-a-首次提交2026-10-06)），`df` 也看不出是否已满。提交前在开发机上确认可写：
+  ```bash
+  P=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/runs/.probe_$$; printf x > $P && rm $P && echo writable
+  ```
 - **耗时估计**（本地八卡、GPU 与其他任务共享时的实测；集群独占时应更短）：Stage 1 约 10 s/update，1,300 update 约 3.6 小时；缓存约 1.7 s/行/卡，32 卡约 4–5 小时；Stage 2 约 28 s/update（bias 类慢约 10–15%），1,000 update 约 8 小时。峰值显存约 21 GiB/卡。
 
 ## 2. 运行 A：Stage 1（E1）+ 缓存（E2）+ Stage 2 B0 seed 1（E3）
@@ -20,6 +23,7 @@
 ```bash
 #!/usr/bin/env bash
 set -Eeuo pipefail
+exec 2>&1  # ARNOLD's log page shows stdout; route every shell error there as well.
 # ===== 运行设置（各运行只改这一块） =====
 export SAMTOK_RUN_ID=qwen21_v2_4n_A_s1_b0_001
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
@@ -64,6 +68,12 @@ REPO="/tmp/samtok-edit-${SAMTOK_RUN_ID}-node${NODE}"
 if [[ -e "$RUN/nodes/$NODE" || -e "$RUN/SUCCESS.json" ]]; then
   echo "Run already used: $RUN. Set a NEW common SAMTOK_RUN_ID; old logs are preserved." >&2
   exit 2
+fi
+# A full NAS directory quota rejects every new file while df still reports free space.
+PROBE="$SAMTOK_EXPERIMENT/runs/.write_probe_${SAMTOK_RUN_ID}_node${NODE}"
+if ! (mkdir -p "$SAMTOK_EXPERIMENT/runs" && printf 'probe\n' > "$PROBE" && rm -f "$PROBE"); then
+  echo "Cannot write under $SAMTOK_EXPERIMENT/runs (NAS quota exceeded?). Nothing was started." >&2
+  exit 3
 fi
 mkdir -p "$BOOTSTRAP"
 # Atomic per-node claim: reject scheduler retries BEFORE cloning/installing or appending logs.
@@ -171,5 +181,6 @@ ARGS=(
 | `SUCCESS.json`、`TRAINING_COMPLETE.json` | 全部阶段和审计通过 |
 
 - **失败**：任一节点写 `nodes/<i>/failure.json`，其他节点检测到后退出；原因在该节点的 `bootstrap/node<i>.log` 和对应阶段日志中。修复后用**新的** run ID 重新提交。
+- **ARNOLD 报错退出、共享盘上却没有 run 目录**：入口在写共享盘之前就失败了，原因只在 ARNOLD 日志页（入口已把 stderr 并入 stdout）。退出码 3 表示共享盘写探针失败（通常是 NAS 配额已满）；这种情况下什么都没写，恢复后可以沿用同一个 run ID。
 - **缓存中途失败**（如共享盘瞬时写错误）：新 run ID，设置 `--phases cache,stage2 --cache <原 run>/cache --resume-cache`；已完成且可读的 payload 会复用，坏文件重算。
 - **checkpoint**：`step-<microsteps>.safetensors` 只含可训练权重（不含 optimizer 状态），张量名和形状与最终 adapter 完全相同（含 region_embed）。评测中间 checkpoint 时，新建目录，把它复制为 `adapter.safetensors`，并复制同一 run 的 `adapter/adapter.json`。
