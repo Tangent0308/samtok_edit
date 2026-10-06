@@ -27,7 +27,10 @@ assert peft.__version__ == '0.20.0'
 assert wandb.__version__ == '0.13.98'
 from samtok_edit21.models.binding import require_flex_attention
 require_flex_attention()
-print('Cluster packages validated: Python 3.11 / torch 2.8 / W&B / FlexAttention')
+# The v2 cache decodes region maps with the released SAMTok codec.
+import samtok.models  # noqa: F401
+from samtok_edit21.models.codec import SamtokCodec  # noqa: F401
+print('Cluster packages validated: Python 3.11 / torch 2.8 / W&B / FlexAttention / SAMTok codec')
 PY
 PYTHONPATH="$REPO/src:$REPO/third_party/diffsynth" "$SAMTOK_ENV/bin/python" -m samtok_edit21.distributed.cuda_readiness \
   --output "${SAMTOK_CUDA_DIAGNOSTICS:-${SAMTOK_ENV}-cuda-diagnostics}" \

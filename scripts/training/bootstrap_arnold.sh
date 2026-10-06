@@ -11,7 +11,7 @@ export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:?Set the shared experiment directo
 export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
 export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-dev}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-v2}"
 
 # ----- ARNOLD checks -----
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
