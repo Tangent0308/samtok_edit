@@ -89,7 +89,7 @@ Add NEW_CONTENT in this region <mask>.
 
 评测脚本中的 noref 编译代码见：
 
-[`code/samtok_stage2_benchmark_noref_aligned.py:171`](/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/code/samtok_stage2_benchmark_noref_aligned.py#L171)，训练数据统计见 [`docs/04_SAMTokEdit_Qwen21_训练数据盘点.md:127`](04_SAMTokEdit_Qwen21_训练数据盘点.md#L127)。
+[`code/samtok_stage2_benchmark_noref_aligned.py:171`](/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/code/samtok_stage2_benchmark_noref_aligned.py#L171)，训练数据统计见 [`docs/04_SAMTokEdit_Qwen21_训练数据盘点.md:127`](archive/v1/04_SAMTokEdit_Qwen21_训练数据盘点.md)。
 
 ### 2.2 add 没有获得与难度匹配的采样权重
 
