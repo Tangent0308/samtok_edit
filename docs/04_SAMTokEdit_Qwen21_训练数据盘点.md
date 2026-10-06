@@ -114,8 +114,9 @@ mask 占框面积的中位数为 0.51–0.60。全部 add 框的中位宽、高�
 
 ## 7. 训练读取与配比
 
-- Stage 1 只读 `stage1.jsonl`。每个 optimizer update 中 edit_ntp : rec_ntp = 7 : 1（32 卡、accumulation 8 时为 224 : 32），每个 rank 精确满足；edit_ntp 按类型权重抽取，rec_ntp 按自然分布。约 2 个 epoch 为 860 个 update（96,319 × 2 / 224）。
-- 缓存只读 `stage2.jsonl`；Stage 2 读缓存，ref : noref : plain = 1 : 2 : 1（32 卡、accumulation 4 时为 32 : 64 : 32）。
+- Stage 1 只读 `stage1.jsonl`。每个 optimizer update 中 edit_ntp : rec_ntp = 7 : 1（32 卡、accumulation 8 时为 224 : 32），每个 rank 精确满足。正式日程 1,300 update，类型采样 `natural`：全部 110,079 行都被采到，每行约 3.0 次；add/remove/replace/attribute 占 edit_ntp 抽样的 95.2%（add 13.0%、remove 28.8%、replace 18.9%、attribute 34.4%、action 2.7%、text 2.1%）。
+- 缓存只读 `stage2.jsonl`；Stage 2 读缓存，ref : noref : plain = 1 : 2 : 1（32 卡、accumulation 4 时为 32 : 64 : 32）。正式日程 1,000 update，类型采样 `main4`：四个主类型在每个池中约占 95%（noref 池：add/remove/replace 各 21.5%、attribute 30.8%，action 2.7%、text 2.0%）；add noref 每行约 1.1 次，remove 0.5 次；共覆盖 126,811 个不同行（44%）。
+- 原 v1 类型权重会让 action/text（2,666/1,984 行）占约 24% 的抽样、在 Stage 1 中每行重复 9–12 次，而评测中没有 action、只有 1 个 text case，所以 v2 改为上述方案（2026-10-06 确认）。
 - 读取时每行再次经过 `validate_row`；Stage 2 的缓存身份记录 metadata hash 和逐行 hash 摘要。
 
 ## 8. smoke 子集

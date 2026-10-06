@@ -4,14 +4,14 @@
 
 ## 1. 约定
 
-- **代码**：分支 `qwen-image-2.1-v2`，固定 `SAMTOK_EDIT_COMMIT=03cb8a748dfd04fc83f522e43f219b3b50132c97`（已推送；四台机器必须相同）。
+- **代码**：分支 `qwen-image-2.1-v2`，固定 `SAMTOK_EDIT_COMMIT=5443a7b069a1c6c946739541bd9328cb157d32fa`（已推送；四台机器必须相同）。
 - **实验根目录**：`SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2`；每次运行写入 `$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`。
 - **数据**：`$SAMTOK_EXPERIMENT/data/train_v2_box_001`（[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)）。
 - **阶段**：`--phases` 取 `stage1,cache,stage2` 的子集。Stage 2 不依赖 Stage 1（缓存用 raw TE），所以第一次运行建缓存，之后所有 Stage 2 臂用 `--cache` 复用。
 - **run ID**：每次提交用新的共同 `SAMTOK_RUN_ID`；已用过的 ID 会被拒绝（防止调度器重试覆盖日志）。
 - **W&B**：通过 ARNOLD secret 注入 `WANDB_API_KEY`；run 名为 `<RUN_ID>-stage1/-stage2`。
 - **存储**：全量缓存约 2.8 TB（每行约 9.6 MB）。启动前确认 intern 目录配额。
-- **耗时估计**（本地八卡、GPU 与其他任务共享时的实测；集群独占时应更短）：Stage 1 约 10 s/update，860 update 约 2.5 小时；缓存约 1.7 s/行/卡，32 卡约 4–5 小时；Stage 2 约 28 s/update（bias 类慢约 10–15%），1,000 update 约 8 小时。峰值显存约 21 GiB/卡。
+- **耗时估计**（本地八卡、GPU 与其他任务共享时的实测；集群独占时应更短）：Stage 1 约 10 s/update，1,300 update 约 3.6 小时；缓存约 1.7 s/行/卡，32 卡约 4–5 小时；Stage 2 约 28 s/update（bias 类慢约 10–15%），1,000 update 约 8 小时。峰值显存约 21 GiB/卡。
 
 ## 2. 运行 A：Stage 1（E1）+ 缓存（E2）+ Stage 2 B0 seed 1（E3）
 
@@ -25,14 +25,14 @@ export SAMTOK_RUN_ID=qwen21_v2_4n_A_s1_b0_001
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
 ARGS=(--full-training --phases stage1,cache,stage2
-      --stage1-steps 860 --stage1-save-steps 1600 --stage1-rank 64
+      --stage1-steps 1300 --stage1-save-steps 1600 --stage1-rank 64
       --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
       --binding none --seed 20261006
       --max-pixels 1048576 --timeout 604800 --wandb-mode online)
 # ===== 固定设置 =====
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=qwen-image-2.1-v2
-export SAMTOK_EDIT_COMMIT=03cb8a748dfd04fc83f522e43f219b3b50132c97
+export SAMTOK_EDIT_COMMIT=5443a7b069a1c6c946739541bd9328cb157d32fa
 export SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS="${SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS:-86400}"
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit
@@ -107,8 +107,9 @@ bash scripts/training/run_arnold.sh "${ARGS[@]}"
 
 执行顺序：拓扑与源码一致性检查 → 32 卡 NCCL 探针 → Stage 1（`stage1/`）→ 缓存（`cache/`）→ Stage 2（`stage2/`）→ rank 0 审计（`audit.json`）→ `TRAINING_COMPLETE.json`、`SUCCESS.json`。
 
-- Stage 1：860 update（约 2 个 epoch），每 200 update（1,600 microsteps）存一次 `stage1/step-*.safetensors`，最终 adapter 在 `stage1/adapter/`。
-- Stage 2：1,000 update（缩减日程 R，D7），每 250 update 存一次，最终 adapter 在 `stage2/adapter/`（adapter.json 记录 conditioning identity 和 binding）。
+- Stage 1：1,300 update（约 3 个 epoch，与 v1 Stage 1 的 NTP 采样量相当），每 200 update（1,600 microsteps）存一次 `stage1/step-*.safetensors`，最终 adapter 在 `stage1/adapter/`。类型采样默认 `natural`：每行约见 3 次，add/remove/replace/attribute 占 95%。
+- Stage 2：1,000 update（缩减日程 R，D7），每 250 update 存一次，最终 adapter 在 `stage2/adapter/`（adapter.json 记录 conditioning identity 和 binding）。类型采样默认 `main4`：add/remove/replace/attribute 按 v1 的 14:14:14:20 分配约 95%，其他类型保持自然占比。两阶段都可用 `--stage1-type-weights` / `--stage2-type-weights` 改为 `v1`、`natural` 或 `main4`。
+- 先用 B0 的 250/500/750/1,000 update checkpoint 看学习曲线（反事实跟随率、漂移率）；若到 1,000 仍在明显上升，再把所有臂统一加长。
 
 ## 3. Stage 2 消融臂（复用运行 A 的缓存）
 

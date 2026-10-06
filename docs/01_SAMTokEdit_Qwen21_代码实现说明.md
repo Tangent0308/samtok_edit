@@ -116,7 +116,7 @@ v1 的区域监督 C/A 相关模块（`regions/supervision.py`、`regions/build.
 - 只加载 TE（[`SamtokTrainingModule`](../src/samtok_edit21/training/engine.py#L136)，Stage 1 组件仅 `text_encoder`），LoRA 注入所有 LM 层的 q/k/v/o 与 gate/up/down（`TE_TARGETS`），视觉塔冻结。
 - [`localization_inputs`](../src/samtok_edit21/models/pipeline.py#L182)：SAMTok chat template，user = 图像 + 文本，assistant 预填空 think。`edit_ntp` 的文本是"指令 + `LOC_REQUEST`"；`rec_ntp`（`request=None`）的文本就是 grounding 请求本身。
 - [`ntp_loss`](../src/samtok_edit21/models/pipeline.py#L233)：只监督答案 JSON 加 `<|im_end|>` 的交叉熵，`--ntp-weight` 默认 1.0。
-- 调度（[`RATIOS`](../src/samtok_edit21/data/io.py#L20)）：每个 optimizer update 中 edit_ntp : rec_ntp = 7 : 1，每个 rank 都精确满足；edit_ntp 按类型权重（add 14、remove 14、replace 14、attribute 20、action 10、text 10）抽取，rec_ntp 按自然分布抽取。
+- 调度（[`RATIOS`](../src/samtok_edit21/data/io.py#L20)）：每个 optimizer update 中 edit_ntp : rec_ntp = 7 : 1，每个 rank 都精确满足。类型采样由 `--type-weights` 决定（[`type_probabilities`](../src/samtok_edit21/data/io.py)）：Stage 1 默认 `natural`（按各类型行数，每行被采次数相同；Stage 1 约 3 遍，避免少数类型被反复采样），rec_ntp 始终按自然分布。
 
 ## 5. 条件缓存：raw TE + 绑定 payload
 
@@ -160,7 +160,7 @@ m(q) 是目标 token q 的区域覆盖率（第 5 节，0–1）。
 - `region_embed` 对不含区域的行也用零向量调用一次映射，保证 DDP 中每个参数都参与反向（`find_unused_parameters=False`）；新增参数与 LoRA 一起保存在 adapter 中，`load_adapter` 根据 adapter.json 的 `binding` 字段重建模块。
 - v1 的 attention probe/LSE 统计接口已从 vendored DiT 中移除；不传 `region_binding` 时计算路径与原实现相同。
 
-**调度。** ref : noref : plain = 1 : 2 : 1，每个 rank 每个 update 精确满足；UMT 池按类型权重抽取，plain 按自然分布（background/global 单类上限 15%）。
+**调度。** ref : noref : plain = 1 : 2 : 1，每个 rank 每个 update 精确满足。UMT 池默认 `main4`：其他类型（action、text 等）按自然占比抽取、不被放大，其余份额由 add/remove/replace/attribute 按 v1 的 14:14:14:20 分配；plain 按自然分布（background/global 单类上限 15%）。`v1`（原类型权重）仍可选。
 
 ## 7. 推理
 
@@ -241,6 +241,8 @@ GPU 检查（结果见[实验记录第 4 节](02_SAMTokEdit_Qwen21_实验记录.
 | weight decay / 梯度裁剪 | 0.05 / 1.0 | 0.01 / 1.0 |
 | 每卡 accumulation / 32 卡全局 batch | 8 / 256 | 4 / 128 |
 | 配比 | edit_ntp : rec_ntp = 7 : 1 | ref : noref : plain = 1 : 2 : 1 |
+| 类型采样（`--type-weights`） | `natural`（四个主类型约 95%，每行约见 3 次） | `main4`（四个主类型约 95%，按 14:14:14:20） |
+| optimizer updates | 1,300（约 3 个 epoch） | 1,000（缩减日程 R，选型用） |
 | loss | NTP（权重 1.0） | 官方 FM（+ 绑定无额外 loss） |
 | max_pixels | 1,048,576 | 同缓存 |
 

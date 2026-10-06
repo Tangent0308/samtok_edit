@@ -682,7 +682,8 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 **实施中的具体取值与偏差。**
 
 - D6：rec_ntp 以 edit_ntp : rec_ntp = 7 : 1 混入每个 update（占 Stage 1 样本的 12.5%，略高于计划的约 10%，以保证每个 rank 的配比整除）；回放池 13,760 行，取自 RefEdit/Derived 单实例非 add 单元（mask 是实例级，框更准确）。
-- E1 的"约 2 个 epoch"取 860 个 update（32 卡、全局 batch 256、每 update 224 条 edit_ntp）；E3 的日程 R 取 1,000 个 update（全局 batch 128）。
+- E1 原定"约 2 个 epoch"（860 update）；2026-10-06 确认改为 1,300 update（约 3 个 epoch，与 v1 Stage 1 的 NTP 采样量相当，使 "定位不低于 v1" 的验收不受训练量影响）。E3 的日程 R 保持 1,000 个 update（全局 batch 128），先看 B0 在 250/500/750/1,000 update 的学习曲线，再决定是否统一加长。
+- 类型采样（2026-10-06 确认，按你的要求让 add/remove/replace/attribute 占主导）：Stage 1 用 `natural`（每行约 3 次，四个主类型 95%），Stage 2 用 `main4`（四个主类型按 v1 的 14:14:14:20 分配约 95%，action/text 保持自然占比）；原 v1 权重下 action/text 占 24%。
 - D5：point 输入的默认 add 框取训练 add 框的中位宽高 214 × 267（0–1000 单位）。
 - 第 8.7 节"部件类另报最小候选"尚未实现：point/box setting 目前取 SAM2 最高分候选。
 - stock：复用 `qwen21_656` 的 517 个单区域输出；拆分出的 198 个 MIRAGE case 用 `--stock` 重跑。复现检查显示同一 case 重跑与旧输出不逐位一致（像素平均差 0.27–0.42，kernel 级），需要完全同环境对比时可全部重跑。
