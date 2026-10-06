@@ -81,7 +81,14 @@ class QwenImage21Pipeline(BasePipeline):
         tile_stride: int = 192,
         # Progress bar
         progress_bar_cmd=tqdm,
+        # Region conditioning: positive branch only
+        region_binding=None,
+        # Latent blending outside a region: mask [1,1,H/16,W/16] in [0,1], source latents [1,64,H/16,W/16]
+        blend_mask: torch.Tensor = None,
+        blend_latents: torch.Tensor = None,
     ):
+        if (blend_mask is None) != (blend_latents is None):
+            raise ValueError("Latent blending needs both blend_mask and blend_latents")
         # Parameters
         inputs_posi = {"prompt": prompt}
         inputs_nega = {"negative_prompt": negative_prompt}
@@ -94,6 +101,14 @@ class QwenImage21Pipeline(BasePipeline):
         }
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
+        if region_binding is not None:
+            inputs_posi["region_binding"] = region_binding
+        if blend_mask is not None:
+            shape = inputs_shared["latents"].shape
+            if blend_latents.shape != shape or blend_mask.shape != (1, 1, *shape[2:]):
+                raise ValueError("Blend mask/latents must match the target latent grid")
+            blend_mask = blend_mask.to(device=self.device, dtype=self.torch_dtype)
+            blend_latents = blend_latents.to(device=self.device, dtype=self.torch_dtype)
 
         # Scheduler
         self.scheduler.set_timesteps(num_inference_steps, dynamic_shift_len=inputs_shared["latents"].shape[2] * inputs_shared["latents"].shape[3])
@@ -109,6 +124,9 @@ class QwenImage21Pipeline(BasePipeline):
                 **models, timestep=timestep, progress_id=progress_id,
             )
             inputs_shared["latents"] = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, **inputs_shared)
+            if blend_mask is not None:
+                inputs_shared["latents"] = self.blend_outside_region(
+                    progress_id, inputs_shared["latents"], blend_mask, blend_latents, inputs_shared["noise"])
 
         # Decode
         self.load_models_to_device(["vae"])
@@ -116,6 +134,19 @@ class QwenImage21Pipeline(BasePipeline):
         image = self.vae_output_to_image(image)
         self.load_models_to_device([])
         return image
+
+    def blend_outside_region(self, progress_id, latents, mask, source_latents, noise):
+        """Replace the outside of ``mask`` by the source noised to the next sigma.
+
+        After step ``progress_id`` the latents sit at sigma_{i+1} (0 after the
+        last step), so the outside becomes (1 - sigma) * x_src + sigma * noise
+        with the same initial noise: Blended Latent Diffusion for flow matching.
+        """
+        sigmas = self.scheduler.sigmas
+        sigma = sigmas[progress_id + 1] if progress_id + 1 < len(self.scheduler.timesteps) else sigmas.new_zeros(())
+        sigma = sigma.to(device=latents.device, dtype=latents.dtype)
+        outside = (1 - sigma) * source_latents + sigma * noise.to(device=latents.device, dtype=latents.dtype)
+        return mask * latents + (1 - mask) * outside
 
 
 class QwenImage21Unit_ShapeChecker(PipelineUnit):
@@ -329,7 +360,7 @@ def model_fn_qwen_image_21(
     kv_cache=None,
     use_gradient_checkpointing=False,
     use_gradient_checkpointing_offload=False,
-    attention_probe=None,
+    region_binding=None,
     **kwargs,
 ):
     latent_height, latent_width = latents.shape[2], latents.shape[3]
@@ -351,11 +382,8 @@ def model_fn_qwen_image_21(
         kv_cache=kv_cache,
         use_gradient_checkpointing=use_gradient_checkpointing,
         use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
-        attention_probe=attention_probe,
+        region_binding=region_binding,
     )
-    if attention_probe is not None:
-        model_output, statistics = model_output
-        return unpatchify(model_output[:, -target_seq_len:], latent_height, latent_width), statistics
     return unpatchify(model_output[:, -target_seq_len:], latent_height, latent_width)
 
 
