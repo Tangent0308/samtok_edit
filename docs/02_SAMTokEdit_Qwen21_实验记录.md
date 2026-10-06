@@ -163,7 +163,18 @@ PYTHONPATH=$REPO/src $PY -m samtok_edit21.evaluation.compile compile --cases $EV
 - 编译类型：add 263、remove 266、replace 33、attribute 152、text 1。MIRAGE 的 "replace" 原子编辑大多是颜色/材质修改，按训练规则编为 attribute；全部 715 个模板通过训练 noref 语法校验。
 - 6 个模板回退都是较长的 CompBench add 指令（如 `add a fish on the right of the second fish ...`），模板保留了位置描述并追加 `in this region {region}`。
 - 转换器对部分 add 指令会删去外观/姿态描述（如 `... with similar color but opposite direction` → `add a goldfish in this region`）；训练 noref 数据由同一转换器生成，分布一致，但需在人工抽检中留意。
-- 人工抽检表：`$EVAL/review.md`（每类最多 50 条）。
+- 人工抽检表：`$EVAL/review.md`（每类最多 50 条，含 noref 与 ref 两种模板）。
+
+**初步人工抽检（2026-10-06，作者本人）。**
+
+| 类型 | 结论 |
+|---|---|
+| remove（266） | 全部为 `remove the object in this region {region}`，正确 |
+| replace（33）、text（1） | 逐条检查，旧对象替换为 `the object in this region`，新内容保留，正确 |
+| attribute（152） | 抽查 40 条，属性名词保留（`Change the color/material/texture of this region {region} to X`），修复了 v1 评测编译器丢失属性名词的问题 |
+| add（263） | 随机 30 条：15 条正确（只替换放置描述，保留新物体外观/姿态）；6 条（20%）把新物体的姿态/外观一起删了（如 `with its back to us and head facing left`、`with its back facing`、`that is the same as other planes`）；4–6 条保留了部分放置描述并追加 `in this region` |
+
+add 的问题来自 9B 转换器对放置短语后的从句的处理。训练 noref 数据由同一转换器生成，所以评测与训练分布一致（D2 的初衷）；但交互 setting 下模型收到的要求可能少于 judge 看到的原指令。为此编译结果同时提供 `ref_template`（原指令 + 区域 token，同样是训练格式，709/715 个 case 可用，其余 6 个是模板回退的 case），推理可用 `--prompt-variant ref`（输出目录加 `+ref` 后缀）。建议交互 setting 下的 add 两种都评：noref 为计划默认，ref 作对照。训练数据中 add noref 行的同类信息丢失，记为下一阶段数据改进项。
 
 ### 6.2 推理、stock、judge 与汇总
 
@@ -196,7 +207,7 @@ PYTHONPATH=$REPO/src $PY -m samtok_edit21.evaluation.score --records $EVAL/smoke
 
 ## 7. 下一步
 
-1. 人工抽检 `$EVAL/review.md`（计划 M0：每类 50 条）。
+1. 人工复核 `$EVAL/review.md`（初查结果见 6.1；确认 add 的交互 setting 是否同时评 ref 变体）。
 2. 四机运行 A（E1 + E2 + E3 seed 1），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
 3. E1 完成后：pass-1 评测（非 add 的 mask IoU 不低于 v1：remove 0.72、replace 0.66；add 的 bbox 格式率 ≥ 95%）。
 4. E3 完成后：dev 评测（B0 × 2 seed、融合开/关）、E4 推理期偏置扫描，然后 E5–E7。

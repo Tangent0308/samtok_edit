@@ -208,7 +208,7 @@ python -m samtok_edit21 infer --mode inline ... --binding bias_clause --binding-
 | `text` | pass 1 → ref prompt；融合 = 解码区域 | pass 1 → ref prompt；融合 = 框外扩 10% |
 | `text_plain` | — | 原指令，不加区域（D9 对照） |
 
-每个 setting 可同时跑融合开/关（输出目录 `<setting>` 与 `<setting>+blend`）。画布 = 源图宽高比、面积约 1024²、边长 32 的倍数；40 步、CFG 1、seed 0、KV cache；输出为白底合成的 RGB，缩放回源图尺寸（与 stock 协议相同）。
+每个 setting 可同时跑融合开/关（输出目录 `<setting>` 与 `<setting>+blend`）。交互 setting 默认用 noref 模板；`--prompt-variant ref` 改用 ref 模板（原指令 + 区域 token，输出目录加 `+ref`），用于检查 noref 改写丢失信息的影响（见实验记录 6.1）。画布 = 源图宽高比、面积约 1024²、边长 32 的倍数；40 步、CFG 1、seed 0、KV cache；输出为白底合成的 RGB，缩放回源图尺寸（与 stock 协议相同）。
 
 ## 9. 四机编排、审计与诊断脚本
 

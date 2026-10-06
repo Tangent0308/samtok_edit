@@ -4,7 +4,7 @@
 
 ## 1. 约定
 
-- **代码**：分支 `qwen-image-2.1-v2`，固定 `SAMTOK_EDIT_COMMIT=c5535133fcad14303360d406e753f14af9313d41`（已推送；四台机器必须相同）。
+- **代码**：分支 `qwen-image-2.1-v2`，固定 `SAMTOK_EDIT_COMMIT=03cb8a748dfd04fc83f522e43f219b3b50132c97`（已推送；四台机器必须相同）。
 - **实验根目录**：`SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2`；每次运行写入 `$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID/`。
 - **数据**：`$SAMTOK_EXPERIMENT/data/train_v2_box_001`（[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)）。
 - **阶段**：`--phases` 取 `stage1,cache,stage2` 的子集。Stage 2 不依赖 Stage 1（缓存用 raw TE），所以第一次运行建缓存，之后所有 Stage 2 臂用 `--cache` 复用。
@@ -32,7 +32,7 @@ ARGS=(--full-training --phases stage1,cache,stage2
 # ===== 固定设置 =====
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=qwen-image-2.1-v2
-export SAMTOK_EDIT_COMMIT=c5535133fcad14303360d406e753f14af9313d41
+export SAMTOK_EDIT_COMMIT=03cb8a748dfd04fc83f522e43f219b3b50132c97
 export SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS="${SAMTOK_DISTRIBUTED_TIMEOUT_SECONDS:-86400}"
 export WANDB_ENTITY=2200012743-peking-university
 export WANDB_PROJECT=samtok-edit

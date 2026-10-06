@@ -676,7 +676,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 |---|---|---|
 | 2026-10-06 | 计划确认、建立 v2 分支 | 完成 |
 | 2026-10-06 | M0：协议（⟨B⟩、rec_ntp）、v1 → v2 数据转换（`qwen21_v2/data/train_v2_box_001`）、Stage 1 纯 NTP、raw-TE 缓存（v3，含绑定 payload）、Stage 2 去 C/A 并加入四种绑定、推理 pass-2 解耦与 latent 融合、评测协议 v2（case/编译/推理/manifest/汇总）、四机编排按阶段运行 | 完成。45 项单元测试；GPU 等价性检查（pass-2 关闭 adapter = raw TE、零初始化 region_embed 与全 1 融合为 no-op、KV cache 下偏置一致、v1 adapter 经 v2 代码与 v1 代码逐位一致）；八卡 smoke：256² 下 B0 全流程与四个绑定臂、1M 像素下 B0 全流程与三个绑定臂（约 21 GiB/卡）；评测管线 smoke（715 case、转换器 709/715 接受、judge 30/30）。详见实验记录第 2–6 节 |
-| — | M0 余项：`eval/protocol_v2_001/review.md` 人工抽检 | 待做 |
+| 2026-10-06 | M0 余项：`eval/protocol_v2_001/review.md` 人工抽检 | 初查完成：remove/replace/attribute 正确；add 约 20% 的 noref 改写删掉了新物体的姿态/外观（与训练数据同源）。已增加 ref 变体（`--prompt-variant ref`）作对照，待你确认交互 add 是否两种都评 |
 | — | M1：四机运行 A（E1 + E2 + E3 seed 1） | 待启动，入口见四机指南第 2 节 |
 
 **实施中的具体取值与偏差。**
