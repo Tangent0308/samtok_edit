@@ -1,4 +1,9 @@
-"""Shared-filesystem ARNOLD pipeline: one invocation on each worker."""
+"""Shared-filesystem ARNOLD pipeline: one invocation on each worker.
+
+v2 phases are independent: Stage 1 (localization LoRA), the raw-TE
+conditioning cache and Stage 2 (DiT LoRA + optional binding). A run executes
+any subset; Stage 2 ablation arms reuse one complete cache via --cache.
+"""
 from __future__ import annotations
 
 import argparse
@@ -112,9 +117,8 @@ class Pipeline:
         self.git_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=self.repo, text=True
         ).strip()
-        self.inference_script = self.repo / "scripts/diagnostics/debug_inference8.py"
-        self.audit_script = self.repo / "scripts/diagnostics/audit_debug_run.py"
-        self.full_audit_script = self.repo / "scripts/diagnostics/audit_full_training.py"
+        self.inference_script = self.repo / "scripts/diagnostics/smoke_inference8.py"
+        self.audit_script = self.repo / "scripts/diagnostics/audit_run.py"
         self.node = self.root / "nodes" / str(self.rank)
         # Never consume stale success markers from a previous attempt.
         try:
@@ -204,28 +208,44 @@ class Pipeline:
         self.command(phase, command)
         self.barrier(phase)
 
+    def localization_adapter(self):
+        """Pass-1 adapter for the smoke inference: this run's Stage 1, or a given one."""
+        if "stage1" in self.args.phases:
+            return self.root / "stage1" / "adapter"
+        return Path(self.args.stage1_adapter).resolve() if self.args.stage1_adapter else None
+
     def run(self):
         a = self.args
         if a.wandb_mode == "online" and not os.environ.get("WANDB_API_KEY"):
             raise ValueError("Inject WANDB_API_KEY into every worker environment; do not put it in command logs")
+        phases = a.phases
         data = Path(a.data).resolve()
-        data_files = ["stage1.jsonl", "stage2.jsonl", "regions/manifest.json"]
-        if a.full_training:
-            data_files.append("metadata_report.json")
+        data_files = ["metadata_report.json"]
+        if "stage1" in phases:
+            data_files.append("stage1.jsonl")
+        if "cache" in phases:
+            data_files.append("stage2.jsonl")
         for name in data_files:
             if not (data / name).is_file():
                 raise FileNotFoundError(data / name)
+        reused_cache = None
+        if "cache" not in phases and "stage2" in phases:
+            reused_cache = Path(a.cache).resolve()
+            if not (reused_cache / "manifest.json").is_file():
+                raise FileNotFoundError(f"Reused cache is incomplete: {reused_cache / 'manifest.json'}")
         import importlib.metadata
         packages = {name: importlib.metadata.version(name) for name in
                     ("torch", "transformers", "accelerate", "peft", "byted-wandb", "setuptools")}
         common = {**{k:v for k,v in self.topo.items() if k != "node_rank"},
                   "args": vars(a), "git_commit": self.git_commit,
                   "source_sha256": source_digest(self.repo), "packages": packages,
-                  "debug_scripts": {str(p.relative_to(self.repo)):
+                  "scripts": {str(p.relative_to(self.repo)):
                       hashlib.sha256(p.read_bytes()).hexdigest()
-                      for p in (self.inference_script, self.audit_script, self.full_audit_script)},
+                      for p in (self.inference_script, self.audit_script)},
                   "data": {n:hashlib.sha256((data/n).read_bytes()).hexdigest() for n in
-                           data_files}}
+                           data_files},
+                  "reused_cache_manifest": None if reused_cache is None else
+                      hashlib.sha256((reused_cache / "manifest.json").read_bytes()).hexdigest()}
         atomic_json(self.node / "topology.json", {"common": common, "hostname": socket.gethostname(),
                     "node_rank": self.rank, "python": sys.executable,
                     "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -246,74 +266,64 @@ class Pipeline:
             return ["--wandb-mode", a.wandb_mode, "--wandb-project", a.wandb_project,
                     "--wandb-entity", a.wandb_entity, "--wandb-name", name,
                     "--wandb-id", hashlib.sha256(str(self.root).encode()).hexdigest()[:16] + "-" + stage]
-        prepared = (["--prepared-data-report", str(data / "metadata_report.json")]
-                    if a.full_training else [])
-        if a.stage1_adapter:
-            stage1_adapter = Path(a.stage1_adapter).resolve()
-            if not (stage1_adapter / "adapter.json").is_file():
-                raise FileNotFoundError(stage1_adapter / "adapter.json")
-            link_alias(self.root / "stage1", stage1_adapter.parent)
-            # Keep a visible phase marker in the new run while reusing the
-            # completed adapter.  No Stage 1 DDP process is launched.
-            atomic_json(self.node / "stage1.reused.json", {
-                "adapter": str(stage1_adapter), "source_run": a.stage1_source_run,
-                "time": time.time(),
-            })
-            self.barrier("stage1_reused")
-        else:
+        if "stage1" in phases:
             self.distributed("stage1", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage1",
-                "--metadata", str(data/"stage1.jsonl"), "--region-cache", str(data/"regions"),
-                "--region-weight", str(a.region_weight), "--steps", str(a.stage1_steps),
+                "--metadata", str(data/"stage1.jsonl"), "--steps", str(a.stage1_steps),
                 "--save-steps", str(a.stage1_save_steps), "--accumulation", "8", "--rank", str(a.stage1_rank),
-                "--output", str(self.root/"stage1"), *prepared, *shared, *tracking("stage1")])
-            stage1_adapter = self.root / "stage1" / "adapter"
-        cache_output = Path(a.cache_output).resolve() if a.cache_output else self.root / "cache"
-        if cache_output != (self.root / "cache").resolve():
+                "--output", str(self.root/"stage1"), *shared, *tracking("stage1")])
+        cache_output = self.root / "cache"
+        if "cache" in phases:
+            if a.cache:
+                cache_output = Path(a.cache).resolve()
+                link_alias(self.root / "cache", cache_output)
+            self.distributed("cache", ["-m", "samtok_edit21.training.engine", "cache",
+                "--metadata", str(data/"stage2.jsonl"), "--output", str(cache_output),
+                "--cache-save-retries", str(a.cache_save_retries),
+                "--cache-save-retry-backoff", str(a.cache_save_retry_backoff),
+                *(["--resume-cache"] if a.resume_cache else []), *shared])
+        elif reused_cache is not None:
+            cache_output = reused_cache
             link_alias(self.root / "cache", cache_output)
-        cache_flags = ["--resume-cache"] if a.resume_cache else []
-        self.distributed("cache", ["-m", "samtok_edit21.training.engine", "cache",
-            "--metadata", str(data/"stage2.jsonl"), "--region-cache", str(data/"regions"),
-            "--te-adapter", str(stage1_adapter), "--output", str(cache_output),
-            "--cache-save-retries", str(a.cache_save_retries),
-            "--cache-save-retry-backoff", str(a.cache_save_retry_backoff),
-            *cache_flags, *shared])
-        self.distributed("stage2", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage2",
-            "--cache", str(cache_output), "--region-weight", str(a.region_weight),
-            "--attention-weight", str(a.attention_weight), "--attention-warmup-steps", str(a.attention_warmup_steps),
-            "--steps", str(a.stage2_steps), "--save-steps", str(a.stage2_save_steps), "--accumulation", "4",
-            "--rank", str(a.stage2_rank), "--output", str(self.root/"stage2"), *shared, *tracking("stage2")])
-        if a.full_training:
-            # The debug inference harness assumes the 18-row smoke manifest and
-            # intentionally is not run on the full corpus. Training itself has
-            # rank-gradient, cache, W&B and parameter-consistency checks.
-            if self.rank == 0:
-                self.command("audit_full", [sys.executable, str(self.full_audit_script),
-                             "--run-root", str(self.root), "--data", str(data)])
-            self.barrier("audit_full")
-            if self.rank == 0:
-                atomic_json(self.root / "TRAINING_COMPLETE.json",
-                            {"time": time.time(), "world_size": self.topo["world_size"],
-                             "data": str(data), "stage1_steps": a.stage1_steps,
-                             "stage2_steps": a.stage2_steps})
-            self.barrier("training_complete")
-        else:
+        if "stage2" in phases:
+            self.distributed("stage2", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage2",
+                "--cache", str(cache_output), "--binding", a.binding,
+                "--binding-beta", str(a.binding_beta), "--binding-eps", str(a.binding_eps),
+                "--binding-rank", str(a.binding_rank),
+                "--steps", str(a.stage2_steps), "--save-steps", str(a.stage2_save_steps), "--accumulation", "4",
+                "--rank", str(a.stage2_rank), "--output", str(self.root/"stage2"), *shared, *tracking("stage2")])
+        if self.rank == 0:
+            self.command("audit", [sys.executable, str(self.audit_script), "--run-root", str(self.root)])
+        self.barrier("audit")
+        localization = self.localization_adapter()
+        if not a.full_training and "stage2" in phases and localization is not None:
+            # Smoke only: every inference mode/binding/blend path on eight GPUs.
             if self.rank == 0:
                 self.command("inference", [sys.executable, "-m", "torch.distributed.run", "--standalone",
                              "--nproc_per_node", "8", "--max_restarts", "0", str(self.inference_script),
-                             "--run-root", str(self.root), "--data", str(data), "--qwen", a.qwen, "--samtok", a.samtok])
+                             "--run-root", str(self.root), "--data", str(data),
+                             "--te-adapter", str(localization),
+                             "--qwen", a.qwen, "--samtok", a.samtok])
             self.barrier("inference")
-            if self.rank == 0:
-                self.command("audit", [sys.executable, str(self.audit_script), "--run-root", str(self.root)])
-            self.barrier("audit")
         if self.rank == 0:
+            atomic_json(self.root / "TRAINING_COMPLETE.json",
+                        {"time": time.time(), "world_size": self.topo["world_size"], "phases": phases,
+                         "data": str(data), "cache": str(cache_output),
+                         "stage1_steps": a.stage1_steps if "stage1" in phases else None,
+                         "stage2_steps": a.stage2_steps if "stage2" in phases else None,
+                         "binding": a.binding if "stage2" in phases else None})
             atomic_json(self.root / "SUCCESS.json", {"time": time.time(), "world_size": self.topo["world_size"]})
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--run-root", required=True, help="Fresh shared directory; identical on all nodes")
-    p.add_argument("--data", required=True, help="Prepared stage1/stage2 JSONL and regions directory")
+    p.add_argument("--data", required=True, help="v2 metadata directory (stage1.jsonl, stage2.jsonl, metadata_report.json)")
     p.add_argument("--local", action="store_true", help="One node x eight GPUs validation")
+    p.add_argument("--phases", default="stage1,cache,stage2",
+                   help="Comma-separated subset of stage1,cache,stage2 (Stage 2 needs a cache: built here or --cache)")
+    p.add_argument("--cache", help="Cache directory: output of the cache phase, or a complete cache to reuse")
+    p.add_argument("--resume-cache", action="store_true", help="Resume an incomplete --cache and reuse its payloads")
+    p.add_argument("--stage1-adapter", help="Localization adapter for the smoke inference when Stage 1 is not run")
     p.add_argument("--wandb-mode", choices=("online", "offline"), default="online")
     p.add_argument("--wandb-project", default="samtok-edit")
     p.add_argument("--wandb-entity", default="2200012743-peking-university")
@@ -325,34 +335,34 @@ def main():
     p.add_argument("--stage2-rank", type=int, default=32)
     p.add_argument("--stage1-save-steps", type=int, default=8, help="Per-rank microsteps, multiple of 8")
     p.add_argument("--stage2-save-steps", type=int, default=4, help="Per-rank microsteps, multiple of 4")
-    p.add_argument("--stage1-adapter", help="Completed Stage 1 adapter to reuse; skips Stage 1 training")
-    p.add_argument("--stage1-source-run", default=None, help="Run directory containing the reused Stage 1 adapter")
-    p.add_argument("--cache-output", help="Existing/incomplete cache directory to resume or a new cache output")
-    p.add_argument("--resume-cache", action="store_true", help="Resume cache-output and reuse completed payloads")
+    p.add_argument("--binding", default="none",
+                   choices=("none", "bias_span", "bias_clause", "region_embed", "region_rope"))
+    p.add_argument("--binding-beta", type=float, default=1.0)
+    p.add_argument("--binding-eps", type=float, default=0.05)
+    p.add_argument("--binding-rank", type=int, default=64)
     p.add_argument("--cache-save-retries", type=int, default=8)
     p.add_argument("--cache-save-retry-backoff", type=float, default=2.0)
     p.add_argument("--max-pixels", type=int, default=65536)
-    p.add_argument("--region-weight", type=float, default=0.5)
-    p.add_argument("--attention-weight", type=float, default=0.1, help="Smoke coefficient only; calibrate for real training")
-    p.add_argument("--attention-warmup-steps", type=int, default=500)
-    p.add_argument("--full-training", action="store_true", help="Run full metadata without the 18-row debug inference/audit harness")
-    p.add_argument("--seed", type=int, default=20260928)
+    p.add_argument("--full-training", action="store_true", help="Formal run: audit only, no smoke inference")
+    p.add_argument("--seed", type=int, default=20261006)
     p.add_argument("--timeout", type=int, default=7200, help="Per-phase and barrier timeout in seconds")
     args = p.parse_args()
+    phases = [x for x in args.phases.split(",") if x]
+    if not phases or set(phases) - {"stage1", "cache", "stage2"} or len(set(phases)) != len(phases):
+        raise SystemExit("--phases must be a subset of stage1,cache,stage2")
+    args.phases = [x for x in ("stage1", "cache", "stage2") if x in phases]
+    if "stage2" in args.phases and "cache" not in args.phases and not args.cache:
+        raise SystemExit("Stage 2 without the cache phase needs --cache pointing at a complete cache")
+    if args.resume_cache and ("cache" not in args.phases or not args.cache):
+        raise SystemExit("--resume-cache needs the cache phase and an explicit --cache directory")
     if args.cache_save_retries < 0 or args.cache_save_retry_backoff < 0:
         raise SystemExit("cache-save-retries/backoff must be nonnegative")
-    if args.resume_cache and not args.cache_output:
-        # This is valid for a same-run restart, but a new run should normally
-        # pass the failed run's cache directory explicitly so completed files
-        # can be reused.
-        print("warning: --resume-cache without --cache-output uses this run's cache directory", file=sys.stderr)
     pipeline = Pipeline(args)
     try:
         pipeline.run()
     except BaseException as exc:
         record_failure(pipeline.node/"failure.json", {"error": str(exc), "type": type(exc).__name__, "time": time.time()})
         raise
-
 
 if __name__ == "__main__":
     main()
