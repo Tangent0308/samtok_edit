@@ -2,6 +2,11 @@
 
 Model inputs contain only the documented fields. Builders keep provenance in a
 separate manifest: an image path is not a unique editing instruction identity.
+
+A region token is either a SAMTok mask span ⟨M⟩ or a Qwen3-VL box ⟨B⟩.  Add
+places a new object, so its region is a box in 0-1000 relative source-image
+coordinates; every other atomic type keeps the SAMTok mask of an existing
+region.  ``REGION_KIND`` is the single source of that rule.
 """
 
 from __future__ import annotations
@@ -13,6 +18,9 @@ from dataclasses import dataclass
 
 CODEBOOK_SIZE, CODEBOOK_DEPTH = 256, 2
 SPAN_RE = re.compile(r"<\|mt_start\|><\|mt_(\d{4})\|><\|mt_(\d{4})\|><\|mt_end\|>")
+BOX_SCALE = 1000
+BOX_RE = re.compile(r"<\|box_start\|>\[(\d{1,4}), (\d{1,4}), (\d{1,4}), (\d{1,4})\]<\|box_end\|>")
+REGION_RE = re.compile(f"(?:{SPAN_RE.pattern})|(?:{BOX_RE.pattern})")
 EDIT_TYPES = (
     "add",
     "remove",
@@ -25,6 +33,9 @@ EDIT_TYPES = (
     "composite",
 )
 LOC_REQUEST = "Please identify and segment the region to be edited in this image."
+# Box-grounding replay (rec_ntp) uses Qwen3-VL's native request so that the
+# edit request above keeps one deterministic output format per edit type.
+REC_TEMPLATE = "Locate the {} in this image and output its bbox coordinates in JSON format."
 EMPTY_THINK = "<think>\n\n</think>\n\n"
 GLOBAL_REFS = (
     "this image",
@@ -57,6 +68,7 @@ NOREF = {
     "global": "this image",
 }
 TYPE_WEIGHTS = dict(zip(EDIT_TYPES, (14, 14, 14, 20, 10, 10, 6, 6, 6)))
+REGION_KIND = {t: "box" if t == "add" else "mask" for t in EDIT_TYPES if t != "composite"}
 
 
 def valid_span_codes(c0, c1):
@@ -74,6 +86,77 @@ def span_of(codes):
     return f"<|mt_start|><|mt_{codes[0]:04d}|><|mt_{codes[1]:04d}|><|mt_end|>"
 
 
+def valid_box_coords(coords):
+    return (len(coords) == 4 and all(type(v) is int for v in coords)
+            and 0 <= coords[0] < coords[2] <= BOX_SCALE and 0 <= coords[1] < coords[3] <= BOX_SCALE)
+
+
+def box_of(coords):
+    coords = list(coords)
+    if not valid_box_coords(coords):
+        raise ValueError("A box needs integer x1<x2, y1<y2 in [0,1000]")
+    return "<|box_start|>[{}, {}, {}, {}]<|box_end|>".format(*coords)
+
+
+def box_coords(value):
+    m = BOX_RE.fullmatch(value) if isinstance(value, str) else None
+    if not m:
+        raise ValueError("Malformed box token sequence")
+    coords = [int(v) for v in m.groups()]
+    if box_of(coords) != value:  # rejects leading zeros and invalid geometry
+        raise ValueError("Box coordinates must be canonical integers in [0,1000]")
+    return tuple(coords)
+
+
+def is_valid_box(value):
+    try:
+        box_coords(value)
+    except ValueError:
+        return False
+    return True
+
+
+def is_valid_region(value):
+    return is_valid_span(value) or is_valid_box(value)
+
+
+def region_kind(value):
+    if is_valid_span(value):
+        return "mask"
+    if is_valid_box(value):
+        return "box"
+    raise ValueError("Not a valid mask span or box")
+
+
+def pixel_box(mask):
+    """Outward-rounded 0-1000 box of a nonempty HxW mask in its own frame."""
+    import numpy as np
+
+    mask = np.asarray(mask) > 0
+    if mask.ndim != 2 or not mask.any():
+        raise ValueError("A box needs one nonempty 2D mask")
+    height, width = mask.shape
+    rows, cols = np.flatnonzero(mask.any(1)), np.flatnonzero(mask.any(0))
+    return relative_box((cols[0], rows[0], cols[-1] + 1, rows[-1] + 1), width, height)
+
+
+def relative_box(xyxy, width, height):
+    """Pixel xyxy (exclusive end) -> outward-rounded 0-1000 box.
+
+    floor/ceil of a nonempty interval inside [0, size] stays inside [0, 1000]
+    and keeps x1 < x2, y1 < y2, so no clipping or repair is needed.
+    """
+    import math
+
+    x0, y0, x1, y1 = (float(v) for v in xyxy)
+    if not (0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height):
+        raise ValueError("Pixel box must lie inside the image")
+    box = (math.floor(BOX_SCALE * x0 / width), math.floor(BOX_SCALE * y0 / height),
+           math.ceil(BOX_SCALE * x1 / width), math.ceil(BOX_SCALE * y1 / height))
+    box_of(box)
+    return box
+
+
 def spans_in(text):
     matches = list(SPAN_RE.finditer(text))
     if any(not is_valid_span(m.group()) for m in matches) or "<|mt_" in SPAN_RE.sub(
@@ -83,15 +166,32 @@ def spans_in(text):
     return [m.group() for m in matches]
 
 
+def boxes_in(text):
+    matches = list(BOX_RE.finditer(text))
+    if any(not is_valid_box(m.group()) for m in matches) or "<|box_" in BOX_RE.sub("", text):
+        raise ValueError("Malformed or noncanonical box token sequence")
+    return [m.group() for m in matches]
+
+
+def regions_in(text):
+    """All mask spans and boxes in text order, after validating both kinds."""
+    spans_in(text)
+    boxes_in(text)
+    return [m.group() for m in REGION_RE.finditer(text)]
+
+
 def to_cot(items):
     """Preserve exact labels (including quoted text), escaping with JSON itself."""
     rows = []
-    for span, label in items:
-        if not is_valid_span(span) or not isinstance(label, str) or not label.strip():
-            raise ValueError("Each item needs a valid mask span and nonempty label")
+    for region, label in items:
+        if not is_valid_region(region) or not isinstance(label, str) or not label.strip():
+            raise ValueError("Each item needs a valid mask span or box and a nonempty label")
         if "<|" in label or "<think>" in label or "</think>" in label or any(ord(c) < 32 for c in label):
             raise ValueError("Control tokens/characters are not allowed in a label")
-        rows.append({"mask_2d": span, "label": label.strip()})
+        if region_kind(region) == "mask":
+            rows.append({"mask_2d": region, "label": label.strip()})
+        else:
+            rows.append({"bbox_2d": list(box_coords(region)), "label": label.strip()})
     return (
         "```json\n["
         + ",\n".join(json.dumps(x, ensure_ascii=False) for x in rows)
@@ -116,9 +216,15 @@ def parse_cot(text, *, nonempty=False):
         )
     pairs = []
     for item in rows:
-        if not isinstance(item, dict) or set(item) != {"mask_2d", "label"}:
-            raise ValueError("Mask items must have exactly mask_2d and label")
-        pairs.append((item["mask_2d"], item["label"]))
+        if isinstance(item, dict) and set(item) == {"mask_2d", "label"}:
+            pairs.append((item["mask_2d"], item["label"]))
+        elif isinstance(item, dict) and set(item) == {"bbox_2d", "label"}:
+            coords = item["bbox_2d"]
+            if not isinstance(coords, list) or not valid_box_coords(coords):
+                raise ValueError("bbox_2d must be four integers x1<x2, y1<y2 in [0,1000]")
+            pairs.append((box_of(coords), item["label"]))
+        else:
+            raise ValueError("Items must have exactly mask_2d/bbox_2d and label")
     to_cot(pairs)  # validate without silently fixing content
     return pairs
 
@@ -170,6 +276,9 @@ def grouped_units(instruction, items):
         groups.setdefault(phrase, []).append(code)
         plural_groups[phrase] = plural
         previous = phrase
+    for codes in groups.values():
+        if len({region_kind(code) for code in codes}) != 1:
+            raise ValueError("One unit cannot mix mask spans and boxes")
     return [Unit(phrase, tuple(codes)) for phrase, codes in groups.items()]
 
 
@@ -222,8 +331,10 @@ def condition_localization(instruction, items, *, variant="ref", reviewed=None, 
 
 
 def _with_codes(phrase, codes):
-    if not codes or any(not is_valid_span(s) for s in codes):
-        raise ValueError("Unit needs one or more valid mask spans")
+    if not codes or any(not is_valid_region(s) for s in codes):
+        raise ValueError("Unit needs one or more valid mask spans or boxes")
+    if len({region_kind(s) for s in codes}) != 1:
+        raise ValueError("One unit cannot mix mask spans and boxes")
     return phrase + " " + "".join(codes)
 
 
@@ -235,7 +346,7 @@ def render_units(instruction, units, *, variant="ref"):
     """
     if variant not in {"ref", "noref"} or not units:
         raise ValueError("Expected ref/noref and at least one unit")
-    spans_in(instruction)
+    regions_in(instruction)
     if "<|" in instruction or "<think>" in instruction or "</think>" in instruction:
         raise ValueError(
             "Input instruction must not already contain control/mask tokens"
@@ -332,7 +443,7 @@ def interactive_prompt(instruction, code_groups, *, whole_image=False):
         for ref, codes in reversed(list(zip(refs, code_groups))):
             phrase = "this image" if whole_image and ref.group().lower() == "this region" else ref.group()
             result = result[:ref.start()] + _with_codes(phrase, codes) + result[ref.end():]
-        spans_in(result)
+        regions_in(result)
         return result
     if len(code_groups) != 1:
         raise ValueError("Multiple regions need explicit referring phrases")
@@ -363,17 +474,22 @@ def interactive_prompt(instruction, code_groups, *, whole_image=False):
 
 def validate_inline(prompt, variant, edit_type):
     """Check observable binding syntax; semantic/mask QC belongs to annotation."""
-    groups = list(re.finditer(r"(?:" + SPAN_RE.pattern + r")+", prompt))
+    groups = list(re.finditer(r"(?:" + REGION_RE.pattern + r")+", prompt))
     if (edit_type == "composite" and len(groups) < 2) or (edit_type != "composite" and len(groups) != 1):
-        raise ValueError("Mask group count must match atomic/composite edit semantics")
-    if edit_type in {"background", "global"} and len(spans_in(prompt)) != 1:
+        raise ValueError("Region group count must match atomic/composite edit semantics")
+    if edit_type in {"background", "global"} and len(regions_in(prompt)) != 1:
         raise ValueError("Background/global require exactly one mask")
     for group in groups:
+        kinds = {region_kind(m.group()) for m in REGION_RE.finditer(group.group())}
+        if len(kinds) != 1:
+            raise ValueError("One region group cannot mix mask spans and boxes")
+        if edit_type != "composite" and kinds != {REGION_KIND[edit_type]}:
+            raise ValueError(f"{edit_type} binds a {REGION_KIND[edit_type]} region")
         before, after = prompt[:group.start()], prompt[group.end():]
         if not before.endswith(" ") or before.endswith("  "):
-            raise ValueError("Mask group must follow a complete phrase and one space")
-        if before.endswith("<|mt_end|> "):
-            raise ValueError("Masks for one phrase must be directly concatenated")
+            raise ValueError("Region group must follow a complete phrase and one space")
+        if before.endswith("<|mt_end|> ") or before.endswith("<|box_end|> "):
+            raise ValueError("Regions for one phrase must be directly concatenated")
         # A complete reference can end in a stranded preposition, e.g.
         # "the sofa that the cat is resting on". Its binding was checked by
         # exact source-span matching; a last-word heuristic cannot reject it.
@@ -381,9 +497,9 @@ def validate_inline(prompt, variant, edit_type):
                      r"the|a|an|to|of|on|in|at|with|from|near|under|over|behind|beside")
         named_a = variant == 'ref' and re.search(r'\b(?:[Mm]odel|labeled|labelled|label) A $', before)
         if re.search(r"(?:^|\s)(?:" + forbidden + r") $", before, re.I) and not named_a:
-            raise ValueError("Mask group cannot directly follow an article/preposition")
+            raise ValueError("Region group cannot directly follow an article/preposition")
         if after and (after.startswith("  ") or (after[0].isalnum()) or re.match(r"\s+[.,;:!?]", after)):
-            raise ValueError("Invalid spacing after mask group")
+            raise ValueError("Invalid spacing after region group")
         if variant == "noref":
             choices = list(NOREF.values()) + ["in this region"] if edit_type == "composite" else ["in this region" if edit_type == "add" else NOREF[edit_type]]
             # A grammatical preposition before the phrase is not its type.
@@ -392,23 +508,40 @@ def validate_inline(prompt, variant, edit_type):
             matched = next((p for p in phrases if re.search(r"(?<!\w)" + re.escape(p) + r" $", before, re.I)), None)
             grammatical_in = matched == "in this region" and "this region" in choices
             if matched not in choices and not grammatical_in:
-                raise ValueError("Noref mask must follow the type-specific region phrase")
+                raise ValueError("Noref region must follow the type-specific region phrase")
+
+
+def _validate_rec(row, regions):
+    """Box-grounding replay: one referring phrase, native Qwen3-VL request."""
+    if regions:
+        raise ValueError("rec_ntp prompts are plain grounding requests")
+    pairs = parse_cot(row["mt_cot"], nonempty=True)
+    if to_cot(pairs) != row["mt_cot"]:
+        raise ValueError("mt_cot must be canonical; canonicalize during data preparation")
+    labels = {label for _, label in pairs}
+    if len(labels) != 1 or any(region_kind(region) != "box" for region, _ in pairs):
+        raise ValueError("rec_ntp answers one phrase with bbox_2d items")
+    if row["prompt"] != REC_TEMPLATE.format(labels.pop()):
+        raise ValueError("rec_ntp prompt must be the canonical grounding request")
 
 
 def validate_row(row):
+    """v2 metadata contract: atomic edits only, add bound by a box."""
     if not isinstance(row, dict):
         raise ValueError("Each metadata row must be a JSON object")
     kind = row.get("sample_type")
-    if kind not in {"edit", "edit_ntp", "edit_umt"}:
-        raise ValueError("Use edit/edit_ntp/edit_umt; legacy edit_mt must be converted")
+    if kind not in {"edit", "edit_ntp", "edit_umt", "rec_ntp"}:
+        raise ValueError("Use edit/edit_ntp/edit_umt/rec_ntp; legacy edit_mt must be converted")
     allowed = {"sample_type", "edit_type", "edit_image", "prompt"}
-    allowed |= {"mt_cot"} if kind == "edit_ntp" else {"image"}
+    allowed |= {"mt_cot"} if kind in {"edit_ntp", "rec_ntp"} else {"image"}
     if kind == "edit_umt":
         allowed.add("instr_variant")
     if set(row) != allowed:
         raise ValueError(f"Unexpected/missing metadata fields: {set(row) ^ allowed}")
     if row.get("edit_type") not in EDIT_TYPES:
         raise ValueError("Missing or invalid edit_type")
+    if row["edit_type"] == "composite":
+        raise ValueError("v2 metadata excludes composite edits")
     if not isinstance(row.get("prompt"), str) or not row["prompt"].strip():
         raise ValueError("Missing prompt")
     sources = row.get("edit_image")
@@ -421,33 +554,30 @@ def validate_row(row):
         raise ValueError("edit_image must be a path or nonempty list of paths")
     if kind != "edit" and len(sources) != 1:
         raise ValueError(
-            "Mask-conditioned rows require one source image; multi-image mask binding is unspecified"
+            "Region-conditioned rows require one source image; multi-image binding is unspecified"
         )
-    spans = spans_in(row["prompt"])
-    if "<|" in SPAN_RE.sub("", row["prompt"]) or "<think>" in row["prompt"] or "</think>" in row["prompt"]:
+    regions = regions_in(row["prompt"])
+    if "<|" in REGION_RE.sub("", row["prompt"]) or "<think>" in row["prompt"] or "</think>" in row["prompt"]:
         raise ValueError("Chat/vision control tokens may not occur in the instruction")
-    if kind == "edit_ntp":
-        if "image" in row or spans or "instr_variant" in row:
-            raise ValueError(
-                "edit_ntp cannot contain a target image, inline mask, or instr_variant"
-            )
+    if kind == "rec_ntp":
+        _validate_rec(row, regions)
+    elif kind == "edit_ntp":
+        if regions:
+            raise ValueError("edit_ntp cannot contain an inline region")
         pairs = parse_cot(row.get("mt_cot", ""), nonempty=True)
         if to_cot(pairs) != row["mt_cot"]:
             raise ValueError(
                 "mt_cot must be canonical; canonicalize during data preparation"
             )
+        expected = REGION_KIND[row["edit_type"]]
+        if any(region_kind(region) != expected for region, _ in pairs):
+            raise ValueError(f"{row['edit_type']} localization must output {expected} regions")
         for _, label in pairs:
             phrase = re.sub(r"^one of the ", "", label, flags=re.I)
             if re.match(r"^(?:the|a|an)\s+", phrase, re.I):
                 raise ValueError("Localization label must omit its leading article")
         units = grouped_units(row["prompt"], pairs)
-        positions = [phrase_span(row["prompt"], u.ref_phrase)[0] for u in units if u.ref_phrase.lower() != "this image"]
-        if positions != sorted(positions):
-            raise ValueError("Localization units must follow instruction phrase order")
-        if row["edit_type"] == "composite":
-            if len(units) < 2:
-                raise ValueError("Composite requires multiple distinct units")
-        elif len(units) != 1:
+        if len(units) != 1:
             raise ValueError("Atomic edit requires one label group")
         if row["edit_type"] in {"background", "global"} and len(pairs) != 1:
             raise ValueError("Background/global require one mask")
@@ -458,11 +588,11 @@ def validate_row(row):
         if not isinstance(row.get("image"), str) or not row["image"] or "mt_cot" in row:
             raise ValueError("FM row needs target image and must omit mt_cot")
         if kind == "edit_umt":
-            if not spans or row.get("instr_variant") not in {"ref", "noref"}:
+            if not regions or row.get("instr_variant") not in {"ref", "noref"}:
                 raise ValueError(
-                    "edit_umt needs inline masks and ref/noref instr_variant"
+                    "edit_umt needs inline regions and ref/noref instr_variant"
                 )
             validate_inline(row["prompt"], row["instr_variant"], row["edit_type"])
-        elif spans or "instr_variant" in row:
-            raise ValueError("Plain edit must omit masks/instr_variant")
+        elif regions or "instr_variant" in row:
+            raise ValueError("Plain edit must omit regions/instr_variant")
     return row
