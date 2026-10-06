@@ -2,14 +2,14 @@
 
 本文按时间记录 v2 分支的实验：做了什么、命令、结果、产物路径、遇到的问题和处理。方法与代码见[代码实现说明](01_SAMTokEdit_Qwen21_代码实现说明.md)，计划与进度见 [v1 分析与 v2 计划](07_SAMTokEdit_Qwen21_v1分析与v2计划.md)第 8 节。v1 的全部实验记录已存档在 [archive/v1](archive/v1/02_SAMTokEdit_Qwen21_实验记录.md)。
 
-所有 v2 产物都在 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`（下文记为 `$V2`）。
+2026-10-06 起，v2 产物写在 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/`（下文记为 `$V2`）。此前的产物在 intern 旧根目录 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`（下文记为 `$V2_OLD`）：数据、评测和 smoke 数据已逐字节复制到 `$V2`，本地 smoke 运行和日志只在 `$V2_OLD`（第 8 节）。
 
 ## 0. 状态（2026-10-06）
 
 | 里程碑 | 状态 |
 |---|---|
 | M0：代码、测试、数据转换、评测编译器 | 完成，本地八卡 smoke 全部通过；`review.md` 待人工抽检 |
-| M1：E1 Stage 1 + pass-1 评测 | 运行 A 首次提交（2026-10-06）因 intern 配额已满在入口处失败，入口已修复，等配额恢复后重新提交（第 7 节） |
+| M1：E1 Stage 1 + pass-1 评测 | 运行 A 首次提交（2026-10-06）因 intern 配额已满在入口处失败（第 7 节）；入口已修复，实验根目录已移到 user 目录（第 8 节），待重新提交 |
 | M2–M4 | 未开始 |
 
 ## 1. 环境
@@ -82,7 +82,7 @@ CUDA_VISIBLE_DEVICES=0 PYTHONPATH=src:third_party/diffsynth:third_party /tmp/sam
 cd /opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2
 export PYTHONPATH=$PWD/src:$PWD/third_party/diffsynth:$PWD/third_party SAMTOK_LOCAL_PORT=<空闲端口>
 /tmp/samtok21-fixes-dUnbt5/venv/bin/python -m samtok_edit21.distributed.training --local \
-  --run-root $V2/smoke/runs/smoke_002_b0 --data $V2/smoke/data_smoke_001 --wandb-mode offline \
+  --run-root $V2_OLD/smoke/runs/smoke_002_b0 --data $V2/smoke/data_smoke_001 --wandb-mode offline \
   --phases stage1,cache,stage2 --binding none --stage1-steps 2 --stage2-steps 3 \
   --stage1-save-steps 8 --stage2-save-steps 4 --max-pixels 65536 --timeout 7200
 ```
@@ -102,7 +102,7 @@ export PYTHONPATH=$PWD/src:$PWD/third_party/diffsynth:$PWD/third_party SAMTOK_LO
 
 ### 5.2 256² 四个绑定臂（复用 5.1 的缓存与 Stage 1 adapter）
 
-`--phases stage2 --cache $V2/smoke/runs/smoke_002_b0/cache --stage1-adapter $V2/smoke/runs/smoke_002_b0/stage1/adapter --binding <arm> --binding-beta 2 --binding-eps 0.05 --stage2-steps 3`
+`--phases stage2 --cache $V2_OLD/smoke/runs/smoke_002_b0/cache --stage1-adapter $V2_OLD/smoke/runs/smoke_002_b0/stage1/adapter --binding <arm> --binding-beta 2 --binding-eps 0.05 --stage2-steps 3`
 
 | 臂 | 审计 | 训练时 bound_units | adapter | 推理 smoke 绑定单元数（8 例） |
 |---|---|---|---|---|
@@ -127,7 +127,7 @@ export PYTHONPATH=$PWD/src:$PWD/third_party/diffsynth:$PWD/third_party SAMTOK_LO
 
 FlexAttention 的 score_mod 在长序列（约 8k token）、梯度检查点下正常编译，无重编译告警。每个缓存行约 9.6 MB，全量 290,006 行约 2.8 TB。
 
-产物：`$V2/smoke/runs/smoke_002_{b0,bias_span,bias_clause,region_embed,region_rope}`、`$V2/smoke/runs/smoke_003_fullres_{b0,bias_clause,region_embed,region_rope}`；日志 `$V2/smoke/logs/`。
+产物：`$V2_OLD/smoke/runs/smoke_002_{b0,bias_span,bias_clause,region_embed,region_rope}`、`$V2_OLD/smoke/runs/smoke_003_fullres_{b0,bias_clause,region_embed,region_rope}`；日志 `$V2_OLD/smoke/logs/`。
 
 ### 5.4 问题与处理
 
@@ -234,11 +234,40 @@ PYTHONPATH=$REPO/src $PY -m samtok_edit21.evaluation.score --records $EVAL/smoke
   - 入口第一行起把 stderr 并入 stdout，所有报错都会出现在 ARNOLD 日志页上。
   - 创建 run 目录前先在 `$SAMTOK_EXPERIMENT/runs/` 下写一个探针文件；写不进去就打印原因、以退出码 3 退出，不留下任何文件。
   - 本地验证（伪造四机 ARNOLD 变量，临时 run ID）：对当前的 intern 根目录，退出码 3，stdout 中有 `Disk quota exceeded` 和说明，stderr 为空，没有新建任何文件；对可写的临时目录并故意让 clone 失败，正常认领节点，写出 `failure.json`（阶段 checkout，退出码 128）。
-- **状态**：等 intern 配额恢复。因为这次什么都没有写，恢复后可以沿用同一个 run ID 重新提交。
+- **后续**：实验根目录改到 user 目录（第 8 节）。这次什么都没有写，新根目录下也没有这个 run，可以沿用同一个 run ID 重新提交。
 
-## 8. 下一步
+## 8. user 目录清理与实验根目录迁移（2026-10-06）
+
+### 8.1 实验根目录
+
+intern 配额满了以后，按你的决定把实验根目录改为 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/`（新建 `experiments2/`，项目文件夹 `SAMTokEdit/`，其下仍按系列分 `qwen21_v2/`）。commit `60f875c`。
+
+- **复制到新根目录**（intern 只需可读，原件保留）：`data/train_v2_box_001/`（0.36 GB，5 个文件）、`eval/protocol_v2_001/`（0.07 GB，241 个文件）、`smoke/data_smoke_001/`（3 个文件）。两边逐文件 sha256 一致；`stage1.jsonl`、`stage2.jsonl`、`provenance.jsonl` 的 sha256 与 `metadata_report.json` 一致。数据报告里只有 hash、没有绝对路径，训练入口按 hash 校验，所以复制件可以直接使用。smoke 数据的 `metadata_report.json` 里 `smoke_of` 仍指向 intern 原件，只是来源记录，不参与校验。
+- **留在旧根目录**：本地 smoke 运行和日志（`$V2_OLD/smoke/runs/`、`$V2_OLD/smoke/logs/`，约 19 GB），作为第 5 节的证据，不再写入。
+- **代码与文档**：`data/io.py` 的 `EXPERIMENT_ROOT`（只作参照，训练入口不读它）、四机指南、代码实现说明、数据盘点和计划中的路径已改为新根目录。训练代码不变，`SAMTOK_EDIT_COMMIT` 仍为 `5443a7b`。
+- 新根目录已确认可写；能否放下约 2.8 TB 的缓存取决于 user 目录配额，开发机上看不到（四机指南第 1 节）。
+
+### 8.2 清理 `user/tanyue/experiments/SAMTokEdit/`
+
+经你确认，删除了旧管线（Qwen-Image-Edit-2511 + Qwen2.5-VL-7B-SAMTok，8–9 月）的数据和 checkpoint、各 smoke 运行和 v1 Stage 1 的中间 checkpoint，共 239.1 GB；目录总量从约 423 GB 降到 184 GB。删除记录（逐项路径、大小、理由、核对结果）：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/DELETED_2026-10-06.json`。
+
+| 删除项 | 大小 |
+|---|---:|
+| `crispedit_refined/stage1_full/data/`、`crispedit_refined/stage2_full/data/`（旧管线物化的 CrispEdit 图片与 metadata） | 206.8 GB |
+| 旧管线 checkpoint：`crispedit_refined/{stage1_full/train_8gpu_1ep,stage2_full/stage2_dit_lora}`、`crispedit_refined_4node/*-run2/stage*_lora`、`stage2_full_edit_mt/stage2_dit_lora`、`stage1_20k_mt` 中的 `*.safetensors`（30 个） | 16.1 GB |
+| v1 Stage 1 中间 checkpoint `qwen21_full_4n_formal_003/stage1/step-*.safetensors`（13 个；最终 `adapter/` 保留） | 9.1 GB |
+| smoke 运行：`crispedit_refined/stage{1,2}_8gpu_smoke`、`stage1_single_gpu_smoke`、`stage1_8gpu_smoke`、`stage2_8gpu_smoke`、`qwen_image_2_1_dev_smoke` | 6.6 GB |
+| 旧数据：`validation_edit_mt_64/data`、`crispedit_refined_4node/*/data` | 0.5 GB |
+| 写入中断留下的 5 个 `.tmp`（v1 region 缓存 3 个、9B 转换进度 2 个） | 36 KB |
+
+- **删除前的检查**：v2 训练数据只引用 `qwen21_full4_20260928/data/assets/` 和 `datasets/SAMTok_Derived_Edit_Labeling`；v1 数据清单只引用 `assets/`；v2 评测只引用 benchmark 数据集和 `qwen21_656`；v2 代码、benchmark 清单和 benchmark 仓库都不引用删除项。抽查 757 个 v2 图片路径都是普通文件、不在删除范围内，768 个 asset 分片目录里没有软链接。3 个 region `.tmp` 对应的行在 manifest 中指向的 `coverage/*.pt` 都存在。
+- **删除后的核对**：计划中的路径全部不存在；v1 Stage 1 adapter（698,425,744 字节）、3 × 256 个 asset 分片、v1 数据文件、benchmark 与评测输出、旧运行的日志和 loss 曲线、`.secrets` 都在；抽查 931 个 v2 训练图片全部可读。
+- **保留**：`qwen21_full4_20260928/data/`（v2 训练图片和 v1 数据）、v1 Stage 1 adapter 与日志、benchmark 相关输出、旧模型的评测输出与可解释性分析、旧训练的 reports/logs/loss 曲线。归档文档（`docs/archive/`）里对 `qwen_image_2_1_dev_smoke` 的 2 处引用现已失效。
+- 32 路并行，用时 45 秒。
+
+## 9. 下一步
 
 1. 人工复核 `$EVAL/review.md`（已用 6.3 的新 prompt 重新生成；确认 add 的交互 setting 是否同时评 ref 变体）。
-2. intern 配额恢复后（四机指南第 1 节有一行可写性检查），重新提交四机运行 A（E1 + E2 + E3 seed 1），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
+2. 用新根目录重新提交四机运行 A（E1 + E2 + E3 seed 1），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
 3. E1 完成后：pass-1 评测（非 add 的 mask IoU 不低于 v1：remove 0.72、replace 0.66；add 的 bbox 格式率 ≥ 95%）。
 4. E3 完成后：dev 评测（B0 × 2 seed、融合开/关）、E4 推理期偏置扫描，然后 E5–E7。
