@@ -43,10 +43,22 @@ PROMPT_EXAMPLES = {
     'remove': ('Remove the broken clock on the wall.', ['broken clock on the wall'], 'Remove this region.'),
     'replace': ('Replace the house with a tiled roof on the left with a glass tower.', ['house with a tiled roof on the left'], 'Replace this region with a glass tower.'),
     'action': ('A person jumps off the ledge.', ['person'], 'This region jumps off the ledge.'),
-    'add': ('Add a woman in a green coat and white boots beside the bus.', ['woman in a green coat and white boots beside the bus'], 'Add a woman in a green coat and white boots in this region.'),
+    'add': [('Add a woman in a green coat and white boots beside the bus, near the curb.', ['woman in a green coat and white boots beside the bus, near the curb'], 'Add a woman in a green coat and white boots in this region.'),
+            ('Add a gray dog to the left of the brown dog with its head turned to the right.', ['gray dog to the left of the brown dog with its head turned to the right'], 'Add a gray dog in this region with its head turned to the right.')],
     'text': ("Replace the text 'Exit' with 'Open' on the sign.", ["'Exit'"], "Replace this region with 'Open'."),
     'composite': ('Remove the chair and make the old desk smooth.', ['chair', 'old desk'], 'Remove this region and make this region smooth.'),
 }
+
+
+# Addition only: the 9B model tends to cut a pose/appearance clause written
+# after the placement together with the placement itself.
+ADD_RULE = ('For addition, delete the WHOLE placement: every phrase saying where the new '
+            'object goes or which existing object it is next to ("beside the bus", "near the '
+            'curb", "to the left of the brown dog"). Keep every word describing the new object '
+            'itself, wherever it appears: its pose, orientation, action, size, appearance or '
+            'similarity ("with its head turned to the right", "facing left", "that looks similar '
+            'to the others"). A pose word before the deleted location stays ("perched on the log" '
+            '-> "perched in this region", "parked next to the van" -> "parked in this region").')
 
 
 def task_prompt(edit_type):
@@ -55,9 +67,11 @@ def task_prompt(edit_type):
         example = PROMPT_EXAMPLES['composite']
     if example is None:
         return PROMPT
-    return (PROMPT + '\nFORMAT EXAMPLE (unrelated content; never copy it into the answer):\n'
-            + example[0] + '\n' + json.dumps({'ref_phrase': example[1],
-                                              'noref_instruction': example[2]}) + '\n')
+    examples = example if isinstance(example, list) else [example]
+    text = PROMPT + ('\n' + ADD_RULE if edit_type == 'add' else '')
+    text += '\nFORMAT EXAMPLE (unrelated content; never copy it into the answer):\n'
+    return text + ''.join(instruction + '\n' + json.dumps({'ref_phrase': refs, 'noref_instruction': noref}) + '\n'
+                          for instruction, refs, noref in examples)
 
 
 OUTPUT_SCHEMA = {
