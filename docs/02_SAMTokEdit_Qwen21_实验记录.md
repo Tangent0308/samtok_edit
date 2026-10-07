@@ -299,6 +299,7 @@ Merlin 作业 `65f2a3f151b31f87` 重新启动（trial `303529456`），run ID `q
 | 显存（同上） | 读缓存 20.6 GiB/卡，即时计算 38.6 GiB/卡 |
 | 本地完整编排（八卡、1M 像素）：只跑 Stage 2、即时计算，pass 1 用运行 A 的 Stage 1 adapter（与运行 A2 相同的阶段） | `SUCCESS.json`；审计通过（adapter 的条件身份与本次 metadata hash、分辨率一致）；各 rank 权重一致；八卡推理 smoke 8 种路径全部完成；峰值显存 38.6 GiB/卡；12 个 microstep 用 84 s，与之前读缓存的本地 smoke 相同 |
 | 本地完整编排（八卡、256²）：默认阶段 `stage1,stage2`，`--binding bias_clause` | `SUCCESS.json`；审计通过；推理 smoke 8 种路径完成；峰值显存 33.5 GiB/卡 |
+| 本地完整编排（八卡、1M 像素，10/7 补做）：`region_embed`、`region_rope`、`bias_span` 各 3 个 update，只跑 Stage 2、即时计算 | 三个都 `SUCCESS.json`、审计通过；每个 update 75% 的区域行全部绑定（bound_units 0.75）；region_embed 的 2 个张量写入 adapter；推理 smoke 8 种路径完成；峰值显存 38.6 GiB/卡。至此四种绑定都在即时计算下跑通 |
 
 脚本：[`check_online_conditioning.py`](../scripts/diagnostics/check_online_conditioning.py)、[`compare_stage2_runs.py`](../scripts/diagnostics/compare_stage2_runs.py)；产物在本地 `/tmp/sa/online/`（check1、check1b、check2、check3）。
 

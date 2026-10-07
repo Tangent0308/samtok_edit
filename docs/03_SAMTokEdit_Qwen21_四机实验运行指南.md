@@ -132,10 +132,21 @@ bash scripts/training/run_arnold.sh "${ARGS[@]}"
 
 ## 3. Stage 2 消融臂
 
-只替换运行设置块。各臂都只跑 Stage 2、即时计算条件，不需要缓存；`--stage1-adapter` 指向运行 A 的 Stage 1。
+每个臂是一个独立的 4 × 8 卡作业，可以与其他臂、与运行 A2 同时跑：
+- 各臂只读同一份 `stage2.jsonl`，即时计算条件，各写自己的 `runs/<RUN_ID>/`（约 2 GB）。
+- 提交方法：用第 2 节的完整脚本，只把开头的"运行设置"块（从 `export SAMTOK_RUN_ID` 到 `ARGS=( … )` 结束）换成下面对应的块，其余不动。
+- 绑定臂（E5–E7）用与 B0 seed 1（运行 A2）相同的 seed 20261006，数据顺序完全相同，便于配对比较；B0 seed 2 换 seed，用来估计 seed 间方差。
+- 耗时：每个臂约 18 分钟启动 + 1,000 update × 约 15 s ≈ 4.5 小时（bias 类约慢 10–15%）。
+
+| 臂（计划编号） | 何时可跑 | `SAMTOK_RUN_ID` |
+|---|---|---|
+| B0 seed 2（E3） | 现在 | `qwen21_v2_4n_S2_b0_s2_001` |
+| 区域嵌入（E6） | 现在 | `qwen21_v2_4n_S2_embed_001` |
+| region-RoPE（E7） | 现在 | `qwen21_v2_4n_S2_rope_001` |
+| 区域偏置（E5） | E4 选定 β/ε/作用范围之后 | `qwen21_v2_4n_S2_bias_<span\|clause>_001` |
 
 ```bash
-# ===== 运行设置：B0 seed 2（E3 的第二个 seed） =====
+# ===== 运行设置：B0 seed 2（E3） =====
 export SAMTOK_RUN_ID=qwen21_v2_4n_S2_b0_s2_001
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
@@ -149,14 +160,54 @@ ARGS=(
 )
 ```
 
-| 臂（计划编号） | `SAMTOK_RUN_ID` 建议 | `--binding` 及参数 |
-|---|---|---|
-| B0 seed 2（E3） | `qwen21_v2_4n_S2_b0_s2_001` | `--binding none --seed 20261007` |
-| 区域偏置（E5） | `qwen21_v2_4n_S2_bias_<span\|clause>_001` | `--binding bias_span` 或 `bias_clause`，`--binding-beta`/`--binding-eps` 取 E4 选出的值（默认 1.0 / 0.05） |
-| 区域嵌入（E6） | `qwen21_v2_4n_S2_embed_001` | `--binding region_embed --binding-rank 64` |
-| region-RoPE（E7） | `qwen21_v2_4n_S2_rope_001` | `--binding region_rope` |
+```bash
+# ===== 运行设置：区域嵌入（E6） =====
+export SAMTOK_RUN_ID=qwen21_v2_4n_S2_embed_001
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
+export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
+STAGE1="$SAMTOK_EXPERIMENT/runs/qwen21_v2_4n_A_s1_b0_001/stage1/adapter"
+ARGS=(
+  --full-training
+  --phases stage2 --stage1-adapter "$STAGE1"
+  --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
+  --binding region_embed --binding-rank 64 --seed 20261006
+  --max-pixels 1048576 --timeout 604800 --wandb-mode online
+)
+```
 
-E4（只在 B0 上做推理期偏置，不训练）不需要四机，见[代码实现说明第 7 节](01_SAMTokEdit_Qwen21_代码实现说明.md#7-推理)的 `--binding` 覆盖。
+```bash
+# ===== 运行设置：region-RoPE（E7） =====
+export SAMTOK_RUN_ID=qwen21_v2_4n_S2_rope_001
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
+export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
+STAGE1="$SAMTOK_EXPERIMENT/runs/qwen21_v2_4n_A_s1_b0_001/stage1/adapter"
+ARGS=(
+  --full-training
+  --phases stage2 --stage1-adapter "$STAGE1"
+  --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
+  --binding region_rope --seed 20261006
+  --max-pixels 1048576 --timeout 604800 --wandb-mode online
+)
+```
+
+E5 等 E4 的结果：把 `<SCOPE>` 换成 `span` 或 `clause`，β、ε 换成 E4 选出的值（默认 1.0 / 0.05）。
+
+```bash
+# ===== 运行设置：区域偏置（E5），E4 之后 =====
+export SAMTOK_RUN_ID=qwen21_v2_4n_S2_bias_<SCOPE>_001
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
+export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
+STAGE1="$SAMTOK_EXPERIMENT/runs/qwen21_v2_4n_A_s1_b0_001/stage1/adapter"
+ARGS=(
+  --full-training
+  --phases stage2 --stage1-adapter "$STAGE1"
+  --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
+  --binding bias_<SCOPE> --binding-beta 1.0 --binding-eps 0.05 --seed 20261006
+  --max-pixels 1048576 --timeout 604800 --wandb-mode online
+)
+```
+
+E4（只在 B0 上做推理期偏置，不训练）在开发机上跑，不需要四机，见[代码实现说明第 7 节](01_SAMTokEdit_Qwen21_代码实现说明.md#7-推理)的 `--binding` 覆盖。
 
 ## 4. 四机 smoke（可选：正式提交前检查集群环境）
 
