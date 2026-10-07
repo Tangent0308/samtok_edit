@@ -217,6 +217,7 @@ python -m samtok_edit21 infer --mode inline ... --binding bias_clause --binding-
 | 推理 | [run.py](../src/samtok_edit21/evaluation/run.py#L139) | torchrun 每卡一个进程，可断点续跑；设置与区域处理见下表；`--stock` 用 benchmark 仓库的 two-image 定位协议跑 stock |
 | judge | [manifest.py](../src/samtok_edit21/evaluation/manifest.py) | 生成原 pair_v2 judge 的 manifest（字段与 input digest 与 judge 自带 prepare 一致）；未改动的 517 个 case 直接复用已有 stock 输出 |
 | 汇总 | [score.py](../src/samtok_edit21/evaluation/score.py) | 方法 × setting × 编译类型 × dev/test 的 E/P/Q/strict；`--compare A B` 给出按 case 配对的 bootstrap 区间 |
+| pass-1 定位（E1） | [localize.py](../src/samtok_edit21/evaluation/localize.py) | 只跑 pass 1：与 text setting 相同的 `localize`（同一画布），区域用训练/推理同一个解码器 `unit_masks`；按 dev/test × 编译类型报告解析率、格式率（add 应为框、其余为 mask）、mask IoU、框 IoU 与 Acc@0.5；解析失败记 IoU 0。不给 `--te-adapter` 即 raw SAMTok |
 
 | setting | mask 类（remove/replace/attribute/...） | box 类（add） |
 |---|---|---|

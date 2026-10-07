@@ -681,6 +681,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 | 2026-10-06 | M0 余项：`eval/protocol_v2_001/review.md` 人工抽检 | 初查完成：remove/replace/attribute 正确；add 约 20% 的 noref 改写删掉了新物体的姿态/外观（CompBench 指令把姿态写在放置短语之后所致；训练数据抽查 30 条无此问题）。已增加 ref 变体（`--prompt-variant ref`）作对照。随后优化了转换器 prompt 的 add 规则（commit `874c9a1`，只影响 add），评测编译已用新 prompt 重跑：715/715 由转换器接受，67 个 add 改写修复（实验记录 6.3）；训练数据暂不重跑 |
 | 2026-10-06 | M1：四机运行 A（E1 + E2 + E3 seed 1） | 首次提交在入口处失败：intern 的 NAS 配额已满（我们只占约 40 GB，配额按更大范围计算），创建 run 目录时报 `Disk quota exceeded`。入口已修复：报错并入 stdout，写共享盘前先做写探针（commit `9530dbb`，训练代码不变）。等配额恢复后用同一 run ID 重新提交（实验记录第 7 节）。随后实验根目录改到 `user/tanyue/experiments2/SAMTokEdit/qwen21_v2`，待重新提交 |
 | 2026-10-07 | M1/M2：运行 A（重新提交） | Stage 1（E1）完成：1,300 update，2 小时 15 分钟，NTP loss 0.52 → 0.165。缓存写到 52%（1.44 TB）时 user 配额写满，运行失败；部分缓存已删除。Stage 2 改为即时计算（D10），本地验证与读缓存训练逐位一致。下一步：运行 A2 只跑 Stage 2 B0 seed 1（实验记录第 9 节） |
+| 2026-10-07 | M1：E1 pass-1 评测 | 通过（实验记录第 10 节）：715 个 case 全部解析、格式正确；非 add 的 mask IoU 与 v1 持平（remove 0.712 / v1 0.716，replace 0.796 / 0.789，attribute 0.620 / 0.621）；add 输出框 100%，Acc@0.5 0.23（v1 0.11）。运行 A2（Stage 2 B0 seed 1）已在四机上训练 |
 
 **实施中的具体取值与偏差。**
 

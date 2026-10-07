@@ -95,3 +95,25 @@ def test_judge_row_contract(tmp_path):
     assert row["split"] == "unassigned" and row["v2_split"] == case["split"] and len(row["regions"]) == 1
     missing = judge_row(case, "b0", "mask", tmp_path / "none.png", lambda r: "digest", {})
     assert missing["delivery_status"] == "missing_output" and missing["output_sha256"] is None
+
+
+def test_pass1_scoring_counts_kind_and_overlap(tmp_path):
+    from samtok_edit21.evaluation.localize import box_iou, score_case, summary_rows
+
+    gt = np.zeros((10, 20), dtype=bool)
+    gt[2:6, 4:12] = True
+    Image.fromarray(gt.astype(np.uint8) * 255).save(tmp_path / "gt.png")
+    case = {"case_id": "c", "split": "dev", "source_dataset": "d", "benchmark_type": "add",
+            "region": {"mask": str(tmp_path / "gt.png"), "box": [4, 2, 12, 6]}}
+    entry = {"edit_type": "add", "region_kind": "box"}
+    box = "<|box_start|>[200, 200, 600, 600]<|box_end|>"
+    found = {"actual_variant": "inline", "conditioning_prompt": f"add a cat {box}", "raw": "x"}
+    record = score_case(case, entry, found, [gt.copy()])
+    assert record["format_ok"] and record["kinds"] == ["box"]
+    assert record["mask_iou"] == 1.0 and record["box_iou"] == 1.0
+    missed = score_case(case, entry, {"actual_variant": "plain", "conditioning_prompt": "add a cat",
+                                      "raw": "No target.", "fallback_reason": "none"}, [])
+    assert not missed["parsed"] and not missed["format_ok"] and missed["mask_iou"] == 0.0
+    assert box_iou((0, 0, 2, 2), (1, 1, 3, 3)) == pytest.approx(1 / 7)
+    rows = summary_rows([record, missed])
+    assert rows["dev/add"]["n"] == 2 and rows["all/all"]["acc50"] == 0.5 and rows["dev/add"]["parse_rate"] == 0.5

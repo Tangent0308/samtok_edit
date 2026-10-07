@@ -14,7 +14,7 @@
   ```bash
   P=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/runs/.probe_$$; printf x > $P && rm $P && echo writable
   ```
-- **耗时估计**：每个阶段开头先在 rank 0 计算模型文件 hash，集群上约 18 分钟。运行 A 的 Stage 1 在 32 卡上约 6 s/update，1,300 update 用了 2 小时 15 分钟。Stage 2 在本地共享 GPU 上约 28 s/update；即时计算每个样本多约 0.5 s（按集群缓存阶段的实测速度），约多 10%；集群上应更快，以运行 A2 的实测为准。峰值显存：Stage 1 约 21 GiB/卡，即时计算的 Stage 2 约 39 GiB/卡（多出来的是 TE 和 VAE）。
+- **耗时估计**：每个阶段开头先在 rank 0 计算模型文件 hash，集群上约 18 分钟。运行 A 的 Stage 1 在 32 卡上约 6 s/update，1,300 update 用了 2 小时 15 分钟。Stage 2（即时计算）在运行 A2 上实测约 15 s/update（32 卡），1,000 update 约 4 小时；第一个 update 含预热，约 10 分钟。峰值显存：Stage 1 约 21 GiB/卡，即时计算的 Stage 2 约 39 GiB/卡（多出来的是 TE 和 VAE）。
 
 ## 2. 运行 A2：Stage 2 B0 seed 1（E3），复用运行 A 的 Stage 1
 

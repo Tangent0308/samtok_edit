@@ -9,7 +9,7 @@
 | 里程碑 | 状态 |
 |---|---|
 | M0：代码、测试、数据转换、评测编译器 | 完成，本地八卡 smoke 全部通过；`review.md` 待人工抽检 |
-| M1：E1 Stage 1 + pass-1 评测 | Stage 1 已完成（运行 A，第 9 节）；pass-1 评测待做 |
+| M1：E1 Stage 1 + pass-1 评测 | 完成：Stage 1（运行 A，第 9 节）；pass-1 评测通过，add 的 Acc@0.5 从 v1 的 0.11 提高到 0.23，非 add 与 v1 持平（第 10 节） |
 | M2：E3 Stage 2 B0 | 运行 A 在缓存阶段因 user 配额失败；Stage 2 改为即时计算（commit `487a3e4`）并通过本地等价性验证（第 9 节），待提交运行 A2 |
 | M3–M4 | 未开始 |
 
@@ -302,9 +302,41 @@ Merlin 作业 `65f2a3f151b31f87` 重新启动（trial `303529456`），run ID `q
 
 脚本：[`check_online_conditioning.py`](../scripts/diagnostics/check_online_conditioning.py)、[`compare_stage2_runs.py`](../scripts/diagnostics/compare_stage2_runs.py)；产物在本地 `/tmp/sa/online/`（check1、check1b、check2、check3）。
 
-## 10. 下一步
+## 10. E1：Stage 1 pass-1 定位评测（2026-10-07）
+
+**做法。** [`evaluation/localize.py`](../src/samtok_edit21/evaluation/localize.py) 只跑 pass 1：
+- 输入与 text setting 的 pass 1 相同（`localize`，同一画布）。
+- 区域用训练和推理共用的解码器 `unit_masks` 解码（mask span 走 codec，框按外向取整栅格化），与 case 的标注区域比较。
+- 用全部 715 个 case（dev 183），同一套代码评三个 TE：v2 Stage 1（运行 A）、v1 Stage 1（`qwen21_full_4n_formal_003/stage1/adapter`）、raw SAMTok（不加 adapter）。
+- 指标：解析率（pass 1 是否绑定出区域）；格式率（add 应输出框，其余应输出 mask）；mask IoU；框 IoU（预测区域的外接框对标注框）；Acc@0.5（框 IoU ≥ 0.5）。解析失败按 IoU 0 计。
+- 八卡，每个 TE 约 4 分钟。
+
+**结果（全部 715 个 case；括号内为 dev）。**
+
+| 类型（n） | 指标 | v2 Stage 1 | v1 Stage 1 | raw SAMTok |
+|---|---|---:|---:|---:|
+| 全部（715） | 解析率 / 格式率 | 1.00 / 1.00 | 1.00 / 0.63 | 0.96 / 0.59 |
+| remove（266） | mask IoU | 0.712（0.689） | 0.716（0.705） | 0.735（0.732） |
+| replace（33） | mask IoU | 0.796（0.751） | 0.789（0.726） | 0.689（0.612） |
+| attribute（152） | mask IoU | 0.620（0.625） | 0.621（0.617） | 0.393（0.445） |
+| add（263） | 格式率（应为框） | 1.00 | 0.00（输出 mask） | 0.00 |
+| add（263） | 框 IoU / Acc@0.5 | 0.303 / 0.23（0.292 / 0.25） | 0.245 / 0.11（0.215 / 0.07） | 0.160 / 0.09 |
+
+**与 v1 的配对比较（同一批 case，v2 − v1，bootstrap 95% 区间）。**
+- 非 add 的 mask IoU：remove −0.004 [−0.025, +0.017]，replace +0.007 [−0.067, +0.067]，attribute −0.001 [−0.012, +0.009]，都没有可测差异。只看 dev 时 remove 为 −0.016 [−0.040, +0.005]。
+- add：框 IoU +0.057 [+0.030, +0.085]，Acc@0.5 +0.125 [+0.068, +0.179]（0.106 → 0.232），提升显著。
+- 解析：v2 在 715 个 case 上全部解析成功，且每个 case 恰好一个区域单元。v1 有 1 个失败（`mirage_036#r1`，标签与指令不匹配）；raw 有 31 个失败（输出泛化标签 "region to be edited"）。
+
+**验收（计划 E1）。**
+- 非 add 的 mask IoU 不低于 v1：同一批 case 上与 v1 持平。计划中的参考值来自旧的 656 case 评测（remove 0.72、replace 0.66），本次 remove 0.712、replace 0.796。
+- add 框格式率 ≥ 95%：实际 100%。
+- 解析/绑定成功率：100%。
+
+E1 通过。产物在 `$V2/eval/protocol_v2_001/e1_pass1/`：每个 TE 一个子目录，逐 case 的 `records/*.json` 含生成文本；汇总为 `summary.json`、`summary.md`。
+
+## 11. 下一步
 
 1. 人工复核 `$EVAL/review.md`（已用 6.3 的新 prompt 重新生成；确认 add 的交互 setting 是否同时评 ref 变体）。
 2. 提交四机运行 A2（Stage 2 B0 seed 1，即时计算），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
-3. E1（Stage 1 已完成）：pass-1 评测（非 add 的 mask IoU 不低于 v1：remove 0.72、replace 0.66；add 的 bbox 格式率 ≥ 95%）。
+3. E1 已通过（第 10 节）。
 4. E3 完成后：dev 评测（B0 × 2 seed、融合开/关）、E4 推理期偏置扫描，然后 E5–E7。
