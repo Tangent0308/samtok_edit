@@ -10,7 +10,7 @@
 |---|---|
 | M0：代码、测试、数据转换、评测编译器 | 完成，本地八卡 smoke 全部通过；`review.md` 待人工抽检 |
 | M1：E1 Stage 1 + pass-1 评测 | 完成：Stage 1（运行 A，第 9 节）；pass-1 评测通过，add 的 Acc@0.5 从 v1 的 0.11 提高到 0.23，非 add 与 v1 持平（第 10 节） |
-| M2：E3 Stage 2 B0 | seed 1（运行 A2）训练完成（第 11 节）；dev 全部 setting 与 stock 的同批 judge 进行中（第 14 节）；seed 2 待提交 |
+| M2：E3 Stage 2 B0 | seed 1（运行 A2）训练完成（第 11 节）。dev 与 stock 的正式对比完成（第 14 节）：原指令 + 融合时严格成功 0.69 vs 0.64，持平；noref 下明显落后。seed 2 待提交 |
 | M3：E4–E7 | E4 完成，E5 取 bias_clause β=1、ε=0.05（第 12 节），待提交；E6、E7 训练完成，mask setting 下与 B0 无整体差异（第 12、13 节） |
 | M4 | 未开始 |
 
@@ -456,19 +456,60 @@ E1 通过。产物在 `$V2/eval/protocol_v2_001/e1_pass1/`：每个 TE 一个子
 - clause bias 能把一部分 case 拉回只改目标（`_0331`），也会产生拼接伪影（`_0204`）。
 
 **出图对比页。**
-- 页面：`$V2/eval/protocol_v2_001/dev_gallery/dev_gallery_mask_20261007.html`，单文件，图片内嵌，下载后用浏览器打开。
-- 内容：33 个 case，包括分层随机抽样 19 个，以及按上述现象挑的 14 个，每组注明符合条件的总数。每个 case 有原图与区域、五种方法的输出、judge 分数与评语、Δ外、差异热图。
-- 逐 case 的像素统计在同目录 `pixel_drift_mask_20261007.json`。生成脚本在本地 `/tmp/sa/gallery/`（未入库）。
+- 页面在 `$V2/eval/protocol_v2_001/dev_gallery/`，单文件，图片内嵌，下载后用浏览器打开。
+- v1 `dev_gallery_mask_20261007.html`：33 个 case，包括分层随机抽样 19 个，以及按上述现象挑的 14 个，每组注明符合条件的总数。每个 case 有原图与区域、五种方法的输出、judge 分数与评语、Δ外、差异热图。
+- v2 `dev_gallery_mask_v2_20261007.html`：同一批 case、同样的编号，加入 B0 + 融合、B0 · 原指令（不融合 / 融合）三组输出。stock、B0 与 B0 + 融合的分数换成正式对比那次 judge 的结果，并补上 MIRAGE 的 stock。
+- 逐 case 的像素统计在同目录 `pixel_drift_mask_20261007.json`、`pixel_drift_mask_v2_20261007.json`。生成脚本在本地 `/tmp/sa/gallery/`（未入库）。
 
-**正式对比（进行中）。**
-- B0 的全部 setting（mask/box/point/text 各融合开/关，add 另加 text_plain）与 stock 的 mask/box/point/text 放在同一次 judge 运行中评分，共 2,257 条。
-- 其中 143 个单区域 case 的 stock 用 `qwen21_656` 的原输出（按 eval_index 对应，已核对 143/143），40 个 MIRAGE 原子 case 用 `--stock` 新生成。
-- 产物在 `$V2/eval/protocol_v2_001/dev_b0/judge_b0/`，结果出来后补到本节。
+**正式对比（dev 183，同一次 judge 运行）。**
+- B0 的全部 setting（mask/box/point/text 各融合开/关，add 另加 text_plain）与 stock 的 mask/box/point/text 放在同一次 judge 运行中评分，共 2,257 条，无缺失。
+- 143 个单区域 case 的 stock 用 `qwen21_656` 的原输出（按 eval_index 对应，已核对 143/143），40 个 MIRAGE 原子 case 用 `--stock` 新生成。
+- 第一次启动时驱动脚本把 `--stock-656` 写成了 `qwen21_656` 根目录（应为 `qwen21_656/inference/qwen21`）。manifest 的 `--require-complete` 在评分前报出 572 个缺失并停止，改正路径后重跑；代码无需修改。
+
+| setting | stock | B0 | B0 + 融合 | B0 + 融合 − stock |
+|---|---:|---:|---:|---|
+| mask | 0.64 | 0.31 | 0.50 | −0.14 [−0.23, −0.04] |
+| box | 0.62 | 0.30 | 0.56 | −0.06 [−0.15, +0.03] |
+| point | 0.39 | 0.29 | 0.46 | +0.07 [−0.03, +0.17] |
+| text | 0.63 | 0.58 | 0.58 | −0.05 [−0.13, +0.03] |
+
+表中为严格成功率。
+- 融合后 P 与 stock 持平：mask ΔP +0.09 [−0.01, +0.19]，box −0.01，point +0.10，text +0.02。
+- 融合后剩下的差距在区域内编辑和画面质量。以 mask + 融合为例：E −0.51 [−0.84, −0.17]，Q −0.20 [−0.30, −0.10]。分类型的 Δ严格成功：
+  - add −0.33 [−0.48, −0.18]
+  - attribute −0.19（E −1.88）
+  - remove +0.02（不融合时 E 比 stock 高 1.11 [+0.58, +1.65]）
+  - MIRAGE 原子 case −0.28
+- point setting 下 stock 自身较弱（E 2.03）。B0 + 融合在单区域 case 上的严格成功率比 stock 高 0.13 [+0.02, +0.24]；在 remove 上高 0.38 [+0.26, +0.51]。
+- text setting 只给原指令，B0 用 Stage 1 定位：严格成功率与 stock 相当（−0.05），E 比 stock 高 0.42 [+0.13, +0.72]，P 低 0.55，Q 低 0.40。
+- 表格：`dev_b0/judge_b0/compare_stock_b0.md`，汇总脚本为同目录的 `compare_stock_b0.py`；score 的报告为 `report.json`。
+
+**原指令对照（mask setting，`--prompt-variant ref`）。**
+- 把 mask setting 的文本从 noref 改为原指令加区域 token，例如 `remove the fish on the upper rightmost ⟨M⟩`。这样与 stock 的文字信息对等，融合关、开各一组。
+- 产物在 `dev_b0/b0_ref/`、`dev_b0/judge_b0_ref/`（另一次 judge 运行）。
+
+| B0 的用法（mask setting） | E | P | Q | 严格成功 | 与 stock 的 Δ严格成功 |
+|---|---:|---:|---:|---:|---|
+| stock | 2.92 | 3.81 | 3.76 | 0.64 | |
+| noref，不融合 | 2.57 | 2.52 | 3.27 | 0.31 | −0.33 [−0.42, −0.23] |
+| noref + 融合 | 2.42 | 3.90 | 3.56 | 0.50 | −0.14 [−0.23, −0.04] |
+| 原指令，不融合 | 3.40 | 3.30 | 3.46 | 0.60 | −0.04 [−0.14, +0.05] |
+| **原指令 + 融合** | 3.03 | 3.89 | 3.52 | **0.69** | **+0.05 [−0.04, +0.14]** |
+
+- 原指令 − noref（配对）：不融合时 Δ严格成功 +0.29 [+0.21, +0.37]（E +0.83，P +0.77）；融合时 +0.19 [+0.13, +0.26]，add、remove、attribute 都显著（replace 只有 8 个 case，不显著）。
+- 原指令 + 融合与 stock 相比：严格成功率持平（单区域 case +0.06，MIRAGE 0.00）；E +0.11（不显著），P +0.08（不显著），Q −0.23 [−0.33, −0.15]。
+  - 分类型：remove +0.22 [+0.09, +0.36]，add −0.16 [−0.28, −0.05]，attribute +0.06（不显著）。
+  - 严格成功率 stock / 我们：add 0.89 / 0.72，remove 0.44 / 0.67，attribute 0.59 / 0.66。
+- 看图：原指令下部分 remove case 仍把同类主体全删，例如 `_0204` 删掉所有兔子、`_0331` 删掉所有鱼，要靠融合把区域外恢复。add 在 noref 下会把物体放到区域外（如 `cb_train-00000-of-00007_0352`），原指令下明显改善。
+- 像素 Δ外：融合后为 1.3（stock 4.6），原指令不融合为 9.2。
+
+**结论。**
+- 原指令 + 区域 token + 融合时，严格成功率与 stock 持平，remove 更好，add 和画面质量 Q 仍落后。我建议和 stock 的比较以这一用法为准（文字信息对等），待你确认（计划决策点 D11）。
+- noref 文本下的大幅落后，主要因为 DiT 几乎不读区域 token（第 13 节）。这正是 E5–E7 要解决的绑定问题，noref 的结果可以继续作为衡量区域 token 绑定能力的诊断指标。
 
 ## 15. 下一步
 
-1. 补全第 14 节的正式对比，重点看融合开（区域外直接用原图 latent）和 text setting（文本含原指令）的差距。
-2. 跑 B0 的 mask setting `--prompt-variant ref`（`remove the fish on the upper rightmost ⟨M⟩`），在文字信息与 stock 对等时比较；它也检验"同类全删"是否来自 noref 文本。
-3. 提交四机 B0 seed 2 和 E5（bias_clause β=1、ε=0.05），[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)第 3 节。
-4. E6、E7 的其他 setting 和融合开；B0 在 250/500/750 update 的 checkpoint 曲线；add 的 noref 区域敏感性。
-5. 人工复核 `$EVAL/review.md`（已用 6.3 的新 prompt 重新生成）。
+1. 交互 setting 的默认文本需要你确定（计划决策点 D11）：沿用计划 8.7 节的 noref 改写，还是原指令 + 区域 token。我的建议是：与 stock 比较时用后者（文字信息对等），noref 作为绑定能力的诊断。
+2. 提交四机 B0 seed 2 和 E5（bias_clause β=1、ε=0.05），[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)第 3 节；E5 评测时同时报 noref 和原指令。
+3. 剩下的差距（add、画面质量 Q、noref 下的绑定）：E6、E7 在原指令 + 融合下重评；B0 在 250/500/750 update 的 checkpoint 曲线；add 的 noref 区域敏感性。
+4. 人工复核 `$EVAL/review.md`（已用 6.3 的新 prompt 重新生成）。

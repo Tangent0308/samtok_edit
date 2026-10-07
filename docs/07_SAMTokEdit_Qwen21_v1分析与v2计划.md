@@ -669,6 +669,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 | D8 | 推理时 mask 类绑定所用的区域：token 解码区域还是用户原始 mask | 绑定用 token 解码区域（与训练一致）；融合用用户原始区域 |
 | D9 | text-only 的 add：用 pass-1 框，还是直接走原生 prompt | 两种都评，默认用 pass-1 框 |
 | D10（2026-10-07 增补） | 全量缓存 2.8 TB 放不下（user、intern 配额都满）：扩容、清理别处，还是 Stage 2 不建缓存 | 已按你的选择执行：Stage 2 训练时即时计算条件，与读缓存训练逐位一致（实验记录第 9 节）；每个 update 约多 10% 计算，每卡显存约 39 GiB |
+| D11（2026-10-07 增补） | 交互 setting（mask/box/point）给 DiT 的文本：沿用 noref 改写（`remove the object in this region ⟨M⟩`），还是原指令 + 区域 token（`remove the fish on the upper rightmost ⟨M⟩`，与 stock 的文字信息对等） | 与 stock 比较时用原指令 + 区域 token + 融合（dev 上严格成功 0.69 vs stock 0.64）；noref 保留为区域 token 绑定能力的诊断（0.31，融合后 0.50）。见实验记录第 14 节 |
 
 确认后从 M0 开始。每个里程碑结束时，把结果写入 `02_SAMTokEdit_Qwen21_实验记录.md`，并在本节更新状态。
 
@@ -686,6 +687,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 | 2026-10-07 | M3：E4 推理期偏置扫描（dev 183，mask） | 完成（实验记录第 12 节）：bias_clause β=1、ε=0.05 最好，Δ严格成功 +0.12 [+0.04, +0.20]、ΔP +0.22，Q −0.15；ε=0 明显伤 Q；span 整体不显著。E5 取 bias_clause β=1、ε=0.05，待提交 |
 | 2026-10-07 | M3：E6 region_embed、E7 region_rope | 训练完成，审计通过（实验记录第 11 节）。mask setting 下与 B0 相比：E6 ΔP +0.16 [+0.03, +0.30]，严格成功不变；E7 无整体差异。区域敏感性诊断（第 13 节）：文字含物体描述时 DiT 不看区域 token，noref 时作用也很小（B0 +3.6%，E6 加强 2.2 个百分点） |
 | 2026-10-07 | M2：与 stock 对比 | 初步（mask，143 case，实验记录第 14 节）：E 与 stock 相当，P 低 1.27、严格成功低 0.28（clause bias 后低 0.15）；区域外像素漂移 Δ外 stock 4.6、B0 10.9，remove 常把同类主体全删。正式对比（全部 setting、融合开/关、同一次 judge）进行中 |
+| 2026-10-07 | M2：与 stock 的正式对比（dev 183，同一次 judge） | 完成（实验记录第 14 节）：融合后 P 与 stock 持平；严格成功率 mask 0.50 / stock 0.64，box 0.56 / 0.62，point 0.46 / 0.39，text 0.58 / 0.63。mask setting 改用原指令 + 区域 token 后 0.60，再加融合 0.69（stock 0.64，+0.05 [−0.04, +0.14]）：remove 更好，add 与 Q 落后。交互 setting 的文本待定（D11） |
 
 **实施中的具体取值与偏差。**
 
