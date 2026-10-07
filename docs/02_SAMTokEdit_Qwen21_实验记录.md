@@ -9,8 +9,9 @@
 | 里程碑 | 状态 |
 |---|---|
 | M0：代码、测试、数据转换、评测编译器 | 完成，本地八卡 smoke 全部通过；`review.md` 待人工抽检 |
-| M1：E1 Stage 1 + pass-1 评测 | 运行 A 首次提交（2026-10-06）因 intern 配额已满在入口处失败（第 7 节）；入口已修复，实验根目录已移到 user 目录（第 8 节），待重新提交 |
-| M2–M4 | 未开始 |
+| M1：E1 Stage 1 + pass-1 评测 | Stage 1 已完成（运行 A，第 9 节）；pass-1 评测待做 |
+| M2：E3 Stage 2 B0 | 运行 A 在缓存阶段因 user 配额失败；Stage 2 改为即时计算（commit `487a3e4`）并通过本地等价性验证（第 9 节），待提交运行 A2 |
+| M3–M4 | 未开始 |
 
 ## 1. 环境
 
@@ -265,9 +266,45 @@ intern 配额满了以后，按你的决定把实验根目录改为 `/mnt/bn/str
 - **保留**：`qwen21_full4_20260928/data/`（v2 训练图片和 v1 数据）、v1 Stage 1 adapter 与日志、benchmark 相关输出、旧模型的评测输出与可解释性分析、旧训练的 reports/logs/loss 曲线。归档文档（`docs/archive/`）里对 `qwen_image_2_1_dev_smoke` 的 2 处引用现已失效。
 - 32 路并行，用时 45 秒。
 
-## 9. 下一步
+## 9. 运行 A 在缓存阶段因配额失败，与 Stage 2 改为即时计算（2026-10-07）
+
+### 9.1 运行 A
+
+Merlin 作业 `65f2a3f151b31f87` 重新启动（trial `303529456`），run ID `qwen21_v2_4n_A_s1_b0_001`，代码 `5443a7b`。
+
+- **启动**：10/6 15:46 四个节点全部认领，15:48 通过 32 卡通信测试。Stage 1 开头 rank 0 计算模型文件 hash 用了 17.8 分钟（v1 是 17.5 分钟）。
+- **Stage 1（E1）**：16:07–18:22，2 小时 15 分钟，1,300 update，32 卡约 6 s/update。
+  - 每个 update 256 个样本，edit_ntp 224 : rec_ntp 32，四个主类型约 95%，没有异常 update。
+  - NTP loss：前 20 个 update 均值 0.520，第 650 个附近 0.176，最后 50 个 0.165，最低 0.146。
+  - adapter 和 7 个 checkpoint 在 `$V2/runs/qwen21_v2_4n_A_s1_b0_001/stage1/`。
+- **缓存**：18:22 开始，每卡约 1.9 行/s，45 分钟写了 150,287 / 290,006 行（52%，约 1.44 TB）。
+  - 19:11 node 0 的编排器写心跳文件时报 `OSError: [Errno 122] Disk quota exceeded`，随即按设计停掉缓存进程。
+  - 其他节点同时写不进共享盘；`failure.json` 同样写不进，所以共享盘上没有失败记录。
+  - 之后 `user/tanyue` 和 intern 下都写不进任何文件。
+- **监控失效**：负责监控的 subagent 启动后就卡住（记录停在 16:31），没有报告阶段切换，也没有报告失败，直到 10/7 01:00 查进度时才发现，已停掉。以后监控在主会话里定时执行，确认第一次检查有结果后才算开启。
+
+### 9.2 处理
+
+- 按你的选择，Stage 2 改为训练时即时计算条件，不建缓存（commit `487a3e4`，[代码实现说明 5.1 节](01_SAMTokEdit_Qwen21_代码实现说明.md#51-不建缓存stage-2-即时计算条件默认)）。
+- 删除运行 A 的部分缓存 `runs/qwen21_v2_4n_A_s1_b0_001/cache/`（32 个 rank 目录，约 1.44 TB），32 路并行，用时不到 2 分钟；删后 user 目录恢复可写。
+- 删除前，把其中 64 个 payload（rank 0、9、18、27 各前 16 个，0.6 GB）复制到本地 `/tmp/sa/online/ref_cache/`，作为等价性检查的参照。
+
+### 9.3 等价性验证（本地）
+
+| 检查 | 结果 |
+|---|---|
+| 64 个集群生产 payload（`5443a7b`，1M 像素；remove/replace/attribute × ref/noref/plain，含 40 个区域行）逐个即时重算 | 336 个张量全部逐位一致；row hash 与条件身份 64/64 一致；训练随机数状态不变 |
+| 本地 smoke 缓存全部 212 行（6 种类型 × 3 种行，含 add 框行；140 个区域行）逐个重算 | 1,128 个张量全部逐位一致；row hash 与条件身份 212/212 一致 |
+| 读缓存与即时计算各训练 3 个 update（4 卡、1M 像素、同 seed），`--binding none` 与 `bias_clause` 各一组 | 两组都完全一致：逐 update 的 metrics（loss、timestep、采样行）、optimizer 日志、各 rank 梯度日志、各 rank 权重 hash、3 个 checkpoint、最终 adapter（448 个张量）与 adapter.json |
+| 显存（同上） | 读缓存 20.6 GiB/卡，即时计算 38.6 GiB/卡 |
+| 本地完整编排（八卡、1M 像素）：只跑 Stage 2、即时计算，pass 1 用运行 A 的 Stage 1 adapter（与运行 A2 相同的阶段） | `SUCCESS.json`；审计通过（adapter 的条件身份与本次 metadata hash、分辨率一致）；各 rank 权重一致；八卡推理 smoke 8 种路径全部完成；峰值显存 38.6 GiB/卡；12 个 microstep 用 84 s，与之前读缓存的本地 smoke 相同 |
+| 本地完整编排（八卡、256²）：默认阶段 `stage1,stage2`，`--binding bias_clause` | `SUCCESS.json`；审计通过；推理 smoke 8 种路径完成；峰值显存 33.5 GiB/卡 |
+
+脚本：[`check_online_conditioning.py`](../scripts/diagnostics/check_online_conditioning.py)、[`compare_stage2_runs.py`](../scripts/diagnostics/compare_stage2_runs.py)；产物在本地 `/tmp/sa/online/`（check1、check1b、check2、check3）。
+
+## 10. 下一步
 
 1. 人工复核 `$EVAL/review.md`（已用 6.3 的新 prompt 重新生成；确认 add 的交互 setting 是否同时评 ref 变体）。
-2. 用新根目录重新提交四机运行 A（E1 + E2 + E3 seed 1），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
-3. E1 完成后：pass-1 评测（非 add 的 mask IoU 不低于 v1：remove 0.72、replace 0.66；add 的 bbox 格式率 ≥ 95%）。
+2. 提交四机运行 A2（Stage 2 B0 seed 1，即时计算），随后 B0 seed 2（[四机指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)）。
+3. E1（Stage 1 已完成）：pass-1 评测（非 add 的 mask IoU 不低于 v1：remove 0.72、replace 0.66；add 的 bbox 格式率 ≥ 95%）。
 4. E3 完成后：dev 评测（B0 × 2 seed、融合开/关）、E4 推理期偏置扫描，然后 E5–E7。
