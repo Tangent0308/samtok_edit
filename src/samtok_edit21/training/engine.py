@@ -10,7 +10,9 @@ v2 recipe:
 * The conditioning cache is built with the raw SAMTok TE and stores a region
   binding payload for every region row.
 * Stage 2 trains the DiT LoRA with the official flow-matching loss, plus an
-  optional structural region binding (``--binding``).
+  optional structural region binding (``--binding``).  It reads its inputs
+  from a conditioning cache (``--cache``) or computes the same inputs on the
+  fly from the metadata (``--metadata``), which needs no cache storage.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from typing import Any
 
 import torch
 from accelerate import Accelerator, DistributedDataParallelKwargs
-from accelerate.utils import DataLoaderConfiguration, InitProcessGroupKwargs, broadcast_object_list, gather_object, set_seed
+from accelerate.utils import DataLoaderConfiguration, InitProcessGroupKwargs, broadcast_object_list, gather_object, send_to_device, set_seed
 from torch.utils.data import Dataset, SequentialSampler
 
 from diffsynth.diffusion.logger import ModelLogger  # noqa: E402
@@ -134,6 +136,35 @@ class ScheduledCache(Dataset):
         return inputs
 
 
+class OnlineConditioning:
+    """Stage 2 inputs computed on the fly, exactly as the cache builder does.
+
+    The same raw-TE/VAE pipeline, codec and ``prepare_fm`` as the cache
+    phase; the result takes the cached payload's route to the GPU (CPU copy,
+    then the data loader's ``send_to_device``).  The work runs on a forked RNG
+    so the training draws (timestep, noise) match cached-input training.  Not
+    an ``nn.Module``: the frozen TE/VAE stay out of DDP, the optimizer and the
+    checkpoints, so the trained module is the one cached training builds.
+    """
+
+    def __init__(self, args):
+        from samtok_edit21.models.codec import SamtokCodec
+        self.args = args
+        self.pipe = load_pipeline(args.qwen, args.samtok, device=args.device,
+                                  components=("text_encoder", "vae"))
+        self.pipe.scheduler.set_timesteps(1000, training=True)
+        self.pipe.eval()
+        self.codec = SamtokCodec(Path(args.samtok) / "sam2.1_hiera_large.pt",
+                                 Path(args.samtok) / "mask_tokenizer_256x2.pth", device=args.device)
+        self.device = torch.device(args.device)
+
+    def __call__(self, row):
+        # The cache runner calls prepare_fm under no_grad; so do we.
+        with torch.random.fork_rng(devices=[self.device]), torch.no_grad():
+            prepared = prepare_fm(self.pipe, row, self.args.base_path, self.args.max_pixels, codec=self.codec)
+        return send_to_device(_cpu(prepared), self.device)
+
+
 class SamtokTrainingModule(DiffusionTrainingModule):
     """DiffSynth runner adapter for Stage 1, cache, and Stage 2."""
 
@@ -146,6 +177,7 @@ class SamtokTrainingModule(DiffusionTrainingModule):
         self.pending_metrics = []
         self.binding = BindingConfig(**args.binding_config)
         self.codec = None
+        self.conditioning = None
         if task == "sft:data_process":
             components = ("text_encoder", "vae")
         elif args.stage == "stage2":
@@ -181,6 +213,8 @@ class SamtokTrainingModule(DiffusionTrainingModule):
             self.pipe.text_encoder.model.model.visual.eval()
         elif task == "sft:train":
             self.pipe.dit.train()
+            if args.stage == "stage2" and not args.cache:
+                self.conditioning = OnlineConditioning(args)  # not a submodule (see class)
         else:
             self.pipe.eval()
         if task == "sft:train":
@@ -234,7 +268,11 @@ class SamtokTrainingModule(DiffusionTrainingModule):
 
         if self.stage == "stage2":
             if inputs is None:
-                raise ValueError("Stage 2 training expects cached inputs")
+                if self.conditioning is None:
+                    raise ValueError("Stage 2 training expects cached inputs")
+                # The cached payload's fields, computed now (ScheduledCache).
+                inputs = {**self.conditioning(data), "_sample_kind": row_kind(data),
+                          "_sample_edit_type": data["edit_type"], "_sample_row_sha256": row_hash(data)}
             inputs = dict(inputs)
             branch = inputs.pop("_sample_kind", "cached_fm")
             edit_type = inputs.pop("_sample_edit_type", None)
@@ -413,7 +451,8 @@ def run_train(args):
     if not args.plan_only:
         _fresh_output(args, accelerator)
     set_seed(args.seed)  # same adapter initialization on every rank
-    if args.stage == "stage2":
+    conditioning = None
+    if args.stage == "stage2" and args.cache:
         manifest = json.loads((Path(args.cache) / "manifest.json").read_text())
         args.max_pixels = manifest["identity"]["max_pixels"]
         def validate():
@@ -426,7 +465,22 @@ def run_train(args):
         rows = manifest["rows"]
         schedule, report = _schedule_dataset(args, accelerator, rows)
         dataset = ScheduledCache(rows, args.cache, schedule)
-        base_identity = manifest["identity"]["models"]
+        conditioning = manifest["identity"]
+        base_identity = conditioning["models"]
+    elif args.stage == "stage2":
+        # On-the-fly conditioning: the cache phase's rows, identity and schedule.
+        _startup(args, accelerator, "metadata_load", "started", metadata=args.metadata)
+        rows = read_rows(args.metadata)
+        _startup(args, accelerator, "metadata_load", "complete", rows=len(rows))
+        if any(row["sample_type"] not in {"edit", "edit_umt"} for row in rows):
+            raise ValueError("Stage 2 trains only FM metadata (edit/edit_umt)")
+        _startup(args, accelerator, "conditioning_identity", "started")
+        conditioning = _main_rank_result(accelerator, lambda: conditioning_identity(
+            args.qwen, args.samtok, args.max_pixels, args.metadata))
+        _startup(args, accelerator, "conditioning_identity", "complete")
+        schedule, report = _schedule_dataset(args, accelerator, rows)
+        dataset = ScheduledMetadata(rows, schedule)
+        base_identity = conditioning["models"]
     else:
         _startup(args, accelerator, "metadata_load", "started", metadata=args.metadata)
         rows = read_rows(args.metadata)
@@ -441,8 +495,8 @@ def run_train(args):
         init_config = json.loads((Path(args.init_adapter) / "adapter.json").read_text())
         if init_config.get("base_identity") is not None and init_config["base_identity"] != base_identity:
             raise ValueError("Warm-start base model differs from adapter provenance")
-        if args.stage == "stage2" and init_config.get("conditioning_identity") != manifest["identity"]:
-            raise ValueError("Warm-start Stage 2 conditioning identity differs from cache")
+        if args.stage == "stage2" and init_config.get("conditioning_identity") != conditioning:
+            raise ValueError("Warm-start Stage 2 conditioning identity differs from this run")
     updates = len(schedule) // (accelerator.num_processes * args.accumulation)
     warmup_steps = resolve_warmup_steps(args, updates)
     factory = scheduler_factory(args, updates, warmup_steps)
@@ -459,6 +513,7 @@ def run_train(args):
         "save_steps_microsteps": args.save_steps,
         "planned_step_checkpoints": planned_step_checkpoints,
         "binding": args.binding_config,
+        "conditioning": None if args.stage == "stage1" else "cache" if args.cache else "on_the_fly",
         "type_weights": args.type_weights,
         "type_probabilities": report["type_probabilities"],
         "pool_exposure": report["pool_exposure"],
@@ -502,7 +557,7 @@ def run_train(args):
     def save():
         config = {"stage": args.stage, "base_identity": base_identity}
         if args.stage == "stage2":
-            config["conditioning_identity"] = manifest["identity"]
+            config["conditioning_identity"] = conditioning
             config["binding"] = args.binding_config
         pipe = accelerator.unwrap_model(model).pipe
         save_adapter(pipe.text_encoder if args.stage == "stage1" else pipe.dit,
@@ -684,8 +739,8 @@ def _parser():
         p.add_argument("--max-pixels", type=int, default=1048576)
         p.add_argument("--num-workers", type=int, default=0)
         p.add_argument("--device", default="cuda")
-        p.add_argument("--metadata")
-        p.add_argument("--cache")
+        p.add_argument("--metadata", help="Stage 1 rows; for Stage 2, rows whose inputs are computed on the fly")
+        p.add_argument("--cache", help="Stage 2 conditioning cache (alternative to --metadata)")
         p.add_argument("--resume-cache", action="store_true",
                        help="Resume an incomplete cache, reusing readable row payloads")
         p.add_argument("--cache-save-retries", type=int, default=8,
@@ -797,8 +852,8 @@ def main(argv=None):
     else:
         if args.stage == "stage1" and not args.metadata:
             raise SystemExit("stage1 train requires --metadata")
-        if args.stage == "stage2" and not args.cache:
-            raise SystemExit("stage2 train requires --cache")
+        if args.stage == "stage2" and bool(args.cache) == bool(args.metadata):
+            raise SystemExit("stage2 train needs exactly one of --cache or --metadata (on-the-fly conditioning)")
         try:
             validate_training_length_and_saves(args)
         except ValueError as exc:

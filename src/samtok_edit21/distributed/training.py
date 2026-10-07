@@ -2,7 +2,8 @@
 
 v2 phases are independent: Stage 1 (localization LoRA), the raw-TE
 conditioning cache and Stage 2 (DiT LoRA + optional binding). A run executes
-any subset; Stage 2 ablation arms reuse one complete cache via --cache.
+any subset. Stage 2 reads a cache (built here or reused via --cache) or, with
+neither, computes the same inputs on the fly and needs no cache storage.
 """
 from __future__ import annotations
 
@@ -223,13 +224,14 @@ class Pipeline:
         data_files = ["metadata_report.json"]
         if "stage1" in phases:
             data_files.append("stage1.jsonl")
-        if "cache" in phases:
+        on_the_fly = "stage2" in phases and "cache" not in phases and not a.cache
+        if "cache" in phases or on_the_fly:
             data_files.append("stage2.jsonl")
         for name in data_files:
             if not (data / name).is_file():
                 raise FileNotFoundError(data / name)
         reused_cache = None
-        if "cache" not in phases and "stage2" in phases:
+        if "cache" not in phases and "stage2" in phases and a.cache:
             reused_cache = Path(a.cache).resolve()
             if not (reused_cache / "manifest.json").is_file():
                 raise FileNotFoundError(f"Reused cache is incomplete: {reused_cache / 'manifest.json'}")
@@ -286,8 +288,9 @@ class Pipeline:
             cache_output = reused_cache
             link_alias(self.root / "cache", cache_output)
         if "stage2" in phases:
+            inputs = ["--metadata", str(data/"stage2.jsonl")] if on_the_fly else ["--cache", str(cache_output)]
             self.distributed("stage2", ["-m", "samtok_edit21.training.engine", "train", "--stage", "stage2",
-                "--cache", str(cache_output), "--binding", a.binding,
+                *inputs, "--binding", a.binding,
                 "--binding-beta", str(a.binding_beta), "--binding-eps", str(a.binding_eps),
                 "--binding-rank", str(a.binding_rank),
                 "--steps", str(a.stage2_steps), "--save-steps", str(a.stage2_save_steps), "--accumulation", "4",
@@ -310,7 +313,7 @@ class Pipeline:
         if self.rank == 0:
             atomic_json(self.root / "TRAINING_COMPLETE.json",
                         {"time": time.time(), "world_size": self.topo["world_size"], "phases": phases,
-                         "data": str(data), "cache": str(cache_output),
+                         "data": str(data), "cache": None if on_the_fly else str(cache_output),
                          "stage1_steps": a.stage1_steps if "stage1" in phases else None,
                          "stage2_steps": a.stage2_steps if "stage2" in phases else None,
                          "binding": a.binding if "stage2" in phases else None})
@@ -322,8 +325,8 @@ def main():
     p.add_argument("--run-root", required=True, help="Fresh shared directory; identical on all nodes")
     p.add_argument("--data", required=True, help="v2 metadata directory (stage1.jsonl, stage2.jsonl, metadata_report.json)")
     p.add_argument("--local", action="store_true", help="One node x eight GPUs validation")
-    p.add_argument("--phases", default="stage1,cache,stage2",
-                   help="Comma-separated subset of stage1,cache,stage2 (Stage 2 needs a cache: built here or --cache)")
+    p.add_argument("--phases", default="stage1,stage2",
+                   help="Comma-separated subset of stage1,cache,stage2; Stage 2 without a cache computes its inputs on the fly")
     p.add_argument("--cache", help="Cache directory: output of the cache phase, or a complete cache to reuse")
     p.add_argument("--resume-cache", action="store_true", help="Resume an incomplete --cache and reuse its payloads")
     p.add_argument("--stage1-adapter", help="Localization adapter for the smoke inference when Stage 1 is not run")
@@ -358,8 +361,6 @@ def main():
     if not phases or set(phases) - {"stage1", "cache", "stage2"} or len(set(phases)) != len(phases):
         raise SystemExit("--phases must be a subset of stage1,cache,stage2")
     args.phases = [x for x in ("stage1", "cache", "stage2") if x in phases]
-    if "stage2" in args.phases and "cache" not in args.phases and not args.cache:
-        raise SystemExit("Stage 2 without the cache phase needs --cache pointing at a complete cache")
     if args.resume_cache and ("cache" not in args.phases or not args.cache):
         raise SystemExit("--resume-cache needs the cache phase and an explicit --cache directory")
     if args.cache_save_retries < 0 or args.cache_save_retry_backoff < 0:

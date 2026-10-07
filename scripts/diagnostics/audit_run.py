@@ -4,7 +4,8 @@ Checks optimizer-update counts, exact per-rank branch ratios, gradient logs,
 identical trainable weights on all ranks, finite adapters, W&B completion,
 the adapter's binding recipe and the conditioning cache (all rows for small
 caches, a deterministic sample for full ones; Stage 2 startup already verified
-every row in parallel).
+every row in parallel).  Stage 2 without a cache computes its inputs on the
+fly; its adapter must then record the raw-TE identity of this run's rows.
 """
 from __future__ import annotations
 
@@ -19,7 +20,7 @@ import torch
 from safetensors.torch import load_file
 
 from samtok_edit21.data.io import RATIOS, file_hash, write_json
-from samtok_edit21.data.provenance import _verify_cache_row, validate_cache_manifest
+from samtok_edit21.data.provenance import FORMAT, PREPROCESSING, _verify_cache_row, validate_cache_manifest
 from samtok_edit21.training.gradient_audit import audit_gradient_logs
 
 ACCUMULATION = {"stage1": 8, "stage2": 4}
@@ -90,6 +91,17 @@ def audit_cache(cache_dir, sample=1000):
             "identity_binding": identity["binding"], "te_adapter": identity["te_adapter"]}
 
 
+def audit_on_the_fly(root, run, data_hashes):
+    identity = json.loads((root / "stage2" / "adapter" / "adapter.json").read_text())["conditioning_identity"]
+    if ((identity.get("schema"), identity.get("preprocessing")) != (FORMAT, PREPROCESSING)
+            or identity.get("te_adapter") is not None or not identity.get("binding")):
+        raise ValueError("stage2: conditioning is not the v2 raw-TE protocol")
+    if identity.get("max_pixels") != run["max_pixels"] or identity.get("metadata_sha256") != data_hashes["stage2.jsonl"]:
+        raise ValueError("stage2: conditioning identity does not match this run's rows or resolution")
+    return {"mode": "on_the_fly", "metadata_sha256": identity["metadata_sha256"],
+            "max_pixels": identity["max_pixels"], "identity_binding": identity["binding"]}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--run-root", required=True)
@@ -105,8 +117,10 @@ def main():
     for stage in ("stage1", "stage2"):
         if stage in run["phases"]:
             report["stages"][stage] = audit_stage(root, stage, run[f"{stage}_steps"], world, run["binding"])
-    if "cache" in run["phases"] or "stage2" in run["phases"]:
+    if "cache" in run["phases"] or ("stage2" in run["phases"] and run.get("cache")):
         report["cache"] = audit_cache(root / "cache")
+    elif "stage2" in run["phases"]:
+        report["conditioning"] = audit_on_the_fly(root, run, manifest["data"])
     report["passed"] = True
     write_json(root / "audit.json", report)
     print(json.dumps({"passed": True, "world_size": world, "phases": run["phases"],

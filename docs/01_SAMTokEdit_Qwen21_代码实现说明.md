@@ -42,7 +42,7 @@
   Stage 2：DiT LoRA，官方 FM（+ 可选 --binding）
 ~~~
 
-Stage 2 不再依赖 Stage 1：缓存只用 raw TE，所以 Stage 1 与"缓存 + Stage 2"可以独立运行；所有 Stage 2 消融臂共用一份缓存。
+Stage 2 不再依赖 Stage 1：条件只用 raw TE，所以 Stage 1 与 Stage 2 可以独立运行。Stage 2 默认在训练时即时计算条件、不建缓存（第 5.1 节），所有消融臂用同一份 metadata；缓存路径仍然保留。
 
 ### 1.3 目录与模块
 
@@ -133,6 +133,24 @@ v1 的区域监督 C/A 相关模块（`regions/supervision.py`、`regions/build.
 - Stage 2 启动时，各 rank 按 `行号 % world_size` 并行校验全部行（[`verify_cache_shard`](../src/samtok_edit21/data/provenance.py#L201)），因此任意卡数都能使用同一份缓存。
 - 存储：1M 像素下每行约 9.6 MB（主要是图像 token 的 TE hidden states，与 v1 相同），全量约 2.8 TB。
 
+### 5.1 不建缓存：Stage 2 即时计算条件（默认）
+
+**需求。** 全量缓存 2.8 TB，user 和 intern 的 NAS 配额都放不下（运行 A 在缓存写到 52% 时因配额失败，见实验记录第 9 节）。而算条件本身很快（集群上约 0.6 s/行/卡），所以 Stage 2 改为每个样本训练前现算条件，不落盘。要求训练结果与"先建缓存再训练"完全相同。
+
+**实现。**
+
+- [`OnlineConditioning`](../src/samtok_edit21/training/engine.py)：在训练进程里另外加载与缓存阶段完全相同的 raw TE + VAE（`load_pipeline(components=("text_encoder", "vae"))`）和 codec，对每个样本调用同一个 `prepare_fm`。保证一致的三点：
+  - `prepare_fm` 整个在 `torch.no_grad()` 下运行（缓存阶段的 runner 也是这样调用的）；
+  - 结果先拷到 CPU，再用 data loader 的 `send_to_device` 送回 GPU，与缓存 payload"存盘、读回、送 GPU"走同一条路；
+  - 整个计算在 `torch.random.fork_rng` 内，不消耗训练的随机数，所以 timestep 和噪声的抽取与读缓存训练逐个相同。
+- 它不是 `nn.Module`：冻结的 TE/VAE 不进 DDP、优化器、checkpoint 和 rank 权重 hash，被训练的模块与读缓存时完全相同。
+- [`run_train`](../src/samtok_edit21/training/engine.py)：Stage 2 给 `--metadata` 时，读同一个 `stage2.jsonl`，在 rank 0 计算与缓存相同的条件身份（`conditioning_identity`，含模型 hash），用同样的调度。adapter.json 记录的 `conditioning_identity` 与建缓存时逐字相同，推理端的 pass-2 选择不受影响；`run.json` 的 plan 里多记一项 `conditioning: on_the_fly`。
+- 每个样本训练时多一次 TE/VAE 前向，每卡显存多约 17 GB（TE 8B，bf16）。
+
+**等价性验证**（实验记录第 9 节）：
+- 64 个集群生产缓存 payload（`5443a7b`，1M 像素）和 212 行本地 smoke 缓存：即时计算结果逐张量逐位一致；row hash 和条件身份一致；训练随机数状态不变。
+- 读缓存与即时计算各训练 3 个 update（同种子，`none` 与 `bias_clause` 两种绑定）：逐 update 的 metrics、optimizer 日志、各 rank 梯度日志、各 rank 权重 hash、checkpoint 和最终 adapter 逐位一致。
+
 ## 6. Stage 2：DiT LoRA + 结构性绑定
 
 **需求。** 去掉 v1 的区域加权 C 和 attention loss A（第 4 节分析：A 退化、监督的不是模型实际使用的通路）；改用训推一致的结构性绑定，按优先级逐一消融。
@@ -212,15 +230,17 @@ python -m samtok_edit21 infer --mode inline ... --binding bias_clause --binding-
 
 ## 9. 四机编排、审计与诊断脚本
 
-- [`distributed/training.py`](../src/samtok_edit21/distributed/training.py#L217)：`--phases` 取 `stage1,cache,stage2` 的子集；`--cache` 可指向已完成的缓存（只跑 Stage 2 时必填）；`--binding*` 传给 Stage 2。每个阶段之后跨节点 barrier；最后由 rank 0 运行审计。非 `--full-training` 时额外跑八卡推理 smoke。
-- [`scripts/diagnostics/audit_run.py`](../scripts/diagnostics/audit_run.py)：对已运行的阶段检查 update 数、每个 rank 的精确配比、梯度日志、各 rank 权重 hash 一致、adapter 有限且 LoRA B 已更新、adapter 的绑定配方与参数一致、W&B 完成、缓存行（小缓存全部，全量随机 1000 行）。
+- [`distributed/training.py`](../src/samtok_edit21/distributed/training.py#L217)：`--phases` 取 `stage1,cache,stage2` 的子集，默认 `stage1,stage2`。Stage 2 的输入有三种来源：本次 `cache` 阶段建的缓存；`--cache` 指向的已完成缓存；两者都没有时即时计算（5.1 节，默认）。`--binding*` 传给 Stage 2。每个阶段之后跨节点 barrier；最后由 rank 0 运行审计。非 `--full-training` 时额外跑八卡推理 smoke。
+- [`scripts/diagnostics/audit_run.py`](../scripts/diagnostics/audit_run.py)：对已运行的阶段检查 update 数、每个 rank 的精确配比、梯度日志、各 rank 权重 hash 一致、adapter 有限且 LoRA B 已更新、adapter 的绑定配方与参数一致、W&B 完成、缓存行（小缓存全部，全量随机 1000 行）。即时计算的运行没有缓存，改为检查 adapter 记录的条件身份：须是 raw TE 的 v2 协议，且 metadata hash 和分辨率与本次运行一致。
+- [`scripts/diagnostics/check_online_conditioning.py`](../scripts/diagnostics/check_online_conditioning.py)：对缓存 payload 逐个用即时计算重算，逐张量比较，并检查 row hash、条件身份和训练随机数状态。
+- [`scripts/diagnostics/compare_stage2_runs.py`](../scripts/diagnostics/compare_stage2_runs.py)：比较读缓存与即时计算的两次 Stage 2 训练，要求 metrics、日志、权重 hash、checkpoint、adapter 全部逐位一致。
 - [`scripts/diagnostics/smoke_inference8.py`](../scripts/diagnostics/smoke_inference8.py)：八卡分别跑 direct、inline（mask/框 × ref/noref）、online、oracle（mask/框）、推理期绑定覆盖、无 KV cache 循环，含融合。
 - [`scripts/diagnostics/check_v2_equivalence.py`](../scripts/diagnostics/check_v2_equivalence.py)：单卡逐位/no-op 检查（第 10 节）。
 - [`scripts/diagnostics/make_smoke_data.py`](../scripts/diagnostics/make_smoke_data.py)：每个（数据集, 类型）组取前 N 个源（按 id hash）的全部行，加同比例 rec_ntp。
 
 ## 10. 测试与等价性
 
-CPU 单元测试（`pytest tests/`，45 项）覆盖：框格式与外向取整、bbox JSON 往返与类型规则、rec_ntp 校验、v1→v2 转换（合成 v1 corpus：多实例排序、Derived 改类型、回放选择、provenance 漂移检测）、两阶段调度配比、缓存 v3 身份与 payload 校验、真实 tokenizer 下的 token 布局、`score_mod` 与解码 mask 一致、region_embed 零初始化与 DDP 参数参与、region_rope 质心、评测 case 拆分/编译回退/默认框/manifest。
+CPU 单元测试（`pytest tests/`，48 项）覆盖：框格式与外向取整、bbox JSON 往返与类型规则、rec_ntp 校验、v1→v2 转换（合成 v1 corpus：多实例排序、Derived 改类型、回放选择、provenance 漂移检测）、两阶段调度配比、缓存 v3 身份与 payload 校验、真实 tokenizer 下的 token 布局、`score_mod` 与解码 mask 一致、region_embed 零初始化与 DDP 参数参与、region_rope 质心、评测 case 拆分/编译回退/默认框/manifest、Stage 2 输入来源参数（`--cache` 与 `--metadata` 二选一）、即时计算运行的审计条件。
 
 GPU 检查（结果见[实验记录第 4 节](02_SAMTokEdit_Qwen21_实验记录.md#4-gpu-等价性检查)）：
 

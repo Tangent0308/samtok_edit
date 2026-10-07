@@ -79,6 +79,38 @@ def test_binding_is_a_stage2_option():
     assert stage1.type_weights == "natural"
 
 
+def test_stage2_takes_exactly_one_input_source():
+    from samtok_edit21.training.engine import main
+
+    for source in ([], ["--cache", "c", "--metadata", "m.jsonl"]):
+        with pytest.raises(SystemExit, match="exactly one of --cache or --metadata"):
+            main(["train", "--stage", "stage2", "--output", "x", "--steps", "1", "--save-steps", "4", *source])
+
+
+def test_audit_accepts_only_the_runs_raw_te_conditioning(tmp_path):
+    import importlib.util
+    from pathlib import Path
+    from samtok_edit21.data.provenance import FORMAT, PREPROCESSING
+
+    spec = importlib.util.spec_from_file_location(
+        "audit_run", Path(__file__).resolve().parents[1] / "scripts/diagnostics/audit_run.py")
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    identity = {"schema": FORMAT, "preprocessing": PREPROCESSING, "te_adapter": None,
+                "binding": {"schema": "b"}, "max_pixels": 1024, "metadata_sha256": "abc"}
+    adapter = tmp_path / "stage2" / "adapter"
+    adapter.mkdir(parents=True)
+    run = {"max_pixels": 1024}
+    for change, ok in (({}, True), ({"te_adapter": {"sha256": "s"}}, False),
+                       ({"max_pixels": 2048}, False), ({"metadata_sha256": "other"}, False)):
+        (adapter / "adapter.json").write_text(json.dumps({"conditioning_identity": {**identity, **change}}))
+        if ok:
+            assert audit.audit_on_the_fly(tmp_path, run, {"stage2.jsonl": "abc"})["mode"] == "on_the_fly"
+        else:
+            with pytest.raises(ValueError):
+                audit.audit_on_the_fly(tmp_path, run, {"stage2.jsonl": "abc"})
+
+
 class _TinyDataset(Dataset):
     load_from_cache = False
 
