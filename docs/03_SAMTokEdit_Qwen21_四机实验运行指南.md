@@ -138,12 +138,12 @@ bash scripts/training/run_arnold.sh "${ARGS[@]}"
 - 绑定臂（E5–E7）用与 B0 seed 1（运行 A2）相同的 seed 20261006，数据顺序完全相同，便于配对比较；B0 seed 2 换 seed，用来估计 seed 间方差。
 - 耗时：每个臂约 18 分钟启动 + 1,000 update × 约 15 s ≈ 4.5 小时（bias 类约慢 10–15%）。
 
-| 臂（计划编号） | 何时可跑 | `SAMTOK_RUN_ID` |
+| 臂（计划编号） | 状态 | `SAMTOK_RUN_ID` |
 |---|---|---|
-| B0 seed 2（E3） | 现在 | `qwen21_v2_4n_S2_b0_s2_001` |
-| 区域嵌入（E6） | 现在 | `qwen21_v2_4n_S2_embed_001` |
-| region-RoPE（E7） | 现在 | `qwen21_v2_4n_S2_rope_001` |
-| 区域偏置（E5） | E4 选定 β/ε/作用范围之后 | `qwen21_v2_4n_S2_bias_<span\|clause>_001` |
+| B0 seed 2（E3） | 待提交 | `qwen21_v2_4n_S2_b0_s2_001` |
+| 区域偏置（E5） | 待提交；E4 已选定 bias_clause、β=1.0、ε=0.05 | `qwen21_v2_4n_S2_bias_clause_001` |
+| 区域嵌入（E6） | 已完成（2026-10-07，作业 `3a9748e526c8020a`） | `qwen21_v2_4n_S2_embed_001` |
+| region-RoPE（E7） | 已完成（2026-10-07，作业 `b78855066d838f20`） | `qwen21_v2_4n_S2_rope_001` |
 
 ```bash
 # ===== 运行设置：B0 seed 2（E3） =====
@@ -190,11 +190,15 @@ ARGS=(
 )
 ```
 
-E5 等 E4 的结果：把 `<SCOPE>` 换成 `span` 或 `clause`，β、ε 换成 E4 选出的值（默认 1.0 / 0.05）。
+**E5 的设置（来自 E4，见[实验记录](02_SAMTokEdit_Qwen21_实验记录.md)第 12 节）。**
+- 作用范围 `clause`（整条指令子句），β=1.0，ε=0.05。
+- E4 在 B0 上只做推理期偏置时，这一组最好：严格成功 +0.12 [+0.04, +0.20]，P +0.22 [+0.02, +0.41]，Q −0.15。
+- ε=0（偏置无下限）明显伤 Q，所以保留 ε=0.05。span 的四组整体都不显著。
+- E5 在训练中也加这组偏置，看训练能否放大推理期的收益、减少 Q 的损失。其余设置与 B0 seed 1（运行 A2）完全相同：同一 commit、同一 Stage 1 adapter、同一日程、同 seed 20261006，数据顺序一致，便于配对比较。
 
 ```bash
-# ===== 运行设置：区域偏置（E5），E4 之后 =====
-export SAMTOK_RUN_ID=qwen21_v2_4n_S2_bias_<SCOPE>_001
+# ===== 运行设置：区域偏置（E5，bias_clause，β=1.0，ε=0.05） =====
+export SAMTOK_RUN_ID=qwen21_v2_4n_S2_bias_clause_001
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2
 export SAMTOK_TRAIN_DATA="$SAMTOK_EXPERIMENT/data/train_v2_box_001"
 STAGE1="$SAMTOK_EXPERIMENT/runs/qwen21_v2_4n_A_s1_b0_001/stage1/adapter"
@@ -202,12 +206,19 @@ ARGS=(
   --full-training
   --phases stage2 --stage1-adapter "$STAGE1"
   --stage2-steps 1000 --stage2-save-steps 1000 --stage2-rank 32
-  --binding bias_<SCOPE> --binding-beta 1.0 --binding-eps 0.05 --seed 20261006
+  --binding bias_clause --binding-beta 1.0 --binding-eps 0.05 --seed 20261006
   --max-pixels 1048576 --timeout 604800 --wandb-mode online
 )
 ```
 
-E4（只在 B0 上做推理期偏置，不训练）在开发机上跑，不需要四机，见[代码实现说明第 7 节](01_SAMTokEdit_Qwen21_代码实现说明.md#7-推理)的 `--binding` 覆盖。
+- 耗时：比 B0 多约 10–15%，约 5 小时（含启动）。
+- 推理：偏置设置写在 adapter.json 的 binding 里（mode、β、ε），评测时默认 `--binding adapter` 自动读取，不需要额外参数。
+- 评测：在 dev 上同时评 noref 和原指令（决策点 D11）、融合关/开，与 B0 seed 1、seed 2 配对比较。
+- 验收：
+  - 训练结束后 `audit.json` 的 `stages.stage2.binding` 应为 `{"mode": "bias_clause", "beta": 1.0, "eps": 0.05, ...}`。
+  - `stage2/training_metrics.jsonl` 中的 `bound_units` 应约为 0.75，即每个 update 中区域行的占比。E6、E7 的正式运行都是 0.75；B0 不绑定，为 0。
+
+E4（只在 B0 上做推理期偏置，不训练）已在开发机上完成（实验记录第 12 节），用的是[代码实现说明第 7 节](01_SAMTokEdit_Qwen21_代码实现说明.md#7-推理)的 `--binding` 覆盖。
 
 ## 4. 四机 smoke（可选：正式提交前检查集群环境）
 
