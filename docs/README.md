@@ -13,6 +13,7 @@ v1 的分析与 v2 计划：
 6. [add 失败原因分析](06_SAMTokEdit_Qwen21_add失败原因分析.md)：v1 add 评测、数据与 loss 诊断、attention 证据和改进建议。
 7. [v1 分析与 v2 计划](07_SAMTokEdit_Qwen21_v1分析与v2计划.md)：v1 的逐 case 复核、探针、反事实与 knockout、逐级消融、数据审计；第 8 节为 v2 实施计划、决策与进度。
 8. [v2 阶段分析](08_SAMTokEdit_Qwen21_v2阶段分析.md)：v2 全部 dev 结果的综合分析（与原版及原版 + 融合的对比、judge 偏差与像素校验、组件有效性、训练数据对齐、下一步改进）。
+9. [训练数据诊断与改进](09_SAMTokEdit_Qwen21_训练数据诊断与改进.md)：四个来源的构造流程、98,574 个编辑对的逐对审计（对齐/定位/改动实感）、错位能否配准修复、贴回原图的效果、过滤与扩充建议。
 
 存档：v1 版本的 01–04 在 [`archive/v1/`](archive/v1/)（代码链接指向 v1 commit a93fe56）；更早的原始记录在 [`archive/`](archive/)。
 
