@@ -141,7 +141,7 @@ bash scripts/training/run_arnold.sh "${ARGS[@]}"
 | 臂（计划编号） | 状态 | `SAMTOK_RUN_ID` |
 |---|---|---|
 | B0 seed 2（E3） | 待提交 | `qwen21_v2_4n_S2_b0_s2_001` |
-| 区域偏置（E5） | 待提交；E4 已选定 bias_clause、β=1.0、ε=0.05 | `qwen21_v2_4n_S2_bias_clause_001` |
+| 区域偏置（E5） | 已完成（2026-10-07，作业 `3f56816e6445c1eb`）；E4 选定的 bias_clause、β=1.0、ε=0.05 | `qwen21_v2_4n_S2_bias_clause_001` |
 | 区域嵌入（E6） | 已完成（2026-10-07，作业 `3a9748e526c8020a`） | `qwen21_v2_4n_S2_embed_001` |
 | region-RoPE（E7） | 已完成（2026-10-07，作业 `b78855066d838f20`） | `qwen21_v2_4n_S2_rope_001` |
 
