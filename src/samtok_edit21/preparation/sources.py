@@ -21,9 +21,9 @@ from samtok_edit21.preparation.converters import native_edit_type
 
 BASE = Path('/mnt/bn/strategy-mllm-train/user/tanyue')
 DATASETS = {
-    'refedit': BASE / 'datasets/RefEdit-mask-prefiltered-qwen38-self-contained/data',
-    'crispedit': BASE / 'CrispEdit-labeling/final_dataset_39k/shards',
-    'scaleedit': BASE / 'scaleedit_25k/shards',
+    'refedit': BASE / 'datasets/RefEdit_Labeling/final/RefEdit-mask-prefiltered-qwen38-self-contained/data',
+    'crispedit': BASE / 'datasets/CrispEdit_Labeling/final_dataset_39k/shards',
+    'scaleedit': BASE / 'datasets/ScaleEdit_Labeling/final/scaleedit_25k/shards',
     'derived': BASE / 'datasets/SAMTok_Derived_Edit_Labeling/combined',
 }
 
