@@ -533,9 +533,15 @@
   - `qwen-image-2.1-dev` 分支按约定没有改，它的 `sources.py` 仍是旧路径。
 - **不受影响的部分**：v2 训练清单引用的是 `experiments/SAMTokEdit/qwen21_full4_20260928/data/assets/` 里的拷贝和 Derived 的 `combined/`，两者都没有动。
 - **记录**：每个子集目录下的 `README.md` 列出了目录结构和新旧路径对照；逐条移动记录在 `experiments2/SAMTokEdit/qwen21_v2/data/reorg_20261009/`。
-- **留给你处理的**：
-  - 23 个已失效的旧入口软链接（`datasets/CrispEdit-2M*` 10 个、`experiments/CrispEdit/` 下 13 个）和空目录 `experiments/RefEdit`，删除操作被权限策略拦下，没有执行；
-  - 3 个不在最终版本产出链上的旧流程目录没有动：`datasets/ScaleEdit-CrispEdit-mask-train`（208 GB）、`datasets/ScaleEdit-CrispEdit-mask-referential-filter`、`datasets/ScaleEdit-filtered-balanced-final-task-100k-vllm-labeled`。
+- **清理**（经你同意，同日完成）：
+  - 删除了 23 个已失效的旧入口软链接（`datasets/CrispEdit-2M*` 10 个、`experiments/CrispEdit/` 下 13 个），以及空目录 `experiments/CrispEdit`、`experiments/RefEdit`；
+  - 删除了 3 个不在最终版本产出链上的旧流程目录，共约 213 GB：`datasets/ScaleEdit-CrispEdit-mask-train`（207 GB）、`datasets/ScaleEdit-CrispEdit-mask-referential-filter`、`datasets/ScaleEdit-filtered-balanced-final-task-100k-vllm-labeled`。
+  - 删除前做过检查：
+    - 逐个检查了 `datasets/`、`experiments/`、`experiments2/`、`evals/` 下的软链接和文本清单（只跳过了与本项目无关、早于这些目录的 `datasets/highlight`），没有在用数据引用这三个目录；
+    - 三个目录里的文件与外部不共用硬链接。
+  - 删除后复核了四个最终数据集的行数、Derived 清单、v2 训练清单、清洗后的数据集和 656 例 benchmark 的图片，全部正常。
+  - `refedit-labeling` 分支里描述这些旧产物的文档已注明删除；记录在 `reorg_20261009/deleted_dirs.tsv`、`removed_symlinks.tsv`。
+- **遗留**：更早的 `samtok_edit` 仓库里的 `scripts/data/build_edit_mt_metadata.py` 默认路径仍是已删除的 `datasets/CrispEdit-2M`，该仓库没有改。
 
 #### 6.8.2 全量脚本
 
@@ -646,6 +652,23 @@
    - Stage 1：add 的框来自目标图，被丢弃的 add 对应的定位样本也应删去；其他类型的定位只依赖源图，可以保留。
    - `action`、`text` 是否纳入。
 2. **MLLM 编辑核验**仍建议在训练前做（6.7.7 节第 2 条）。小批量抽查里约 15% 的保留样本属于上游编辑没做到位，全量结果里这部分还在。
+
+   耗时估计（70,956 对，Qwen3.8-27B，参照已有的实测速度）：
+
+   | 参照 | 实测速度 | 换算到 70,956 对 |
+   |---|---|---|
+   | v2 评测的 pair_v2 judge：本机 8 卡、每卡一份模型，开 thinking；每对输入中位 2,583 token、输出中位 569 token | 每秒 0.91 对 | 约 21.7 小时 |
+   | ScaleEdit 全量质量过滤：vLLM，每台 8 卡，两张全图，输出长篇评估 | 每台每秒 1.0 对 | 单机约 19.7 小时 |
+   | ScaleEdit 场景筛选：一张图，短输出 | 每台每秒 5.4 对 | 单机约 3.7 小时 |
+
+   - 核验按短判定设计：关掉 thinking，只输出几十个 token，输入为区域附近两张 ≤768 px 的裁图。速度预计在后两者之间，单机每秒约 3–5 对，**本机 8 卡约 4–6.5 小时**，四机约 1–1.6 小时。
+   - 上线前要先校准 prompt：
+     - 人工标注约 300 对随机保留样本，按 15% 的失败率可得到约 45 个失败样本，加上已标的约 120 对；
+     - 迭代 2–3 版 prompt，衡量召回和误杀；
+     - 约需半天。
+
+     这一步不能省：Derived 流程当初的 27B 审核在人工冻结集上只抓到 31 个失败中的 8 个。
+   - 合计：单机约一个工作日，四机约半天。如果直接沿用 pair_v2 judge 的现成配置（开 thinking），单机约 22 小时。
 
 ## 7. 附录：四个来源的构造流程要点
 
