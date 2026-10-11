@@ -280,6 +280,12 @@ def merge(manifest, shards, output, run_manifest, timing):
     return summary
 
 
+def cuda_toolkit():
+    """Whether FlashInfer can find nvcc for its runtime kernel builds (same lookup as flashinfer.jit)."""
+    return bool(os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH") or shutil.which("nvcc")
+                or Path("/usr/local/cuda/bin/nvcc").exists())
+
+
 def port_free(port):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         try:
@@ -295,6 +301,9 @@ class EditCheckPipeline(Pipeline):
         self.shards = self.root / "shards"
         self.server = None
         self.next_total = 0.0
+        # Without a CUDA toolkit FlashInfer cannot build its kernels at startup, so the server uses
+        # prebuilt alternatives: GDN prefill on Triton and top-k/top-p sampling in PyTorch.
+        self.jit_free = os.environ.get("SAMTOK_CHECK_JIT_FREE") == "1" or not cuda_toolkit()
 
     def server_command(self, model):
         a = self.args
@@ -306,7 +315,8 @@ class EditCheckPipeline(Pipeline):
                 "--max-num-seqs", str(a.max_num_seqs),
                 "--enable-prefix-caching", "--reasoning-parser", "qwen3",
                 "--limit-mm-per-prompt", json.dumps({"image": 6}),
-                "--host", "127.0.0.1", "--port", str(a.port)]
+                "--host", "127.0.0.1", "--port", str(a.port)] + (
+                    ["--gdn-prefill-backend", "triton"] if self.jit_free else [])
 
     def start_server(self, model, local):
         if not port_free(self.args.port):
@@ -315,6 +325,10 @@ class EditCheckPipeline(Pipeline):
         env.update(VLLM_CACHE_ROOT=str(local / "vllm-cache"), HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1",
                    VLLM_WORKER_MULTIPROC_METHOD="spawn", VLLM_NO_USAGE_STATS="1", DO_NOT_TRACK="1",
                    PATH=str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", ""))
+        if self.jit_free:
+            env["VLLM_USE_FLASHINFER_SAMPLER"] = "0"
+            print(f"[node {self.rank}] no CUDA toolkit: FlashInfer runtime builds off "
+                  "(GDN prefill on Triton, sampling in PyTorch)", flush=True)
         command = self.server_command(model)
         atomic_json(self.node / "server.command.json", command)
         self.server_log = self.logdir / "vllm.log"
@@ -377,8 +391,11 @@ class EditCheckPipeline(Pipeline):
         output = Path(args.output).resolve()
         if (output / "summary.json").exists():
             raise RuntimeError(f"{output} already holds a finished check; choose a new output folder")
-        if not Path(ec.FONT).is_file():
-            raise RuntimeError(f"Missing label font {ec.FONT} (Debian package fonts-dejavu-core)")
+        font = ec.font_path()
+        if not Path(font).is_file():
+            raise RuntimeError(f"Missing label font {font}: install fonts-dejavu-core or set SAMTOK_CHECK_FONT to a copy")
+        if file_hash(font) != ec.FONT_SHA256:
+            raise RuntimeError(f"Label font {font} differs from the validated DejaVuSans-Bold (sha256 {ec.FONT_SHA256})")
         self.rows = read_rows(manifest, args.sample, args.sample_seed)
         own = self.rows[self.rank::self.topo["nodes"]]
         local = Path(args.local_root) / self.root.name / f"node{self.rank}"
@@ -404,7 +421,7 @@ class EditCheckPipeline(Pipeline):
             "server": (["external", args.external_server] if args.external_server
                        else answer_flags(self.server_command("<model>")[2:])),
             "protocol_sha256": ec.protocol()["sha256"],
-            "font_sha256": file_hash(ec.FONT),
+            "font_sha256": file_hash(font), "jit_free": self.jit_free,
             "packages": {k: importlib.metadata.version(k) for k in ("vllm", "torch", "transformers", "pillow", "pycocotools")},
         }
         common = {**identity, "run_id": self.root.name, "output": str(output), "git_commit": self.git_commit,

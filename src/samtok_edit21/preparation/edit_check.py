@@ -30,6 +30,9 @@ CLOSE_LONG_SIDE = 1400           # side-by-side close-up of the target area
 CLOSE_MAX_SCALE = 3.0
 CONTOUR_COLOR = (235, 50, 45)    # first colour of the benchmark judge's outlines
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+# The pilot's label font (Debian fonts-dejavu-core). Machines without that package point
+# SAMTOK_CHECK_FONT at a byte-identical copy; the ARNOLD launcher checks the hash.
+FONT_SHA256 = "0d977336a6d5fba34eab8e3199eb218327161b5143749f802982c2bc34df0c96"
 JPEG_QUALITY = 92
 
 # Sampling from the model card: thinking and non-thinking presets.
@@ -164,10 +167,14 @@ def crop_box(box_1000, size, pad=0.25, min_frac=0.2):
     return round(left), round(top), round(left + bw), round(top + bh)
 
 
+def font_path():
+    return os.environ.get("SAMTOK_CHECK_FONT") or FONT
+
+
 def labeled(image, text):
     out = Image.new("RGB", (image.width, image.height + 34), "white")
     out.paste(image, (0, 34))
-    ImageDraw.Draw(out).text((8, 6), text, font=ImageFont.truetype(FONT, 22), fill=(0, 0, 0))
+    ImageDraw.Draw(out).text((8, 6), text, font=ImageFont.truetype(font_path(), 22), fill=(0, 0, 0))
     return out
 
 

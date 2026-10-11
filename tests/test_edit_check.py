@@ -180,3 +180,14 @@ def test_resume_identity_ignores_speed_flags():
                "--gpu-memory-utilization", "0.92", "--max-num-seqs", "96", "--enable-prefix-caching", "--port", "8012"]
     assert dist.answer_flags(command) == ["<model>", "--served-model-name", "qwen38-27b", "--max-model-len", "20000",
                                           "--enable-prefix-caching"]
+
+
+def test_label_font_can_come_from_a_copy(monkeypatch, tmp_path):
+    copy = tmp_path / "DejaVuSans-Bold.ttf"
+    copy.write_bytes(open(ec.FONT, "rb").read())
+    reference = ec.labeled(Image.new("RGB", (64, 32), "gray"), "AFTER (close-up)").tobytes()
+    monkeypatch.setattr(ec, "FONT", str(tmp_path / "missing.ttf"))
+    monkeypatch.setenv("SAMTOK_CHECK_FONT", str(copy))
+    assert ec.font_path() == str(copy)
+    assert dist.file_hash(copy) == ec.FONT_SHA256
+    assert ec.labeled(Image.new("RGB", (64, 32), "gray"), "AFTER (close-up)").tobytes() == reference
