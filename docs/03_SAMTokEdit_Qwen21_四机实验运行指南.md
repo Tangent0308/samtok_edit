@@ -314,7 +314,7 @@ datasets/SAMTokEdit_Cleaned_20261009/
 set -Eeuo pipefail
 exec 2>&1  # ARNOLD's log page shows stdout; route every shell error there as well.
 # ===== 运行设置（各运行只改这一块） =====
-export SAMTOK_RUN_ID=edit_check_27b_4n_001
+export SAMTOK_RUN_ID=edit_check_27b_4n_002
 export SAMTOK_DATASET=/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Cleaned_20261009
 export SAMTOK_CHECK_MANIFEST="$SAMTOK_DATASET/manifest.jsonl"
 export SAMTOK_CHECK_OUTPUT="$SAMTOK_DATASET/edit_check_qwen38_27b_v1"
@@ -326,8 +326,10 @@ ARGS=(--pairs-in-flight 256 --gpu-memory-utilization 0.92)
 # ===== 固定设置 =====
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=qwen-image-2.1-v2
-export SAMTOK_EDIT_COMMIT=e93a099ab22c52e9a15c6bb2e542990b3686b27d
+export SAMTOK_EDIT_COMMIT=c1ed983a1427eceb59806ee5e63b69dcd5218ec9
 export WANDB_MODE=disabled  # this run uses no W&B
+# ARNOLD images lack fonts-dejavu-core: use this byte-identical copy of the pilot's label font.
+export SAMTOK_CHECK_FONT="$SAMTOK_CHECK_OUTPUT/assets/DejaVuSans-Bold.ttf"
 
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
 : "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM=4}"
@@ -337,6 +339,7 @@ export WANDB_MODE=disabled  # this run uses no W&B
 [[ "$ARNOLD_ID" =~ ^[0-3]$ ]] || { echo 'ARNOLD_ID must be 0, 1, 2, or 3' >&2; exit 2; }
 [[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
 [[ -f "$SAMTOK_CHECK_MANIFEST" ]] || { echo "Missing manifest: $SAMTOK_CHECK_MANIFEST" >&2; exit 2; }
+[[ -f "$SAMTOK_CHECK_FONT" ]] || { echo "Missing label font: $SAMTOK_CHECK_FONT" >&2; exit 2; }
 [[ ! -e "$SAMTOK_CHECK_OUTPUT/summary.json" ]] || {
   echo "$SAMTOK_CHECK_OUTPUT already holds a finished check; choose a new output folder" >&2; exit 2;
 }
@@ -420,6 +423,7 @@ bash scripts/edit_check/run_arnold.sh "${ARGS[@]}"
   - 各节点复制旧结果，只核验剩下的编辑对；已经做完的节点不再启动服务；
   - 输入、模型、提示词、服务参数、包版本或节点数与旧 run 不同时，拒绝续跑。
 - **ARNOLD 报错退出、共享盘上却没有 run 目录**：同第 5 节，退出码 3 表示共享盘写探针失败。
+- **节点镜像缺少的东西**：第一次提交（`edit_check_27b_4n_001`）在启动检查时就停了，原因是 ARNOLD 镜像里没有 DejaVu 字体。现在入口用 `SAMTOK_CHECK_FONT` 指向共享盘上的副本（`edit_check_qwen38_27b_v1/assets/`），代码会核对它与试点所用字体逐字节相同。节点上若没有 CUDA 编译器（`nvcc`），服务自动改用不需要现场编译的实现：线性注意力预填充用 Triton，采样用 PyTorch，并在日志里打印一行说明。
 - **结束后**：
   - 节点 0 在日志里打印保留数和丢弃数；
   - `edit_check_qwen38_27b_v1/README.md` 有完整统计；
