@@ -1,6 +1,6 @@
 # SAMTokEdit（Qwen-Image-2.1）v2 四机实验运行指南
 
-本页是 v2 的四机启动入口。ARNOLD 作业配置为 4 workers × 8 GPUs，四个 worker 运行同一段脚本；代码由各节点从 GitHub clone 到 `/tmp`，共享盘只存数据、日志和产物。启动脚本与 v1 调通的入口相同（节点 claim、失败记录、环境安装、CUDA/NCCL 检查），只更新了分支、数据和阶段参数；另外把所有报错并入 stdout，并在写共享盘之前做一次写探针。v1 的入口和排错记录见 [archive/v1](archive/v1/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
+本页是 v2 的四机启动入口。ARNOLD 作业配置为 4 workers × 8 GPUs，四个 worker 运行同一段脚本；代码由各节点从 GitHub clone 到 `/tmp`，共享盘只存数据、日志和产物。启动脚本与 v1 调通的入口相同（节点 claim、失败记录、环境安装、CUDA/NCCL 检查），只更新了分支、数据和阶段参数；另外把所有报错并入 stdout，并在写共享盘之前做一次写探针。v1 的入口和排错记录见 [archive/v1](archive/v1/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。第 6 节是清洗后训练数据的 MLLM 编辑核验（方案 2）的四机入口。
 
 ## 1. 约定
 
@@ -251,3 +251,176 @@ ARGS=(
 - **ARNOLD 报错退出、共享盘上却没有 run 目录**：入口在写共享盘之前就失败了，原因只在 ARNOLD 日志页（入口已把 stderr 并入 stdout）。退出码 3 表示共享盘写探针失败（通常是 NAS 配额已满）；这种情况下什么都没写，恢复后可以沿用同一个 run ID。
 - **仍用缓存时**（不推荐，需约 2.8 TB）：缓存中途失败用新 run ID 和 `--phases cache,stage2 --cache <原 run>/cache --resume-cache` 续建，已完成且可读的 payload 会复用。
 - **checkpoint**：`step-<microsteps>.safetensors` 只含可训练权重（不含 optimizer 状态），张量名和形状与最终 adapter 完全相同（含 region_embed）。评测中间 checkpoint 时，新建目录，把它复制为 `adapter.safetensors`，并复制同一 run 的 `adapter/adapter.json`。
+
+## 6. 清洗后数据的 MLLM 编辑核验（方案 2）
+
+用 Qwen3.8-27B 逐对核验清洗后的 70,956 个编辑对（[文档 09 第 6.11、6.12 节](09_SAMTokEdit_Qwen21_训练数据诊断与改进.md#612-方案-2-的四机全量核验实现与本机验证2026-10-11)），两项核验任一不通过即丢弃：
+
+- **问题清单核验（q2）**：按编辑类型提具体问题，开思考模式；
+- **盲描述核验（dn2）**：先不给指令，让模型描述改动；再对照指令判定。
+
+每个节点起一个 vLLM 服务（8 卡数据并行），核验四分之一的编辑对，节点 0 合并。不用 DDP，也不用 W&B。
+
+- **代码**：
+  - `src/samtok_edit21/preparation/edit_check.py`：视图、提示词、采样，与试点逐字节相同；
+  - `src/samtok_edit21/distributed/edit_check.py`：四机流程与合并；
+  - `scripts/edit_check/`：环境脚本与节点入口。
+- **环境**：
+  - 独立的锁定文件 `requirements-mllm-check-lock.txt`（vLLM 0.28.0、torch 2.13.0、transformers 5.15.1，CUDA 12.9 版本）；
+  - 由 `scripts/edit_check/setup_env.sh` 装在各节点 `/tmp`；
+  - 需要能访问 bytedpypi、download.pytorch.org（cu129）和 GitHub release（vLLM wheel）。
+- **模型**：`models/pretrained_models/Qwen3.8-27B`（52 GB）。各节点先复制到本地盘并算 hash（本机约 20 秒），四个节点 hash 一致才继续。
+- **每个节点的流程**：
+  1. 安装环境，检查 8 卡 CUDA；
+  2. 复制模型；
+  3. 四个节点核对输入、代码、模型、提示词、服务参数、包版本是否一致；
+  4. 启动 vLLM 服务（约 6 分钟，含编译）；
+  5. 核验本节点的编辑对（manifest 的第 i、i+4、i+8……行），每完成一对就追加写入 `shards/node<i>.jsonl`；
+  6. 停服务，等四个节点都完成；
+  7. 节点 0 合并，写输出目录，最后写 `SUCCESS.json`。
+- **耗时**：本机 8 卡实测稳态每机约 3.4 对/秒（GPU 同时被保活进程占用约 40%）。全量每机 17,739 对约 1.5 小时；加上环境安装（约 5–10 分钟）、模型复制和服务启动（约 6 分钟），四机共约 2 小时。
+
+### 6.1 存放位置
+
+结果放在清洗后数据集目录下的一个子目录，不复制图片：
+
+```
+datasets/SAMTokEdit_Cleaned_20261009/
+├── manifest.jsonl、images/ …           原有，不改
+└── edit_check_qwen38_27b_v1/           本次核验的全部产物
+    ├── README.md                       方法、文件说明、统计（合并时自动生成）
+    ├── manifest_kept.jsonl             通过核验的编辑对，与上一级 manifest.jsonl 的对应行逐字节相同，顺序不变
+    ├── verdicts.jsonl                  全部编辑对的逐对结论、问题类型、理由、盲描述
+    ├── summary.json                    保留/丢弃计数、按来源和类型的统计、用时
+    ├── config.json                     模型、服务参数、提示词全文、采样设置、hash、代码提交
+    └── runs/<RUN_ID>/                  运行过程
+        ├── run_manifest.json           输入、模型、代码、包版本（四个节点一致）
+        ├── bootstrap/node<i>.log       各节点完整日志（含进度）
+        ├── logs/node<i>/vllm.log       vLLM 服务日志
+        ├── shards/node<i>.jsonl        各节点逐对结果；progress-node<i>.json 是进度
+        ├── nodes/<i>/                  一致性检查、阶段标记、failure.json
+        └── SUCCESS.json
+```
+
+- `manifest_kept.jsonl` 里的图片路径相对**上一级目录**，与 `manifest.jsonl` 相同。训练时只需把 manifest 换成它，数据根目录不变。
+- 输出目录里已有 `summary.json`（核验已完成）时，入口拒绝运行。重跑请换新目录，例如 `edit_check_qwen38_27b_v2`。
+
+### 6.2 入口脚本
+
+直接粘贴到 ARNOLD worker 启动命令（4 workers × 8 GPUs）：
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec 2>&1  # ARNOLD's log page shows stdout; route every shell error there as well.
+# ===== 运行设置（各运行只改这一块） =====
+export SAMTOK_RUN_ID=edit_check_27b_4n_001
+export SAMTOK_DATASET=/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Cleaned_20261009
+export SAMTOK_CHECK_MANIFEST="$SAMTOK_DATASET/manifest.jsonl"
+export SAMTOK_CHECK_OUTPUT="$SAMTOK_DATASET/edit_check_qwen38_27b_v1"
+# Resume after a failure: set a NEW run ID above and the failed run's folder here.
+export SAMTOK_CHECK_RESUME_FROM=""
+# Speed only: 0.92 of GPU memory leaves about 2 GB per GPU. After a CUDA out-of-memory failure, resume with 0.85.
+ARGS=(--pairs-in-flight 256 --gpu-memory-utilization 0.92)
+
+# ===== 固定设置 =====
+export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
+export SAMTOK_EDIT_BRANCH=qwen-image-2.1-v2
+export SAMTOK_EDIT_COMMIT=e93a099ab22c52e9a15c6bb2e542990b3686b27d
+export WANDB_MODE=disabled  # this run uses no W&B
+
+: "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the four-worker host list}"
+: "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM=4}"
+: "${ARNOLD_WORKER_GPU:?ARNOLD must inject ARNOLD_WORKER_GPU=8}"
+: "${ARNOLD_ID:?ARNOLD must inject ARNOLD_ID for this worker (0..3)}"
+[[ "$ARNOLD_WORKER_NUM" == 4 && "$ARNOLD_WORKER_GPU" == 8 ]] || { echo 'Expected 4 workers x 8 GPUs' >&2; exit 2; }
+[[ "$ARNOLD_ID" =~ ^[0-3]$ ]] || { echo 'ARNOLD_ID must be 0, 1, 2, or 3' >&2; exit 2; }
+[[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
+[[ -f "$SAMTOK_CHECK_MANIFEST" ]] || { echo "Missing manifest: $SAMTOK_CHECK_MANIFEST" >&2; exit 2; }
+[[ ! -e "$SAMTOK_CHECK_OUTPUT/summary.json" ]] || {
+  echo "$SAMTOK_CHECK_OUTPUT already holds a finished check; choose a new output folder" >&2; exit 2;
+}
+if [[ -n "$SAMTOK_CHECK_RESUME_FROM" ]]; then
+  [[ -f "$SAMTOK_CHECK_RESUME_FROM/run_manifest.json" ]] || { echo 'Resume run has no run_manifest.json' >&2; exit 2; }
+fi
+
+# The check needs no rendezvous; drop generic launcher variables.
+unset PORT MASTER_ADDR MASTER_PORT NODE_RANK NNODES GPUS_PER_NODE
+export NODE_RANK="$ARNOLD_ID"
+export ARNOLD_WORKER_NUM=4 ARNOLD_WORKER_GPU=8
+
+RUN="$SAMTOK_CHECK_OUTPUT/runs/$SAMTOK_RUN_ID"
+BOOTSTRAP="$RUN/bootstrap"
+NODE="$ARNOLD_ID"
+REPO="/tmp/samtok-edit-check-${SAMTOK_RUN_ID}-node${NODE}"
+if [[ -e "$RUN/nodes/$NODE" || -e "$RUN/SUCCESS.json" ]]; then
+  echo "Run already used: $RUN. Set a NEW common SAMTOK_RUN_ID; old logs are preserved." >&2
+  exit 2
+fi
+# A full NAS directory quota rejects every new file while df still reports free space.
+PROBE="$SAMTOK_CHECK_OUTPUT/runs/.write_probe_${SAMTOK_RUN_ID}_node${NODE}"
+if ! (mkdir -p "$SAMTOK_CHECK_OUTPUT/runs" && printf 'probe\n' > "$PROBE" && rm -f "$PROBE"); then
+  echo "Cannot write under $SAMTOK_CHECK_OUTPUT/runs (NAS quota exceeded?). Nothing was started." >&2
+  exit 3
+fi
+mkdir -p "$BOOTSTRAP"
+# Atomic per-node claim: reject scheduler retries BEFORE cloning/installing or appending logs.
+if ! mkdir "$BOOTSTRAP/node${NODE}.claimed"; then
+  echo "Worker $NODE already started this run. Use a NEW common SAMTOK_RUN_ID." >&2
+  exit 2
+fi
+exec > >(tee -a "$BOOTSTRAP/node${NODE}.log") 2>&1
+BOOTSTRAP_PHASE=checkout
+bootstrap_failed() {
+  local result="${1:-$?}"
+  trap - ERR TERM INT
+  mkdir -p "$RUN/nodes/$NODE"
+  local failure_tmp="$RUN/nodes/$NODE/bootstrap-failure.$$.tmp"
+  printf '{"error":"bootstrap failed during %s; see bootstrap/node%s.log","exit_code":%d}\n' \
+    "$BOOTSTRAP_PHASE" "$NODE" "$result" > "$failure_tmp"
+  ln "$failure_tmp" "$RUN/nodes/$NODE/failure.json" 2>/dev/null || true
+  unlink "$failure_tmp"
+  exit "$result"
+}
+trap bootstrap_failed ERR
+trap 'bootstrap_failed 143' TERM
+trap 'bootstrap_failed 130' INT
+
+export PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
+export SAMTOK_ENV="/tmp/samtok-edit-check-${SAMTOK_RUN_ID}-node${NODE}-env"
+export SAMTOK_PYTHON="${SAMTOK_PYTHON:-/usr/bin/python3.11}"
+export SAMTOK_CUDA_READY_TIMEOUT="${SAMTOK_CUDA_READY_TIMEOUT:-600}"
+
+if [[ -e "$REPO" ]]; then
+  echo "Node-local checkout already exists: $REPO (choose a fresh SAMTOK_RUN_ID)" >&2
+  false
+fi
+export GIT_TERMINAL_PROMPT=0
+git clone --branch "$SAMTOK_EDIT_BRANCH" --single-branch "$SAMTOK_EDIT_REPO_URL" "$REPO"
+cd "$REPO"
+git checkout --detach "$SAMTOK_EDIT_COMMIT"
+git rev-parse HEAD > "$BOOTSTRAP/node${NODE}.commit.txt"
+BOOTSTRAP_PHASE=environment-or-check
+bash scripts/edit_check/run_arnold.sh "${ARGS[@]}"
+```
+
+### 6.3 进度、失败与续跑
+
+- **进度**：
+  - 每个节点每分钟在 ARNOLD 日志打一行：已完成/总数、保留数、对/秒、预计剩余时间；
+  - 节点 0 每两分钟另打一行四机合计；
+  - 在开发机上查看：
+    ```bash
+    R=/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Cleaned_20261009/edit_check_qwen38_27b_v1/runs/edit_check_27b_4n_001
+    cat $R/shards/progress-node*.json; tail -n 2 $R/bootstrap/node*.log
+    ```
+- **失败**：出错的节点写 `nodes/<i>/failure.json`。其他节点先把自己那份核验完，再在等待处报错退出；已写入的结果都保留。
+- **续跑**：
+  - 把运行设置里的 `SAMTOK_RUN_ID` 换成新的（如 `edit_check_27b_4n_002`），`SAMTOK_CHECK_RESUME_FROM` 设为失败的那个 run 目录，重新提交；
+  - 各节点复制旧结果，只核验剩下的编辑对；已经做完的节点不再启动服务；
+  - 输入、模型、提示词、服务参数、包版本或节点数与旧 run 不同时，拒绝续跑。
+- **ARNOLD 报错退出、共享盘上却没有 run 目录**：同第 5 节，退出码 3 表示共享盘写探针失败。
+- **结束后**：
+  - 节点 0 在日志里打印保留数和丢弃数；
+  - `edit_check_qwen38_27b_v1/README.md` 有完整统计；
+  - 各节点 `/tmp` 里的模型副本（52 GB）和环境随作业结束清除。

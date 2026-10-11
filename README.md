@@ -13,7 +13,7 @@ uv pip install --python /path/to/samtok21-env/bin/python -r requirements.txt
 source /path/to/samtok21-env/bin/activate
 ```
 
-Install the **vendored project extension** in `third_party/diffsynth` as specified by `requirements.txt`. A stock DiffSynth installation does not include this project's optional training/attention hooks. Model weights, images and training artifacts are external to the package. Dependencies for four-node training and text-only annotation are installed by separate environment scripts; see the run guide.
+Install the **vendored project extension** in `third_party/diffsynth` as specified by `requirements.txt`. A stock DiffSynth installation does not include this project's optional training/attention hooks. Model weights, images and training artifacts are external to the package. Dependencies for four-node training, text-only annotation and the MLLM edit check of the cleaned data are installed by separate environment scripts; see the run guide.
 
 ## Python API
 
@@ -61,7 +61,7 @@ These are minimal usage examples. The four-node guide contains the full producti
 
 - `src/samtok_edit21/`: project package, organized into `data`, `models`, `training`, `regions`, `preparation`, and `distributed`.
 - `third_party/`: pinned DiffSynth and SAMTok sources; project-specific framework hooks are documented here.
-- `scripts/{training,annotation,diagnostics}/`: operational entry points, separate from reusable Python modules.
+- `scripts/{training,annotation,data_cleaning,edit_check,diagnostics}/`: operational entry points, separate from reusable Python modules.
 - `tests/`: tests against the installed package; `examples/metadata/`: historical small metadata fixtures.
 - `docs/`: four current guides and an archive of historical records.
 
@@ -71,5 +71,5 @@ The previous flat compatibility modules have been removed. Current code paths an
 
 1. [Implementation](docs/01_SAMTokEdit_Qwen21_代码实现说明.md): overall method, official starting points, project additions, code links and excerpts.
 2. [Experiments](docs/02_SAMTokEdit_Qwen21_实验记录.md): debug and production history, validation results and limits.
-3. [Four-node runs](docs/03_SAMTokEdit_Qwen21_四机实验运行指南.md): complete ARNOLD/git-clone/W&B entry scripts; noref annotation uses no W&B.
+3. [Four-node runs](docs/03_SAMTokEdit_Qwen21_四机实验运行指南.md): complete ARNOLD/git-clone/W&B entry scripts; noref annotation and the MLLM edit check (section 6) use no W&B.
 4. [Training data](docs/04_SAMTokEdit_Qwen21_训练数据盘点.md): sources, filtering, prepared paths, counts, protocol, examples and sampling.
