@@ -153,17 +153,25 @@ def test_scope_naming_the_site_is_sent_back():
     assert pa.slot_problems(s) and not pa.slot_problems({**s, "scope": "man"})
 
 
-def test_labeled_part_named_as_target_part_becomes_s():
-    harness = square(10, 20, 10, 30)
-    r = row("attribute", [instance(harness, "leather harness on the second horse")], dataset="derived")
+def test_named_part_becomes_s_and_a_host_mask_is_never_relabeled_as_the_part():
     s, _ = pa.normalize_slots(slots(operation="attribute", ref="the second horse", scope="horse",
                                     target_part="leather harness", attributes=[{"property": "color", "value": "yellow"}]))
+    part = pa.part_as_s(pa.to_spec(s))
+    assert ip.render(part) == "Change the color of the leather harness of the second horse to yellow."
+    assert ip.render(part, False) == "Change the color of the selected leather harness to yellow."
+    # Kept as S + target_part on a reused (host) mask, the record has no part execution region and is rejected.
+    horse = square(5, 35, 5, 50)
+    r = row("attribute", [instance(horse, "second horse")], dataset="derived")
     extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s),
                  "plan": {"source": "reused", "instances": [1]}, "blind": {"bbox_2d": r["region"]["box_1000"]}}
     record = pa.build(r, extracted, None)
-    assert record["status"] == "accepted" and "fix:part_is_s" in record["flags"]
-    assert record["instruction_noref"] == "Change the color of the selected leather harness to yellow."
-    assert record["instruction_ref"] == "Change the color of the leather harness of the second horse to yellow."
+    assert record["status"] == "rejected" and record["reason"] == "execution_region_covers_host"
+
+
+def test_site_with_a_relation_word_is_sent_back():
+    s, _ = pa.normalize_slots(slots(operation="add", ref="the pole", scope="pole", payload="a sticker",
+                                    placement={"relation": "on", "site": "below the sign"}))
+    assert any("relation word" in p for p in pa.slot_problems(s))
 
 
 def test_reference_relation_contradicted_by_overlap_is_rejected():
@@ -174,3 +182,55 @@ def test_reference_relation_contradicted_by_overlap_is_rejected():
     near = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="a glass", placement={"relation": "near"}))[0])
     flags, hard = pa.geometry_flags(near, pa.geometry(near, bottle, glass), "cleaned_region")
     assert hard == [] and "reference_item_inside_anchor" in flags
+
+
+def test_audit_prompt_states_the_add_relation_and_the_outlines():
+    spec = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="a bench", placement={"relation": "under"}))[0])
+    record = {"instruction_spec": spec, "instruction_ref": ip.render(spec), "instruction_noref": ip.render(spec, False),
+              "execution_region": {"rle_size": [1, 1]}}
+    prompt = pa.audit_prompt(record)
+    assert "(under)" in prompt and "orange" in prompt and record["instruction_noref"] in prompt
+    spec = pa.to_spec(pa.normalize_slots(slots())[0])
+    prompt = pa.audit_prompt({"instruction_spec": spec, "instruction_ref": "r", "instruction_noref": "n"})
+    assert "(none)" in prompt and "orange" not in prompt
+
+
+def test_sam3_flags_catch_spill_and_sparse_masks():
+    mask = square(10, 30, 10, 30, shape=(100, 100))
+    assert pa.sam3_flags(mask, [100, 100, 300, 300]) == []
+    assert pa.sam3_flags(mask, [100, 100, 150, 150]) == ["sam3_spill"]
+    assert pa.sam3_flags(square(10, 12, 10, 12, shape=(100, 100)), [100, 100, 300, 300]) == ["sam3_sparse"]
+
+
+def test_remasked_s_of_a_non_add_edit_replaces_a_labeled_region_that_misses_it():
+    wrong, right = square(0, 10, 0, 10), square(20, 35, 30, 55)
+    r = row("attribute", [instance(wrong, "back umbrella")])
+    s, _ = pa.normalize_slots(slots(operation="attribute", ref="the front umbrella", scope="umbrella",
+                                    attributes=[{"property": "color", "value": "blue"}]))
+    extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s), "plan": {"source": "sam3"},
+                 "blind": {"bbox_2d": pa.box_1000(right)}, "hinted": {"bbox_2d": pa.box_1000(right)}}
+    record = pa.build(r, extracted, {"mask": pa.encode(right)})
+    assert record["status"] == "accepted" and record["execution_region"]["source"] == "selection"
+    assert (pa.decode(record["execution_region"]) == right).all()
+
+
+def test_far_near_and_wrong_side_are_hard_and_part_refs_do_not_repeat():
+    near = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="an umbrella", placement={"relation": "near"}))[0])
+    person, far = square(30, 40, 50, 60, shape=(100, 100)), square(5, 10, 5, 10, shape=(100, 100))
+    assert "reference_item_far" in pa.geometry_flags(near, pa.geometry(near, person, far), "cleaned_region")[1]
+    left = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="a box",
+                                               placement={"relation": "beside", "site": "left side"}))[0])
+    right_of = square(30, 40, 61, 70, shape=(100, 100))
+    assert "reference_side" in pa.geometry_flags(left, pa.geometry(left, person, right_of), "cleaned_region")[1]
+    s, _ = pa.normalize_slots(slots(operation="attribute", ref="the pink tennis dress", scope="dress",
+                                    target_part="dress", attributes=[{"property": "color", "value": "blue"}]))
+    assert ip.render(pa.part_as_s(pa.to_spec(s))) == "Change the color of the pink tennis dress to blue."
+
+
+def test_contents_removal_needs_the_container_inside_its_execution_region():
+    vase = square(10, 30, 10, 20, shape=(50, 50))
+    contents = pa.to_spec(pa.normalize_slots(slots(remove_mode="contents"))[0])
+    assert pa.geometry_flags(contents, pa.geometry(contents, vase, vase | square(5, 10, 10, 20, shape=(50, 50))),
+                             "cleaned_region")[1] == []
+    assert pa.geometry_flags(contents, pa.geometry(contents, vase, square(5, 12, 10, 20, shape=(50, 50))),
+                             "cleaned_region")[1] == ["execution_region_misses_container"]
