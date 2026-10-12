@@ -41,7 +41,7 @@ ADAPTER_VERSION = "protocol-adapt-1"
 FULL_PIXELS = ec.FULL_PIXELS
 GROUND_PIXELS = 1024 * 1024
 # call: (thinking, reasoning effort, max output tokens)
-CALLS = {"slots": (True, "low", 12000), "ground": (False, None, 400)}
+CALLS = {"slots": (True, "low", 12000), "ground": (False, None, 400), "audit": (True, "low", 8000)}
 GREEDY = {"temperature": 0.0}  # the labeling repos' grounding calls are greedy without thinking
 SLOT_ATTEMPTS = 3
 
@@ -203,7 +203,7 @@ Outlines in image 2: {legend}
 
 2. decision:
 - "accept": the edit acts on ONE source object, or one part of it, with ONE of the operations below.
-- "multi_object": the edit acts on two or more separate objects, or combines two operations. Separate objects count even when one outline covers all of them: a group of people, a crowd, a cluster or row of buildings, cars or bottles, a pile of separate items, "the two flagpoles". Only a matching pair worn or used by one person (shoes, gloves, sleeves) counts as one object.
+- "multi_object": the edit acts on two or more separate objects, or combines two operations. Separate objects count even when one outline covers all of them: a group of people, a crowd, several animals, a cluster or row of buildings, cars, bottles or chairs, "the two flagpoles". Counted as ONE object: a pile, heap, bunch, stack or cluster of same-kind items lying together (a pile of sweet potatoes, a bunch of bananas, a stack of plates, a bouquet), and a matching pair worn or used by one person (shoes, gloves, sleeves).
 - "reject": no operation below fits (moving, flipping, re-posing, style or whole-image change); AFTER does not show the instructed edit; or an added item has no visible object to attach to or to be placed next to.
 
 3. operation, judged by what AFTER shows, not by the instruction's verb:
@@ -216,17 +216,17 @@ Outlines in image 2: {legend}
 4. The source object S, which must be visible in BEFORE:
 - add: S is the anchor: the existing object the new item is attached to, rests on or in, or is worn or held by ("support"); or, for a "reference" add, the object it is placed under, above, below, beside or near. S is never the new item or empty space. Prefer the whole object and give the spot on it as placement.site, e.g. "seat" or "upper back". Ground, floor, grass, sand, water, road, sky and fields cannot be S: keep them inside the payload ("a small dog sitting on the grass") and use a nearby object as a reference anchor.
 - remove, replace, attribute: S is the object or part the edit acts on, normally exactly the outlined object (if the outline is a part, such as a lid or a sleeve, S is that part).
-- written text: when the text itself is outlined, S is that text area (scope such as "lettering", "number" or "sign text"); otherwise S is the object that carries it.
+- written text: when the text itself is outlined, S is that text area; name it with a noun such as "lettering", "logo", "label", "number" or "banner", never with the word "text" (the sentence already says "the text on ..."); otherwise S is the object that carries it.
 - instances: give every outlined number a role: "main" (S itself or a visible piece of it), "anchor" (the outline is exactly the anchor S of an add), "attached" (belongs to S and changes with it, e.g. its contents, pedestal or carried bag), "new_item" (an added or replacing item, drawn where it appears in AFTER), "separate" (another object that is edited too; then the decision is "multi_object") or "unchanged".
 
 5. Slots. Reuse the instruction's wording where possible and never add details that neither the instruction nor AFTER shows.
-- ref: a short noun phrase starting with "the" that picks out S in BEFORE by its own kind, color, position or owner, written from BEFORE only, never from the edit result; at most 12 words. Say "on the left" or "in the center", not "positioned in the central area" or "of the image".
+- ref: a short noun phrase starting with "the" that picks out S in BEFORE by its own kind, color, position or owner, written from BEFORE only, never from the edit result; at most 12 words. Say "on the left" or "in the center", not "positioned in the central area" or "of the image". Do not repeat a location that the payload already gives.
 - scope: the kind of S itself at the same granularity as S, with no article, color, position, owner or number, e.g. "jacket", "chair seat", "suitcase handle", "sign". For an add, scope names the anchor object, never the spot on it: S a man and site "head" gives scope "man", not "head".
 - target_part: only when the outline covers a whole object but the edit acts on just a named part of it, e.g. "lid" when the whole jar is outlined and only its lid is removed; otherwise "".
-- payload: for add the new item, for replace the replacement, in the instruction's own words (count, size, color, kind), e.g. "a small red identification tag"; do not add colors, materials or other details the instruction does not state, unless the instruction names the wrong kind of object. Other placement words of the instruction that are not the relation to S stay in the payload, e.g. "a red cup on the desk" for a cup placed on the desk beside a folder. For remove and attribute "".
-- remove_mode: for remove one of "whole", "part" (needs target_part), "contents" (S and what it holds), "contents_only" (only what S holds), "lowerlegs" (trousers cut to shorts), "hem" (skirt or dress shortened); otherwise "whole".
+- payload: for add the new item, for replace the replacement, in the instruction's own words (count, size, color, kind), e.g. "a small red identification tag"; do not add colors, materials or other details the instruction does not state. The payload must be true of AFTER: name only what is new in AFTER, and drop or correct parts of the instruction that AFTER contradicts or that already existed in BEFORE (if the oranges were already there and only a basket appears, the payload is "a basket", not "a basket of oranges"). Other placement words of the instruction that are not the relation to S stay in the payload only if they are true in AFTER, e.g. "a red cup on the desk" for a cup placed on the desk beside a folder. For remove and attribute "".
+- remove_mode: for remove one of "whole", "part" (needs target_part), "contents" (a container such as a basket, box or bag removed with what it holds), "contents_only" (only what a container holds), "lowerlegs" (trousers cut to shorts), "hem" (skirt or dress shortened); otherwise "whole". Vehicles, furniture and people are not containers.
 - attributes: for attribute a list of {{"property": ..., "value": ...}} with property one of color, material, finish, pattern, texture, text, tint, opacity. For text the value is the exact new text without quotes. tint and opacity stand alone; opacity is transparent, translucent or opaque. Otherwise [].
-- placement: for add {{"relation": ..., "site": ..., "anchor_mode": ...}}, otherwise {{}}. The relation must be true in AFTER for the new item relative to S. Support relations: to, on, in, inside, around, across, along, over, at, attached to, clipped to, hanging from, resting on, mounted on, sewn onto, tied around; "to" takes no site. Reference relations: under, above, below, beside, near; "to the left of X" becomes beside with site "left side". If the new item holds S up (a bench added under a sitting person), the relation is "under", never "on". In front of, behind and between are not allowed: use "near" when the item stands in front of or behind S, never "beside" with a side it does not occupy.
+- placement: for add {{"relation": ..., "site": ..., "anchor_mode": ...}}, otherwise {{}}. The relation must be true in AFTER for the new item relative to S. Support relations: to, on, in, inside, around, across, along, over, at, attached to, clipped to, hanging from, resting on, mounted on, sewn onto, tied around; "to" takes no site. Reference relations: under, above, below, beside, near; "to the left of X" becomes beside with site "left side". If the new item holds S up (a bench added under a sitting person, a tray under a fish), the relation is "under", never "on" or "beside". Use the most specific true relation: when the new item touches S, use a support relation (on, in, inside, around, attached to, hanging from, under) rather than near or beside. In front of, behind and between are not allowed: use "near" when the item stands in front of or behind S without touching it, never "beside" with a side it does not occupy.
 - qualifier: normally "". Only a short clause the result needs, e.g. "including its pedestal" when an attached item is removed together with S.
 - s_location: where S is in BEFORE, in a few words, e.g. "left foreground".
 
@@ -475,14 +475,39 @@ def slot_problems(slots):
     scope = slots.get("scope", "").lower()
     if slots.get("operation") == "add" and site and (scope == site or scope.endswith(" " + site)):
         problems.append(f'scope "{slots["scope"]}" names the spot on S; scope must name the kind of S itself')
+    if IMAGE_POSITION.search(slots.get("ref", "")):
+        problems.append(f'ref "{slots["ref"]}" describes the image frame; say "on the left" or "in the center" instead')
+    if re.match(r"(on|onto|in|into|inside|at|to|of|from|below|above|under|beside|near|next|around|across|along|over)\b",
+                site):
+        problems.append(f'placement.site "{site}" starts with a relation word; site names only the spot on S, '
+                        "e.g. \"seat\", and the relation goes in placement.relation")
     return problems
 
 
-async def extract(client, row, parts, ground):
-    """Slots (re-asked with the problem stated until they form a valid spec), then the grounding calls."""
-    record = {"id": row["id"], "attempts": [], "tokens": 0}
+def part_as_s(spec):
+    """A named part of S becomes S itself: the labels mark whole objects, so the part is re-masked."""
+    part = ip.noun(spec["target_part"])
+    head = part.split()[-1].lower()
+    ref = spec["ref"] if re.search(rf"\b{re.escape(head)}s?\b", spec["ref"], re.I) else f"{part} of {spec['ref']}"
+    return ip.make_spec(spec["operation"], ref, re.sub(r"^the\s+", "", part), spec["payload"],
+                        attributes=spec["attributes"] or None, qualifier=spec["qualifier"],
+                        remove_mode="whole" if spec["remove_mode"] == "part" else spec["remove_mode"])
+
+
+async def extract(client, row, parts, ground, feedback=None):
+    """Slots (re-asked with the problem stated until they form a valid spec), then the grounding calls.
+
+    feedback: {"problems": reviewer text, "remask": bool} from a failed audit; the slots are asked
+    again with the reviewer's words, and a remask forces a new SAM3 mask for S.
+    """
+    record = {"id": row["id"], "attempts": [], "tokens": 0, **({"feedback": feedback} if feedback else {})}
     slots = spec = None
-    prompt = slot_prompt(row)
+    base = slot_prompt(row)
+    if feedback:
+        base += ("\n\nA reviewer checked an earlier answer for this example and found: "
+                 f"{feedback['problems']}. Answer again and fix this; the operation, S, relation and wording must "
+                 "match what AFTER shows.")
+    prompt = base
     for seed in range(SLOT_ATTEMPTS):
         response = await client.call(parts, prompt, "slots", seed=seed)
         record["tokens"] += response["tokens"]
@@ -504,15 +529,23 @@ async def extract(client, row, parts, ground):
             error = f"{type(exc).__name__}: {exc}"[:300]
             record["attempts"].append({"seed": seed, "ok": False, "error": error,
                                        "finish": response["finish"], "text": response["text"][-1500:]})
-            prompt = slot_prompt(row) + f"\n\nYour previous answer was not usable ({error}). Answer again, fixing it."
+            prompt = base + f"\n\nYour previous answer was not usable ({error}). Answer again, fixing it."
+    if spec is not None and spec["target_part"] and spec["operation"] != "add":
+        spec = part_as_s(spec)
+        slots["fixes"] = slots.get("fixes", []) + ["part_as_s"]
     record["slots"], record["spec"] = slots, spec
     if spec is None:
         return record
     plan = selection_plan(row, slots, spec)
+    if "part_as_s" in slots["fixes"] or (feedback or {}).get("remask"):
+        plan = {"source": "sam3"}
     record["plan"] = plan
     calls = {"blind": ground_prompt(spec["ref"])}
     if plan["source"] == "sam3":
-        calls["hinted"] = ground_prompt(spec["ref"], slots.get("s_location"))
+        hint = slots.get("s_location") or ""
+        if (feedback or {}).get("remask"):
+            hint += f"; a previous selection was wrong: {feedback['problems']}"
+        calls["hinted"] = ground_prompt(spec["ref"], hint.strip("; "))
     for name, prompt in calls.items():
         response = await client.call(ground, prompt, "ground")
         record["tokens"] += response["tokens"]
@@ -525,6 +558,90 @@ async def extract(client, row, parts, ground):
         except Exception as exc:  # noqa: BLE001 - recorded; the build step decides
             record[name] = {"bbox_2d": None, "error": f"{type(exc).__name__}: {exc}"[:200], "text": response["text"][-300:]}
     return record
+
+# ---------------------------------------------------------------- audit
+
+AUDIT_PROMPT = """You check one rewritten training example of an image-editing dataset.
+Image 1 is BEFORE with the selected source object S outlined in green{orange}. Image 2 is AFTER. Image 3 is a close-up, BEFORE with the outlines on the left and AFTER on the right.
+
+Instruction with a reference: "{ref}"
+The same instruction without the reference: "{noref}"
+Edit type: {op}. {role}
+
+Judge each point "pass" or "fail":
+1. edit: the instruction describes what actually changed from BEFORE to AFTER: the right operation, the right object, the requested new item or value (its kind, count, color, material or exact text), with nothing important wrong or missing. Check every phrase: anything the instruction says to add must be new in AFTER (not already in BEFORE), and every placement phrase (on, next to, near, under, ...) must be true in AFTER. Changes that only follow from the edit (shadows, revealed background, a carried bag removed with a person) are fine.
+2. relation: for add, the stated relation of the new item to S ({relation}) is true in AFTER; for other types answer "pass".
+3. target: the green outline marks the object or part that the instruction's target phrase names, not a different instance and not a much larger or smaller thing.
+4. outline: the green outline covers the visible extent of that object or part, with no large missing piece and no large area of something else.
+5. noref: using the green outline as the selection, the instruction without the reference asks for the same edit, and its "the selected ..." noun fits the outlined object.
+6. wording: both instructions are clear, natural English.
+
+Return only JSON: {{"edit": "pass", "relation": "pass", "target": "pass", "outline": "pass", "noref": "pass", "wording": "pass", "problems": "<at most 25 words; empty if everything passes>"}}"""
+AUDIT_KEYS = ("edit", "relation", "target", "outline", "noref", "wording")
+
+
+def audit_prompt(record):
+    spec = record["instruction_spec"]
+    add = spec["operation"] == "add"
+    role = ("For add, S is the existing object the new item is attached to, rests on or in, or is placed relative to; "
+            "the new item does not exist in BEFORE." if add else "S is the object or part the edit acts on.")
+    relation = spec["placement"].get("relation", "to") if add else "none"
+    orange = (", and, where it differs from S, the area that changes outlined in orange"
+              if record.get("execution_region") else "")
+    return AUDIT_PROMPT.format(orange=orange, ref=record["instruction_ref"], noref=record["instruction_noref"],
+                               op=spec["operation"], role=role, relation=relation)
+
+
+def audit_parts(row, record, root):
+    source, target = open_pair(row, root)
+    s_mask, masks = decode(record["selection"]), []
+    if record.get("execution_region"):
+        exec_mask = decode(record["execution_region"])
+        if (exec_mask & s_mask).sum() < 0.95 * (exec_mask | s_mask).sum():  # drawn only where it differs from S
+            masks.append((exec_mask, EXEC_COLOR))
+    masks.append((s_mask, S_COLOR))  # last, so the green outline is never hidden
+    boxes = [b for b in (record["selection"].get("box_1000"), (record.get("execution_region") or {}).get("box_1000")) if b]
+    box = [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
+    views = [("Image 1, BEFORE with outlines:", outlined(source, masks, FULL_PIXELS, numbers=False)),
+             ("Image 2, AFTER:", ec.resized(target, FULL_PIXELS)),
+             ("Image 3, close-up, BEFORE left and AFTER right:", close_up(source, target, masks, box))]
+    parts = []
+    for label, image in views:
+        parts += [{"type": "text", "text": label}, {"type": "image_url", "image_url": {"url": ec.data_url(image)}}]
+    return parts
+
+
+async def audit(client, record, parts, votes=1):
+    """Independent pass/fail check of one accepted record; with several votes every vote must pass."""
+    results = [await audit_vote(client, record, parts, vote) for vote in range(votes)]
+    if votes == 1:
+        return results[0]
+    merged = {"id": record["id"], "tokens": sum(r["tokens"] for r in results), "votes": results}
+    for k in AUDIT_KEYS:
+        values = [r.get(k) for r in results]
+        merged[k] = "fail" if "fail" in values else "pass" if all(v == "pass" for v in values) else None
+    merged["passed"] = None if any(r["passed"] is None for r in results) else all(r["passed"] for r in results)
+    merged["problems"] = " | ".join(r.get("problems") or "" for r in results if r.get("problems"))
+    return merged
+
+
+async def audit_vote(client, record, parts, vote=0):
+    """One audit call, retried with new seeds while unparseable; vote k uses its own seeds."""
+    out = {"id": record["id"], "tokens": 0}
+    for attempt in range(SLOT_ATTEMPTS):
+        seed = 100 * vote + attempt
+        response = await client.call(parts, audit_prompt(record), "audit", seed=seed)
+        out["tokens"] += response["tokens"]
+        try:
+            value = parse_json(response["text"])
+            verdicts = {k: ip.clean(value.get(k)).lower() for k in AUDIT_KEYS}
+            if any(v not in ("pass", "fail") for v in verdicts.values()):
+                raise ValueError(f"bad verdicts {verdicts}")
+            return {**out, **verdicts, "problems": ip.clean(value.get("problems")),
+                    "passed": all(v == "pass" for v in verdicts.values()), "attempts": attempt + 1}
+        except Exception as exc:  # noqa: BLE001 - next seed
+            out["error"] = f"{type(exc).__name__}: {exc}"[:300]
+    return {**out, "passed": None, "attempts": SLOT_ATTEMPTS}
 
 # ---------------------------------------------------------------- checks
 
@@ -586,12 +703,32 @@ def text_flags(row, spec, ref, noref, original):
     return flags + ip.length_advice(ref, noref)
 
 
+def sam3_flags(mask, box):
+    """A re-masked S should fill its grounding box and stay inside it (box grown by 10 % per side)."""
+    if not box or not mask.any():
+        return []
+    h, w = mask.shape
+    x1, y1, x2, y2 = box[0] * w / 1000, box[1] * h / 1000, box[2] * w / 1000, box[3] * h / 1000
+    mx, my = 0.1 * (x2 - x1), 0.1 * (y2 - y1)
+    inside = np.zeros_like(mask)
+    inside[max(0, int(y1 - my)):int(np.ceil(y2 + my)), max(0, int(x1 - mx)):int(np.ceil(x2 + mx))] = True
+    flags = []
+    if (mask & ~inside).sum() / mask.sum() > 0.15:
+        flags.append("sam3_spill")
+    if mask.sum() / max((x2 - x1) * (y2 - y1), 1) < 0.15:
+        flags.append("sam3_sparse")
+    return flags
+
+
 def geometry_flags(spec, geo, exec_kind):
     flags, hard = [], []
     if ip.needs_local_execution(spec):
         if not geo:
             hard.append("execution_region_missing")
-        elif geo["s_in_exec"] >= 0.9:
+        elif spec["remove_mode"] == "contents":
+            if geo["s_in_exec"] < 0.9:  # the container and what it holds are both removed
+                hard.append("execution_region_misses_container")
+        elif geo["s_in_exec"] >= 0.9:  # a part, the contents only or a cut: never the whole host
             hard.append("execution_region_covers_host")
     if spec["operation"] == "add":
         mode = spec["placement"].get("anchor_mode", "support")
@@ -604,13 +741,13 @@ def geometry_flags(spec, geo, exec_kind):
             if geo["exec_in_s"] > 0.5:
                 # Mostly inside S: true for "near" (in front of S), false for beside, under, above or below.
                 (flags if relation == "near" else hard).append("reference_item_inside_anchor")
-            if geo["box_gap_1000"] > 150:
-                flags.append("reference_item_far")
+            if geo["box_gap_1000"] > (120 if relation in ("near", "beside") else 300):
+                (hard if relation in ("near", "beside") else flags).append("reference_item_far")
             if (relation in ("under", "below") and geo["dy"] < 0) or (relation == "above" and geo["dy"] > 0):
-                flags.append("reference_direction")
+                hard.append("reference_direction")
             site = spec["placement"].get("site", "")
             if ("left" in site and geo["dx"] > 0) or ("right" in site and geo["dx"] < 0):
-                flags.append("reference_side")
+                hard.append("reference_side")
     if is_text_change(spec) and geo and geo["exec_in_s"] < 0.7:
         flags.append("text_outside_carrier")
     if exec_kind == "none" and spec["operation"] == "add":
@@ -651,24 +788,29 @@ def build(row, extracted, remasked, derived_exec=None):
         execution = {"source": "cleaned_region", **{k: row["region"][k] for k in ("rle_size", "rle_counts", "box_1000")}}
     s_mask = decode(selection)
     exec_mask = decode(execution) if execution else None
+    if selection["source"] == "sam3" and spec["operation"] != "add" and exec_mask is not None:
+        # The labels missed S; a labeled region that mostly misses the new S is not where the edit happened.
+        if (exec_mask & s_mask).sum() < 0.5 * s_mask.sum():
+            execution = {"source": "selection", **encode(s_mask)}
+        elif spec["operation"] == "replace":
+            execution = {"source": "cleaned_region_or_selection", **encode(exec_mask | s_mask)}
+        exec_mask = decode(execution)
     geo = geometry(spec, s_mask, exec_mask)
     fixes = []
-    if spec["target_part"] and plan["source"] != "sam3" and geo and min(geo["exec_in_s"], geo["s_in_exec"]) >= 0.9:
-        # The labeled mask is the part itself, so the part is S (README 5.7 C: no host granularity on a part region).
-        part = ip.noun(spec["target_part"])
-        spec = ip.make_spec(spec["operation"], f"{part} of {spec['ref']}", re.sub(r"^the\s+", "", part), spec["payload"],
-                            attributes=spec["attributes"] or None, qualifier=spec["qualifier"],
-                            remove_mode="whole" if spec["remove_mode"] == "part" else spec["remove_mode"])
-        fixes.append("part_is_s")
     ref, noref = ip.render(spec, True), ip.render(spec, False)
     ip.validate_pair(spec, ref, noref)
     flags = text_flags(row, spec, ref, noref, original)
     geo_flags, hard = geometry_flags(spec, geo, "none" if execution is None else execution["source"])
+    if selection["source"] == "sam3":
+        hinted = (extracted.get("hinted") or {}).get("bbox_2d")
+        flags_sam3 = sam3_flags(s_mask, hinted)
+    else:
+        flags_sam3 = []
     blind = (extracted.get("blind") or {}).get("bbox_2d")
     blind_iou = round(box_iou(blind, selection["box_1000"]), 3)
     if blind_iou < 0.5:
         flags.append("ref_not_located" if blind is None else "ref_points_elsewhere")
-    flags += geo_flags + [f"fix:{f}" for f in slots.get("fixes", []) + fixes]
+    flags += geo_flags + flags_sam3 + [f"fix:{f}" for f in slots.get("fixes", []) + fixes]
     record = {**out, "status": "rejected" if hard else "accepted", "reason": ",".join(hard) or None,
               "instruction_spec": spec, "instruction_ref": ref, "instruction_noref": noref,
               "selection": selection, "execution_region": execution,
