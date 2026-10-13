@@ -13,11 +13,15 @@ Per pair:
   remask  SAM3 with the labeling repos' settings (scripts/data_cleaning/protocol_remask.py);
   build   spec -> ref / no-ref instructions, S and execution regions, checks and flags.
 
-S follows the protocol: the region always marks a source instance.  For add it is the anchor
-(support or reference object); otherwise it is the edited object or part, normally the labeled
-source instance.  The cleaned `region` keeps its meaning and becomes the execution region.  By the
-user's rule (2026-10-12) labeled source masks that already mark S are reused byte for byte; only an
-add whose mask is not on the anchor, or an S labeled in AFTER only, is re-masked.
+S follows the protocol: the region always marks a source instance.  For add it is the anchor, the support
+or mounting surface at the spot where the new item goes (README 5.7: "承载物/安装面"): what the item stands,
+rests or hangs on, is attached to, or the sky or water it is in; a reference object only when that is not
+visible, and then one the item touches.  A large anchor is cut to the part around the new item
+(localize_anchor), so the region says where on it the item goes.  Otherwise S is the edited object or part,
+normally the labeled source instance.  The cleaned `region` keeps its meaning and becomes the execution
+region.  By the user's rule (2026-10-12) labeled source masks that already mark S are reused byte for byte
+(add anchors are then cut to the spot); only an add whose mask is not on the anchor, or an S labeled in AFTER
+only, is re-masked.
 """
 from __future__ import annotations
 
@@ -36,7 +40,7 @@ from samtok_edit21.preparation import instruction_protocol as ip
 
 PROTOCOL_SHA256 = "e93d7d900179ee1aec9a73bee5b1ca07c62497d8db434a4cba303b69667bb1c0"
 PROTOCOL_SOURCE = "Tangent0308/samtok_edit_benchmark@05cc8d8:src/samtok_benchmark/v2/instruction_protocol.py"
-ADAPTER_VERSION = "protocol-adapt-1"
+ADAPTER_VERSION = "protocol-adapt-2"  # 2: add anchors are the direct support, cut to the spot
 
 FULL_PIXELS = ec.FULL_PIXELS
 GROUND_PIXELS = 1024 * 1024
@@ -204,7 +208,7 @@ Outlines in image 2: {legend}
 2. decision:
 - "accept": the edit acts on ONE source object, or one part of it, with ONE of the operations below.
 - "multi_object": the edit acts on two or more separate objects, or combines two operations. Separate objects count even when one outline covers all of them: a group of people, a crowd, several animals, a cluster or row of buildings, cars, bottles or chairs, "the two flagpoles". Counted as ONE object: a pile, heap, bunch, stack or cluster of same-kind items lying together (a pile of sweet potatoes, a bunch of bananas, a stack of plates, a bouquet), and a matching pair worn or used by one person (shoes, gloves, sleeves).
-- "reject": no operation below fits (moving, flipping, re-posing, style or whole-image change); AFTER does not show the instructed edit; or an added item has no visible object to attach to or to be placed next to.
+- "reject": no operation below fits (moving, flipping, re-posing, style or whole-image change); AFTER does not show the instructed edit; or an added item has nothing visible to stand, rest or hang on, be attached to, or float or fly in.
 
 3. operation, judged by what AFTER shows, not by the instruction's verb:
 - add: a new physical object or attached item appears; what was there stays.
@@ -214,24 +218,29 @@ Outlines in image 2: {legend}
 - Written text: deleting text or a logo is remove; changing what text says is attribute with property "text"; writing new text where there was none is add.
 
 4. The source object S, which must be visible in BEFORE:
-- add: S is the anchor: the existing object the new item is attached to, rests on or in, or is worn or held by ("support"); or, for a "reference" add, the object it is placed under, above, below, beside or near. S is never the new item or empty space. Prefer the whole object and give the spot on it as placement.site, e.g. "seat" or "upper back". Ground, floor, grass, sand, water, road, sky and fields cannot be S: keep them inside the payload ("a small dog sitting on the grass") and use a nearby object as a reference anchor.
+- add: S is the anchor, the existing thing at the spot where the new item goes, chosen in this order:
+  (a) "support", the normal choice: what the new item directly stands, sits, lies, rests or floats on or in, hangs from, is attached, mounted or sewn to, or is worn or held by. S may be an object, a part of one, or a surface or area: ground, floor, road, grass, sand, snow, water, a wall, a table top, a shelf, or the sky for something flying or floating in it. A dog added on the road next to a man has S "the road", not the man; a boat on the sea has S "the sea", not a rock on the shore; a sculpture standing in a courtyard has S "the courtyard floor", not the trees beside it.
+  (b) "reference", only when what the item stands on or hangs from is not visible in BEFORE (e.g. hidden behind another object): S is an object the new item touches or stands right against. Never choose an object with open space between it and the new item.
+  If the new item holds S up (a bench added under a sitting person, a tray under a fish), S is the object it holds up and the relation is "under".
+  S is the spot itself, not a large whole object: when the item goes on one part of a larger object, S is that part ("the top of the left tower", "the hand of the child on the right", "the seat of the sofa"); when it stands on a large surface, S is that surface and the ref says which stretch of it ("the road to the left of the monk", "the sand to the right of the yellow surfboard"). placement.site is then "". Use a site only when S is a small object the item sits on as a whole, e.g. site "side" for a sticker on a candle. S is never the new item or empty space.
 - remove, replace, attribute: S is the object or part the edit acts on, normally exactly the outlined object (if the outline is a part, such as a lid or a sleeve, S is that part).
 - written text: when the text itself is outlined, S is that text area; name it with a noun such as "lettering", "logo", "label", "number" or "banner", never with the word "text" (the sentence already says "the text on ..."); otherwise S is the object that carries it.
-- instances: give every outlined number a role: "main" (S itself or a visible piece of it), "anchor" (the outline is exactly the anchor S of an add), "attached" (belongs to S and changes with it, e.g. its contents, pedestal or carried bag), "new_item" (an added or replacing item, drawn where it appears in AFTER), "separate" (another object that is edited too; then the decision is "multi_object") or "unchanged".
+- instances: give every outlined number a role: "main" (S itself or a visible piece of it), "anchor" (for an add, the outline marks S or the object or surface S is part of), "attached" (belongs to S and changes with it, e.g. its contents, pedestal or carried bag), "new_item" (an added or replacing item, drawn where it appears in AFTER), "separate" (another object that is edited too; then the decision is "multi_object") or "unchanged".
 
 5. Slots. Reuse the instruction's wording where possible and never add details that neither the instruction nor AFTER shows.
-- ref: a short noun phrase starting with "the" that picks out S in BEFORE by its own kind, color, position or owner, written from BEFORE only, never from the edit result; at most 12 words. Say "on the left" or "in the center", not "positioned in the central area" or "of the image". Do not repeat a location that the payload already gives.
-- scope: the kind of S itself at the same granularity as S, with no article, color, position, owner or number, e.g. "jacket", "chair seat", "suitcase handle", "sign". For an add, scope names the anchor object, never the spot on it: S a man and site "head" gives scope "man", not "head".
+- ref: a short noun phrase starting with "the" that picks out S in BEFORE by its own kind, color, position or owner, written from BEFORE only, never from the edit result; at most 12 words. Say "on the left" or "in the center", not "positioned in the central area" or "of the image". Do not repeat a location that the payload already gives. For a stretch of a surface, say where it is, e.g. "the road to the left of the monk", "the sand in the foreground".
+- scope: the kind of S itself at the same granularity as S, with no article, color, position, owner or number, e.g. "jacket", "chair seat", "suitcase handle", "sign". For an add it names S, the spot: "tower top", "hand", "sofa seat", "road", "sand", "sky"; with a site it names the object, never the spot on it (S a candle and site "side" gives scope "candle").
 - target_part: only when the outline covers a whole object but the edit acts on just a named part of it, e.g. "lid" when the whole jar is outlined and only its lid is removed; otherwise "".
-- payload: for add the new item, for replace the replacement, in the instruction's own words (count, size, color, kind), e.g. "a small red identification tag"; do not add colors, materials or other details the instruction does not state. The payload must be true of AFTER: name only what is new in AFTER, and drop or correct parts of the instruction that AFTER contradicts or that already existed in BEFORE (if the oranges were already there and only a basket appears, the payload is "a basket", not "a basket of oranges"). Other placement words of the instruction that are not the relation to S stay in the payload only if they are true in AFTER, e.g. "a red cup on the desk" for a cup placed on the desk beside a folder. For remove and attribute "".
+- payload: for add the new item, for replace the replacement, in the instruction's own words (count, size, color, kind), e.g. "a small red identification tag"; do not add colors, materials or other details the instruction does not state. The payload must be true of AFTER: name only what is new in AFTER, and drop or correct parts of the instruction that AFTER contradicts or that already existed in BEFORE (if the oranges were already there and only a basket appears, the payload is "a basket", not "a basket of oranges"). Placement words of the instruction say where S is: they belong in the ref ("the road next to the monk"), not in the payload. For remove and attribute "".
 - remove_mode: for remove one of "whole", "part" (needs target_part), "contents" (a container such as a basket, box or bag removed with what it holds), "contents_only" (only what a container holds), "lowerlegs" (trousers cut to shorts), "hem" (skirt or dress shortened); otherwise "whole". Vehicles, furniture and people are not containers.
 - attributes: for attribute a list of {{"property": ..., "value": ...}} with property one of color, material, finish, pattern, texture, text, tint, opacity. For text the value is the exact new text without quotes. tint and opacity stand alone; opacity is transparent, translucent or opaque. Otherwise [].
-- placement: for add {{"relation": ..., "site": ..., "anchor_mode": ...}}, otherwise {{}}. The relation must be true in AFTER for the new item relative to S. Support relations: to, on, in, inside, around, across, along, over, at, attached to, clipped to, hanging from, resting on, mounted on, sewn onto, tied around; "to" takes no site. Reference relations: under, above, below, beside, near; "to the left of X" becomes beside with site "left side". If the new item holds S up (a bench added under a sitting person, a tray under a fish), the relation is "under", never "on" or "beside". Use the most specific true relation: when the new item touches S, use a support relation (on, in, inside, around, attached to, hanging from, under) rather than near or beside. In front of, behind and between are not allowed: use "near" when the item stands in front of or behind S without touching it, never "beside" with a side it does not occupy.
+- placement: for add {{"relation": ..., "site": ..., "anchor_mode": ...}}, otherwise {{}}. The relation must be true in AFTER for the new item relative to S. Support relations: to, on, in, inside, around, across, along, over, at, attached to, clipped to, hanging from, resting on, mounted on, sewn onto, tied around; "to" takes no site. Use "on" for a surface the item stands or lies on and "in" for the sky, water, sand, snow or a container it is in. Reference relations, for a reference anchor only: under, above, below, beside, near; "to the left of X" becomes beside with site "left side". If the new item holds S up (a bench added under a sitting person, a tray under a fish), the relation is "under", never "on" or "beside". Use the most specific true relation: when the new item touches S, use a support relation (on, in, inside, around, attached to, hanging from, under) rather than near or beside. In front of, behind and between are not relations: S is then what the item stands on, and the stretch is named in the ref.
 - qualifier: normally "". Only a short clause the result needs, e.g. "including its pedestal" when an attached item is removed together with S.
+- s_object: for add, the whole object or surface S belongs to, as a short noun phrase starting with "the" that picks it out in BEFORE: "the left tower" for S "the top of the left tower", "the central raised fist" for S "the knuckles of the central raised fist", "the road" for S "the road to the left of the monk"; the ref itself when S is a whole object. For other operations "".
 - s_location: where S is in BEFORE, in a few words, e.g. "left foreground".
 
 Return only JSON:
-{{"observed": "...", "decision": "accept", "reason": "<at most 15 words>", "operation": "add", "instances": [{{"n": 1, "role": "new_item"}}], "ref": "the ...", "scope": "...", "target_part": "", "payload": "...", "remove_mode": "whole", "attributes": [], "placement": {{"relation": "on", "site": "", "anchor_mode": "support"}}, "qualifier": "", "s_location": "..."}}"""
+{{"observed": "...", "decision": "accept", "reason": "<at most 15 words>", "operation": "add", "instances": [{{"n": 1, "role": "new_item"}}], "ref": "the ...", "scope": "...", "target_part": "", "payload": "...", "remove_mode": "whole", "attributes": [], "placement": {{"relation": "on", "site": "", "anchor_mode": "support"}}, "qualifier": "", "s_object": "the ...", "s_location": "..."}}"""
 
 GROUND_PROMPT = """Locate this object in the image: {ref}{hint}.
 Use a tight box enclosing its complete visible extent; for a person include head and limbs. Do not box only a part of it, and do not box a larger object it belongs to.
@@ -328,9 +337,9 @@ def slot_parts(row, root):
     return parts
 
 
-def ground_parts(row, root):
-    source = Image.open(Path(root) / row["source_image"]).convert("RGB")
-    return [{"type": "image_url", "image_url": {"url": ec.data_url(ec.resized(source, GROUND_PIXELS))}}]
+def ground_parts(row, root, image="source_image"):
+    picture = Image.open(Path(root) / row[image]).convert("RGB")
+    return [{"type": "image_url", "image_url": {"url": ec.data_url(ec.resized(picture, GROUND_PIXELS))}}]
 
 # ---------------------------------------------------------------- model calls
 
@@ -428,6 +437,10 @@ def normalize_slots(slots):
         if ip.clean(raw.get("anchor_mode")).lower() not in ("", mode):
             fixes.append("anchor_mode")
         s["placement"] = {"relation": relation, "anchor_mode": mode, **({"site": site} if site else {})}
+        whole = clean_phrase(slots.get("s_object"))
+        s["s_object"] = ip.noun(whole) if whole else s["ref"]
+    else:
+        s["s_object"] = ""
     return s, fixes
 
 
@@ -496,11 +509,20 @@ def part_as_s(spec):
                         remove_mode="whole" if spec["remove_mode"] == "part" else spec["remove_mode"])
 
 
-async def extract(client, row, parts, ground, feedback=None):
+def sam_prompt(spec, s_object=""):
+    """SAM3's text prompt for S: the ref without its article. For add it is the whole object or surface S belongs
+    to (s_object, "left tower", "road"): SAM3 segments whole objects reliably, and localize_anchor cuts the spot."""
+    text = (s_object or spec["scope"]) if spec["operation"] == "add" else spec["ref"]
+    return re.sub(r"(?i)^(the|a|an)\s+", "", text)
+
+
+async def extract(client, row, parts, ground, feedback=None, ground_after=None):
     """Slots (re-asked with the problem stated until they form a valid spec), then the grounding calls.
 
     feedback: {"problems": reviewer text, "remask": bool} from a failed audit; the slots are asked
     again with the reviewer's words, and a remask forces a new SAM3 mask for S.
+    ground_after: AFTER for the grounding call; for a Derived add (its label marks the host, not the new item)
+    the new item is boxed there, so that the pixels the generator also changed elsewhere do not count as the item.
     """
     record = {"id": row["id"], "attempts": [], "tokens": 0, **({"feedback": feedback} if feedback else {})}
     slots = spec = None
@@ -545,11 +567,21 @@ async def extract(client, row, parts, ground, feedback=None):
     calls = {"blind": ground_prompt(spec["ref"])}
     if plan["source"] == "sam3":
         hint = slots.get("s_location") or ""
+        if spec["operation"] == "add" and row["dataset"] != "derived":
+            # The cleaned region marks the new item; S is cut around it later, so the box must reach that spot.
+            hint += ("; the new item will be at about [{}, {}, {}, {}] (0-1000 coordinates), so the box must include "
+                     "the part of it there").format(*row["region"]["box_1000"])
         if (feedback or {}).get("remask"):
             hint += f"; a previous selection was wrong: {feedback['problems']}"
-        calls["hinted"] = ground_prompt(spec["ref"], hint.strip("; "))
+        # An add anchor is segmented whole (object or surface) and cut to the spot later.
+        whole = slots["s_object"] if spec["operation"] == "add" else spec["ref"]
+        calls["hinted"] = ground_prompt(whole, hint.strip("; "))
+        record["sam_prompt"] = sam_prompt(spec, slots.get("s_object", ""))
+    if spec["operation"] == "add" and row["dataset"] == "derived" and ground_after:
+        item = re.sub(r"(?i)^(the|a|an|one)\s+", "", spec["payload"])
+        calls["item"] = ground_prompt(f"the {item}", f"{spec['placement'].get('relation', 'to')} {spec['ref']}")
     for name, prompt in calls.items():
-        response = await client.call(ground, prompt, "ground")
+        response = await client.call(ground_after if name == "item" else ground, prompt, "ground")
         record["tokens"] += response["tokens"]
         try:
             box = parse_json(response["text"]).get("bbox_2d")
@@ -572,26 +604,51 @@ Edit type: {op}. {role}
 
 Judge each point "pass" or "fail":
 1. edit: the instruction describes what actually changed from BEFORE to AFTER: the right operation, the right object, the requested new item or value (its kind, count, color, material or exact text), with nothing important wrong or missing. Check every phrase: anything the instruction says to add must be new in AFTER (not already in BEFORE), and every placement phrase (on, next to, near, under, ...) must be true in AFTER. Changes that only follow from the edit (shadows, revealed background, a carried bag removed with a person) are fine.
-2. relation: for add, the stated relation of the new item to S ({relation}) is true in AFTER; for other types answer "pass".
-3. target: the green outline marks the object or part that the instruction's target phrase names, not a different instance and not a much larger or smaller thing.
-4. outline: the green outline covers the visible extent of that object or part, with no large missing piece and no large area of something else.
+2. relation: {relation_rule}
+3. target: {target_rule}
+4. outline: {outline_rule}
 5. noref: using the green outline as the selection, the instruction without the reference asks for the same edit, and its "the selected ..." noun fits the outlined object.
 6. wording: both instructions are clear, natural English.
 
 Return only JSON: {{"edit": "pass", "relation": "pass", "target": "pass", "outline": "pass", "noref": "pass", "wording": "pass", "problems": "<at most 25 words; empty if everything passes>"}}"""
 AUDIT_KEYS = ("edit", "relation", "target", "outline", "noref", "wording")
+AUDIT_RULES = {
+    "add": {
+        "relation": "the stated relation of the new item to S ({relation}) is true in AFTER, and the new item touches "
+                    "S: it stands, rests, hangs or is attached on it, holds it up, or flies or floats inside the "
+                    "outlined sky or water. S across open space from the new item fails.",
+        "target": "the green outline is on what the new item directly stands, rests, hangs or is attached on in AFTER "
+                  "(for something flying or floating, the sky or water around it), and that is what the instruction's "
+                  "target phrase names. A different object, or one with open space between it and the new item, "
+                  "fails.",
+        "outline": "the green outline is one compact area of that object or surface itself, under, behind or around "
+                   "the spot where the new item goes; it need not cover the whole object or surface, but it fails "
+                   "when it marks another part of the object away from the new item, takes in other objects, or "
+                   "traces marks, text or specks instead of the surface."},
+    "other": {
+        "relation": 'answer "pass" (only for add).',
+        "target": "the green outline marks the object or part that the instruction's target phrase names, not a "
+                  "different instance and not a much larger or smaller thing.",
+        "outline": "the green outline covers the visible extent of that object or part, with no large missing piece "
+                   "and no large area of something else."},
+}
 
 
 def audit_prompt(record):
     spec = record["instruction_spec"]
     add = spec["operation"] == "add"
-    role = ("For add, S is the existing object the new item is attached to, rests on or in, or is placed relative to; "
-            "the new item does not exist in BEFORE." if add else "S is the object or part the edit acts on.")
-    relation = spec["placement"].get("relation", "to") if add else "none"
+    role = ("For add, S is the existing object, part or surface at the spot where the new item goes: what it stands, "
+            "rests or hangs on or is attached to, or the sky or water it flies or floats in; the outline may be just "
+            "the part of a larger object or surface around that spot. The new item does not exist in BEFORE."
+            if add else "S is the object or part the edit acts on.")
+    rules = AUDIT_RULES["add" if add else "other"]
     orange = (", and, where it differs from S, the area that changes outlined in orange"
               if record.get("execution_region") else "")
     return AUDIT_PROMPT.format(orange=orange, ref=record["instruction_ref"], noref=record["instruction_noref"],
-                               op=spec["operation"], role=role, relation=relation)
+                               op=spec["operation"], role=role, target_rule=rules["target"],
+                               outline_rule=rules["outline"],
+                               relation_rule=rules["relation"].format(relation=spec["placement"].get("relation", "to"))
+                               if add else rules["relation"])
 
 
 def audit_parts(row, record, root):
@@ -658,13 +715,22 @@ def box_iou(a, b):
     return inter / area if area else 0.0
 
 
+def box_holds_center(outer, inner, grow=0.1):
+    """Whether the center of box `inner` lies in box `outer` grown by 10 % of its size on each side."""
+    if not outer or not inner:
+        return False
+    mx, my = grow * (outer[2] - outer[0]), grow * (outer[3] - outer[1])
+    cx, cy = (inner[0] + inner[2]) / 2, (inner[1] + inner[3]) / 2
+    return outer[0] - mx <= cx <= outer[2] + mx and outer[1] - my <= cy <= outer[3] + my
+
+
 def dilate(mask, radius):
     image = Image.fromarray(mask.astype(np.uint8) * 255)
     return np.asarray(image.filter(ImageFilter.MaxFilter(2 * radius + 1))) > 0
 
 
 def geometry(spec, s_mask, exec_mask):
-    """How the execution region sits relative to S."""
+    """How the execution region (for add: the new item) sits relative to S."""
     if exec_mask is None or not exec_mask.any() or not s_mask.any():
         return {}
     h, w = s_mask.shape
@@ -678,7 +744,103 @@ def geometry(spec, s_mask, exec_mask):
             "s_in_exec": round(float((exec_mask & s_mask).sum() / s_area), 3),
             "exec_touch_s": round(float((exec_mask & near).sum() / exec_area), 3),
             "dx": round(float(ex.mean() - sx.mean()) / w, 3), "dy": round(float(ey.mean() - sy.mean()) / h, 3),
-            "box_gap_1000": int(gap)}
+            "box_gap_1000": int(gap), "gap_frac": round(mask_gap(exec_mask, s_mask) / (h * h + w * w) ** 0.5, 4)}
+
+
+def mask_gap(a, b):
+    """Shortest distance in pixels between two non-empty masks; 0 when they touch or overlap."""
+    import cv2
+    return float(cv2.distanceTransform((~b).astype(np.uint8), cv2.DIST_L2, 5)[a].min())
+
+# ---------------------------------------------------------------- add anchors
+
+ANCHOR_METHOD = "anchor-window-1"
+# An anchor already says where the item goes, and stays whole, when it reaches no further than 4x the item's extent
+# (box diagonal) and is either at most 3x the item's area and 5 % of the image, or at most 1 % of the image (the
+# side of a candle for a sticker). Otherwise (a road, a cake, a long roof edge) the spot is S inside an ellipse
+# around the new item's box (its pieces of at least a quarter of the largest one), grown on every side by 0.35x the
+# item's mean side (at least 1.5 % of the image diagonal), and widened 1.5x at a time until it holds half the item's
+# area (at least 0.2 % of the image) so that a thin or small item still gets a usable spot. An anchor the window
+# holds almost whole (85 %) stays whole; of a cut, pieces under a quarter of the main one are dropped. Reference
+# anchors must lie within 1.5 % of the diagonal of the item (touching or right against it); a support with contact
+# (on, in, attached to, ...) more than 3 % away is not one.
+ANCHOR_PARAMS = {"local_extent_k": 4.0, "local_k": 3.0, "local_frac": 0.05, "small_frac": 0.01, "piece_frac": 0.25,
+                 "margin_k": 0.35, "margin_min_frac": 0.015, "grow": 1.5, "steps": 6, "min_area_k": 0.5,
+                 "min_area_frac": 0.002, "keep_whole": 0.85, "piece_keep": 0.25, "adjacent_frac": 0.015,
+                 "apart_frac": 0.03}
+CONTACT_RELATIONS = {"to", "on", "in", "inside", "at", "around", "attached to", "clipped to", "resting on",
+                     "mounted on", "sewn onto", "tied around"}
+
+
+def add_footprint(exec_mask, s_mask, images, item_box=None):
+    """Where the new item appears: the cleaned region, else (Derived adds label the host) the pixels that changed,
+    kept to the model's box around the new item in AFTER (grown by 10 %) when there is one."""
+    if exec_mask is not None and exec_mask.any():
+        return exec_mask, "execution_region"
+    if images is None:
+        return None, None
+    region, _ = edited_region(*images, s_mask, None)
+    if item_box:
+        h, w = s_mask.shape
+        mx, my = 0.1 * (item_box[2] - item_box[0]), 0.1 * (item_box[3] - item_box[1])
+        box = np.zeros((h, w), bool)
+        box[max(0, int((item_box[1] - my) * h / 1000)):int(np.ceil((item_box[3] + my) * h / 1000)),
+            max(0, int((item_box[0] - mx) * w / 1000)):int(np.ceil((item_box[2] + mx) * w / 1000))] = True
+        if region is not None and (region & box).sum() >= 0.05 * box.sum():
+            return region & box, "edited_region_in_item_box"
+        return box, "item_box"
+    return (region, "edited_region") if region is not None else (None, None)
+
+
+def box_extent(mask):
+    """Diagonal of the mask's box in pixels."""
+    ys, xs = np.nonzero(mask)
+    return float(np.hypot(xs.max() - xs.min() + 1, ys.max() - ys.min() + 1))
+
+
+def localize_anchor(s_mask, footprint, params=ANCHOR_PARAMS):
+    """The part of the anchor S around the new item's footprint, so that S says where on it the item goes.
+
+    Returns (mask, info). The mask is S itself when S is already local or the window holds nearly all of it, and
+    None when no part of S is near the item at all.
+    """
+    import cv2
+    p = params
+    h, w = s_mask.shape
+    # The item's main pieces only: a changed area elsewhere (a regenerated cushion) must not widen the window.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(footprint.astype(np.uint8), connectivity=8)
+    area = stats[:, cv2.CC_STAT_AREA]
+    main = area >= p["piece_frac"] * area[1:].max()
+    main[0] = False
+    footprint = main[labels]
+    ys, xs = np.nonzero(footprint)
+    cx, cy = (xs.min() + xs.max() + 1) / 2, (ys.min() + ys.max() + 1) / 2
+    a0, b0 = (xs.max() + 1 - xs.min()) / 2, (ys.max() + 1 - ys.min()) / 2
+    margin = max(p["margin_k"] * 2 * (a0 * b0) ** 0.5, p["margin_min_frac"] * (h * h + w * w) ** 0.5)
+    s_area = int(s_mask.sum())
+    target = min(max(p["min_area_k"] * footprint.sum(), p["min_area_frac"] * h * w), p["keep_whole"] * s_area)
+    yy, xx = np.ogrid[:h, :w]
+    for step in range(p["steps"]):
+        local = s_mask & ((((xx - cx) / (a0 + margin)) ** 2 + ((yy - cy) / (b0 + margin)) ** 2) <= 1)
+        if local.sum() >= target or step == p["steps"] - 1:
+            break
+        margin *= p["grow"]
+    info = {"method": ANCHOR_METHOD, "margin_px": int(round(margin)), "full_area_frac": round(s_area / (h * w), 5)}
+    if not local.any():
+        return None, {**info, "cut": False}
+    already_local = box_extent(s_mask) <= p["local_extent_k"] * box_extent(footprint) and (
+        (s_area <= p["local_k"] * footprint.sum() and s_area <= p["local_frac"] * h * w)
+        or s_area <= p["small_frac"] * h * w)
+    if already_local or local.sum() >= p["keep_whole"] * s_area:
+        return s_mask, {**info, "cut": False}
+    # One compact spot: the main piece, and pieces of at least a quarter of it (a surface split by an object on
+    # it); stray bits the window cut off a ragged edge or another stretch of the surface are dropped.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(local.astype(np.uint8), connectivity=8)
+    area = stats[:, cv2.CC_STAT_AREA]
+    keep = area >= p["piece_keep"] * area[1:].max()
+    keep[0] = False
+    local = keep[labels]
+    return local, {**info, "cut": True, "area_frac": round(float(local.sum()) / (h * w), 5)}
 
 
 def text_flags(row, spec, ref, noref, original):
@@ -734,17 +896,21 @@ def geometry_flags(spec, geo, exec_kind):
             hard.append("execution_region_covers_host")
     if spec["operation"] == "add":
         mode = spec["placement"].get("anchor_mode", "support")
+        relation = spec["placement"].get("relation", "to")
         if mode == "reference" and not geo:
             hard.append("reference_add_without_execution_region")
-        elif geo and mode == "support" and geo["exec_touch_s"] == 0:
-            flags.append("item_not_touching_anchor")
+        elif geo and mode == "support":
+            # The anchor is what the item touches: one with open space between them is a reference in disguise.
+            if relation in CONTACT_RELATIONS and geo["gap_frac"] > ANCHOR_PARAMS["apart_frac"]:
+                hard.append("support_not_touching_item")
+            elif geo["gap_frac"] > ANCHOR_PARAMS["adjacent_frac"]:
+                flags.append("item_not_touching_anchor")
         elif geo and mode == "reference":
-            relation = spec["placement"]["relation"]
+            if geo["gap_frac"] > ANCHOR_PARAMS["adjacent_frac"]:  # only an object the item touches or stands against
+                hard.append("reference_anchor_not_adjacent")
             if geo["exec_in_s"] > 0.5:
                 # Mostly inside S: true for "near" (in front of S), false for beside, under, above or below.
                 (flags if relation == "near" else hard).append("reference_item_inside_anchor")
-            if geo["box_gap_1000"] > (120 if relation in ("near", "beside") else 300):
-                (hard if relation in ("near", "beside") else flags).append("reference_item_far")
             if (relation in ("under", "below") and geo["dy"] < 0) or (relation == "above" and geo["dy"] > 0):
                 hard.append("reference_direction")
             site = spec["placement"].get("site", "")
@@ -757,8 +923,12 @@ def geometry_flags(spec, geo, exec_kind):
     return flags, hard
 
 
-def build(row, extracted, remasked, derived_exec=None):
-    """One protocol 1.0 record (accepted, multi_object or rejected) from the slots and the masks."""
+def build(row, extracted, remasked, derived_exec=None, images=None):
+    """One protocol 1.0 record (accepted, multi_object or rejected) from the slots and the masks.
+
+    images: the (BEFORE, AFTER) pair, needed only to find the new item of a Derived add (its label is the host),
+    around which the anchor is cut.
+    """
     out = {"id": row["id"], "dataset": row["dataset"], "type_before": row["type"],
            "instruction_before": row["instruction"], "adapter_version": ADAPTER_VERSION,
            "instruction_protocol_version": ip.VERSION}
@@ -797,7 +967,10 @@ def build(row, extracted, remasked, derived_exec=None):
         elif spec["operation"] == "replace":
             execution = {"source": "cleaned_region_or_selection", **encode(exec_mask | s_mask)}
         exec_mask = decode(execution)
-    geo = geometry(spec, s_mask, exec_mask)
+    footprint = kind = None
+    if spec["operation"] == "add":
+        footprint, kind = add_footprint(exec_mask, s_mask, images, (extracted.get("item") or {}).get("bbox_2d"))
+    geo = geometry(spec, s_mask, footprint if spec["operation"] == "add" else exec_mask)
     fixes = []
     ref, noref = ip.render(spec, True), ip.render(spec, False)
     ip.validate_pair(spec, ref, noref)
@@ -808,9 +981,23 @@ def build(row, extracted, remasked, derived_exec=None):
         flags_sam3 = sam3_flags(s_mask, hinted)
     else:
         flags_sam3 = []
+    if footprint is not None:
+        local, info = localize_anchor(s_mask, footprint)
+        info["footprint"] = kind
+        if local is None:
+            hard.append("anchor_not_at_item")
+        elif info["cut"]:
+            full = {k: selection[k] for k in ("rle_size", "rle_counts", "box_1000")}
+            selection = {**selection, **encode(local), "localized": {**info, "full": full}}
+        else:
+            selection = {**selection, "localized": info}
+    elif spec["operation"] == "add":
+        flags.append("anchor_not_localized")
     blind = (extracted.get("blind") or {}).get("bbox_2d")
     blind_iou = round(box_iou(blind, selection["box_1000"]), 3)
-    if blind_iou < 0.5:
+    # An add ref names a part or a stretch of a surface, which the cut S only has to lie in.
+    located = blind_iou >= 0.5 or (spec["operation"] == "add" and box_holds_center(blind, selection["box_1000"]))
+    if not located:
         flags.append("ref_not_located" if blind is None else "ref_points_elsewhere")
     flags += geo_flags + flags_sam3 + [f"fix:{f}" for f in slots.get("fixes", []) + fixes]
     record = {**out, "status": "rejected" if hard else "accepted", "reason": ",".join(hard) or None,
@@ -831,7 +1018,10 @@ def summarize(records):
     return {"rows": len(records), "status": dict(count), "by_source_type": {k: dict(v) for k, v in sorted(by_type.items())},
             "flags": dict(flags.most_common()),
             "selection_sources": dict(Counter((r.get("selection") or {}).get("source") for r in records
-                                              if r["status"] == "accepted"))}
+                                              if r["status"] == "accepted")),
+            "add_anchors": dict(Counter("cut" if r["selection"]["localized"]["cut"] else "whole"
+                                        for r in records if r["status"] == "accepted"
+                                        and "localized" in (r.get("selection") or {})))}
 
 # ---------------------------------------------------------------- edited region
 

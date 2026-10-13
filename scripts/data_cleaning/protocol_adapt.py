@@ -93,7 +93,9 @@ async def run_slots(args):
                 async with slots:
                     parts = await loop.run_in_executor(pool, pa.slot_parts, row, args.root)
                     ground = await loop.run_in_executor(pool, pa.ground_parts, row, args.root)
-                    record = await pa.extract(client, row, parts, ground, feedback.get(row["id"]))
+                    after = (await loop.run_in_executor(pool, pa.ground_parts, row, args.root, "target_image")
+                             if row["dataset"] == "derived" else None)
+                    record = await pa.extract(client, row, parts, ground, feedback.get(row["id"]), after)
                     record["effort"] = args.effort
                     stream.write(json.dumps(record, ensure_ascii=False) + "\n")
                     stream.flush()
@@ -143,17 +145,21 @@ def repair(args):
     """Feedback lines for every accepted record whose audit failed; outline or target faults re-mask S."""
     audits = read_audits(args.audit)
     out = []
-    geometry = {"reference_item_far": "the new item is far from S, so near/beside is false",
+    geometry = {"reference_anchor_not_adjacent": "S is across open space from the new item",
+                "support_not_touching_item": "the new item does not touch S",
+                "anchor_not_at_item": "S is nowhere near where the new item appears",
                 "reference_side": "the new item is not on the stated side of S",
                 "reference_direction": "the new item is not above/below S as stated",
                 "reference_item_inside_anchor": "the new item overlaps S, so beside/under/above/below is false"}
     for r in pa.read_jsonl(args.records):
         reasons = (r.get("reason") or "").split(",")
         if r["status"] == "rejected" and set(reasons) <= set(geometry):
-            # Geometry contradicts the stated relation: ask again for a true relation or a closer reference object.
+            # Geometry contradicts the anchor or the relation: ask again for what the new item stands or hangs on.
             out.append({"id": r["id"], "failed": ["relation"], "remask": True,
                         "problems": "relation failed: " + "; ".join(geometry[x] for x in reasons)
-                                    + ". Use a relation that is true in AFTER, or an object the new item touches or stands next to"})
+                                    + ". Choose as S what the new item directly stands, rests or hangs on or is "
+                                      "attached to (an object, a part of it, or a surface such as the road, sand, "
+                                      "water or sky), or else an object it touches"})
             continue
         a = audits.get(r["id"])
         if r["status"] != "accepted" or not a or a.get("passed") is not False:
@@ -222,9 +228,11 @@ def report(args):
 
 
 def finish(job):
-    """Per record, with the pair loaded once: the edited region (accepted records) and the review sheet."""
-    row, record, root, path = job
+    """Per row, with the pair loaded once: the record, its edited region (accepted records) and the review sheet."""
+    row, extracted, remasked, root, path = job
     images = pa.open_pair(row, root)
+    derived_exec = pa.derived_execution_region(row) if row["dataset"] == "derived" and row["type"] == "remove" else None
+    record = pa.build(row, extracted, remasked, derived_exec, images)
     if record["status"] == "accepted":
         exec_mask = pa.decode(record["execution_region"]) if record.get("execution_region") else None
         region, stats = pa.edited_region(*images, pa.decode(record["selection"]), exec_mask)
@@ -240,18 +248,15 @@ def build(args):
     rows = pa.read_jsonl(args.rows)
     extracted = ec.completed_records(args.slots)
     remasked = ec.completed_records(args.remask) if args.remask and Path(args.remask).exists() else {}
-    records, items = [], []
-    for row in rows:
-        derived_exec = pa.derived_execution_region(row) if row["dataset"] == "derived" and row["type"] == "remove" else None
-        record = pa.build(row, extracted.get(row["id"], {}), remasked.get(row["id"]), derived_exec)
-        records.append(record)
-        items.append((record, f"sheets/{row['id']}.jpg"))
+    names = [f"sheets/{row['id']}.jpg" for row in rows]
     with ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn")) as pool:
-        records = list(pool.map(finish, [(row, record, args.root, None if args.no_sheets else str(out / name))
-                                         for row, (record, name) in zip(rows, items)], chunksize=4))
-    items = [(record, name) for record, (_, name) in zip(records, items)]
+        records = list(pool.map(finish, [(row, extracted.get(row["id"], {}), remasked.get(row["id"]), args.root,
+                                          None if args.no_sheets else str(out / name))
+                                         for row, name in zip(rows, names)], chunksize=4))
+    items = list(zip(records, names))
     write_jsonl(out / "records.jsonl", records)
     summary = {**pa.summarize(records), "edited_region": {"method": pa.EDITED_METHOD, "params": pa.EDITED_PARAMS},
+               "add_anchor": {"method": pa.ANCHOR_METHOD, "params": pa.ANCHOR_PARAMS},
                "adapter_version": pa.ADAPTER_VERSION, "protocol_source": pa.PROTOCOL_SOURCE,
                "protocol_sha256": file_hash(Path(pa.ip.__file__)), "code_commit": code_commit(),
                "time_utc": datetime.datetime.utcnow().isoformat(timespec="seconds")}

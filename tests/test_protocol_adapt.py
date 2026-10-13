@@ -192,7 +192,7 @@ def test_audit_prompt_states_the_add_relation_and_the_outlines():
     assert "(under)" in prompt and "orange" in prompt and record["instruction_noref"] in prompt
     spec = pa.to_spec(pa.normalize_slots(slots())[0])
     prompt = pa.audit_prompt({"instruction_spec": spec, "instruction_ref": "r", "instruction_noref": "n"})
-    assert "(none)" in prompt and "orange" not in prompt
+    assert 'relation: answer "pass"' in prompt and "orange" not in prompt and "visible extent" in prompt
 
 
 def test_sam3_flags_catch_spill_and_sparse_masks():
@@ -217,7 +217,7 @@ def test_remasked_s_of_a_non_add_edit_replaces_a_labeled_region_that_misses_it()
 def test_far_near_and_wrong_side_are_hard_and_part_refs_do_not_repeat():
     near = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="an umbrella", placement={"relation": "near"}))[0])
     person, far = square(30, 40, 50, 60, shape=(100, 100)), square(5, 10, 5, 10, shape=(100, 100))
-    assert "reference_item_far" in pa.geometry_flags(near, pa.geometry(near, person, far), "cleaned_region")[1]
+    assert "reference_anchor_not_adjacent" in pa.geometry_flags(near, pa.geometry(near, person, far), "cleaned_region")[1]
     left = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="a box",
                                                placement={"relation": "beside", "site": "left side"}))[0])
     right_of = square(30, 40, 61, 70, shape=(100, 100))
@@ -289,3 +289,114 @@ def test_records_without_an_edited_region_are_not_accepted():
     kept = pa.attach_edited_region(record, square(1, 9, 1, 9, shape=(10, 10)), stats)
     assert kept["status"] == "accepted" and "edited_region_misses_s" in kept["flags"]
     assert kept["edited_region"]["method"] == pa.EDITED_METHOD and kept["edited_region"]["rle_counts"]
+
+
+def add_spec(relation="on", **values):
+    values = {"payload": "a small dog", "ref": "the road", "scope": "road", **values}
+    return pa.to_spec(pa.normalize_slots(slots(operation="add", placement={"relation": relation}, **values))[0])
+
+
+def test_a_large_anchor_is_cut_to_the_spot_around_the_new_item():
+    road, dog = square(100, 200, 0, 300, shape=(200, 300)), square(120, 150, 140, 160, shape=(200, 300))
+    local, info = pa.localize_anchor(road, dog)
+    assert info["cut"] and local.sum() < 0.2 * road.sum() and (local <= road).all()
+    assert local[dog].all()  # the road where the dog will stand is part of the spot
+    assert local.sum() >= pa.ANCHOR_PARAMS["min_area_k"] * dog.sum()
+    ys, xs = np.nonzero(local)
+    assert 100 <= xs.min() and xs.max() < 200 and ys.max() < 190
+    head, hat = square(20, 40, 50, 70, shape=(200, 300)), square(10, 25, 48, 72, shape=(200, 300))
+    local, info = pa.localize_anchor(head, hat)  # about the item's size: it already says where the hat goes
+    assert local is head and not info["cut"]
+    assert pa.localize_anchor(square(0, 10, 0, 10, shape=(200, 300)), dog)[0] is None
+
+
+def test_a_small_item_on_a_large_anchor_still_gets_a_usable_spot():
+    tower, cross = square(40, 200, 100, 140, shape=(200, 300)), square(30, 40, 118, 122, shape=(200, 300))
+    local, info = pa.localize_anchor(tower, cross)
+    assert info["cut"] and local.sum() >= pa.ANCHOR_PARAMS["min_area_frac"] * 200 * 300
+    assert np.nonzero(local)[0].min() == 40 and np.nonzero(local)[0].max() < 80  # the top of the tower only
+    roof_edge = square(40, 44, 60, 200, shape=(200, 300))  # thin and small, but reaching far beyond the item
+    local, info = pa.localize_anchor(roof_edge, cross)
+    assert info["cut"] and np.nonzero(local)[1].min() > 60 and np.nonzero(local)[1].max() < 200
+
+
+def test_anchors_across_open_space_are_rejected_and_touching_ones_pass():
+    man, dog = square(50, 150, 200, 240, shape=(200, 300)), square(110, 150, 120, 160, shape=(200, 300))
+    beside = add_spec("beside", ref="the man", scope="man")
+    assert "reference_anchor_not_adjacent" in pa.geometry_flags(beside, pa.geometry(beside, man, dog), "cleaned_region")[1]
+    touching = square(110, 150, 160, 200, shape=(200, 300))
+    assert pa.geometry_flags(beside, pa.geometry(beside, man, touching), "cleaned_region")[1] == []
+    table, cup = square(100, 120, 0, 100, shape=(200, 300)), square(60, 80, 200, 220, shape=(200, 300))
+    on = add_spec("on", ref="the table", scope="table")
+    assert pa.geometry_flags(on, pa.geometry(on, table, cup), "cleaned_region")[1] == ["support_not_touching_item"]
+    assert pa.geometry_flags(on, pa.geometry(on, table, square(80, 100, 40, 60, shape=(200, 300))),
+                             "cleaned_region")[1] == []
+
+
+def test_build_cuts_a_remasked_anchor_and_keeps_the_full_mask():
+    road, dog = square(100, 200, 0, 300, shape=(200, 300)), square(120, 150, 140, 160, shape=(200, 300))
+    r = row("add", [instance(dog, "white dog", side="target")])
+    s, _ = pa.normalize_slots(slots(operation="add", payload="a small white dog", ref="the road in the foreground",
+                                    scope="road", placement={"relation": "on"}, instances=[{"n": 1, "role": "new_item"}]))
+    extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s), "plan": {"source": "sam3"},
+                 "blind": {"bbox_2d": pa.box_1000(road)}, "hinted": {"bbox_2d": pa.box_1000(road)}}
+    record = pa.build(r, extracted, {"mask": pa.encode(road)})
+    assert record["status"] == "accepted" and record["instruction_noref"] == "Add a small white dog on the selected road."
+    local, full = pa.decode(record["selection"]), pa.decode(record["selection"]["localized"]["full"])
+    assert (full == road).all() and local.sum() < 0.2 * road.sum() and local[dog].all()
+    assert record["selection"]["localized"]["footprint"] == "execution_region"
+
+
+def test_a_derived_add_finds_the_new_item_in_the_pixels():
+    from PIL import Image
+    zebra, saddle = square(40, 160, 20, 280, shape=(200, 300)), square(50, 80, 120, 170, shape=(200, 300))
+    before = np.full((200, 300, 3), 120, np.uint8)
+    after = before.copy()
+    after[saddle] = (150, 60, 20)
+    r = row("add", [instance(zebra, "zebra")], dataset="derived")
+    s, _ = pa.normalize_slots(slots(operation="add", payload="a brown saddle", ref="the back of the zebra",
+                                    scope="zebra back", placement={"relation": "on"}, instances=[{"n": 1, "role": "anchor"}]))
+    extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s),
+                 "plan": {"source": "reused", "instances": [1]}, "blind": {"bbox_2d": pa.box_1000(zebra)}}
+    images = (Image.fromarray(before), Image.fromarray(after))
+    record = pa.build(r, extracted, None, images=images)
+    assert record["status"] == "accepted" and record["execution_region"] is None
+    local = pa.decode(record["selection"])
+    assert record["selection"]["localized"]["footprint"] == "edited_region" and local[saddle].all()
+    assert local.sum() < 0.5 * zebra.sum()
+    assert "anchor_not_localized" in pa.build(r, extracted, None)["flags"]
+
+
+def test_an_add_anchor_is_segmented_whole_and_its_ref_may_name_the_spot():
+    s, _ = pa.normalize_slots(slots(operation="add", payload="the text 'rockstar'", ref="the knuckles of the central fist",
+                                    scope="knuckles", placement={"relation": "across"}, s_object="central raised fist"))
+    assert s["s_object"] == "the central raised fist"
+    assert pa.sam_prompt(pa.to_spec(s), s["s_object"]) == "central raised fist"
+    assert pa.normalize_slots(slots(operation="add", payload="a cup", ref="the table", scope="table"))[0]["s_object"] == "the table"
+    assert pa.normalize_slots(slots())[0]["s_object"] == ""
+    assert pa.sam_prompt(pa.to_spec(pa.normalize_slots(slots())[0])) == "red jar"
+    assert pa.box_holds_center([100, 100, 500, 500], [280, 300, 320, 340])
+    assert not pa.box_holds_center([100, 100, 500, 500], [600, 600, 700, 700]) and not pa.box_holds_center(None, [1, 1, 2, 2])
+
+
+def test_a_derived_add_keeps_the_changed_pixels_inside_the_new_items_box():
+    from PIL import Image
+    pizza, olive = square(40, 160, 20, 280, shape=(200, 300)), square(90, 100, 140, 150, shape=(200, 300))
+    before = np.full((200, 300, 3), 120, np.uint8)
+    after = before.copy()
+    after[pizza] = (126, 126, 126)  # the generator redrew the whole pizza a little
+    after[50:60, 30:60] = (160, 100, 100)  # and changed a spot far from the olive
+    after[olive] = (10, 10, 10)
+    images = (Image.fromarray(before), Image.fromarray(after))
+    footprint, kind = pa.add_footprint(None, pizza, images, pa.box_1000(olive))
+    assert kind == "edited_region_in_item_box" and footprint[olive].all() and footprint.sum() < 3 * olive.sum()
+    assert pa.add_footprint(None, pizza, images)[1] == "edited_region"
+    assert pa.add_footprint(square(1, 5, 1, 5, shape=(200, 300)), pizza, images)[1] == "execution_region"
+
+
+def test_a_cut_anchor_keeps_one_compact_spot():
+    floor, robot = square(100, 200, 0, 300, shape=(200, 300)), square(110, 160, 140, 170, shape=(200, 300))
+    floor[100:200, 100:104] = False  # a pole splits off a thin strip on the left
+    floor[100:103, 104:110] = False
+    local, info = pa.localize_anchor(floor, robot)
+    assert info["cut"] and np.nonzero(local)[1].min() >= 104

@@ -3,7 +3,8 @@
 S is segmented exactly as the CrispEdit labeling repo segments a grounded source object:
 the same SAM3 checkpoint and processor threshold, the same context crop for boxes below 65 %
 of the image, and crispedit.mask.pipeline.segment_grounded_box with the box from the
-model's hinted grounding call and the ref (without its article) as the text prompt.
+model's hinted grounding call and pa.sam_prompt (the ref without its article; for add the whole object or
+surface S belongs to, which protocol_adapt.localize_anchor cuts to the spot) as the text prompt.
 
 Run it in an environment with torch and the SAM3 dependencies, with the labeling repo on
 --labeling-repo (imported read-only; set PYTHONDONTWRITEBYTECODE=1).
@@ -13,7 +14,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import re
 import subprocess
 import sys
 import time
@@ -59,7 +59,7 @@ def main():
         for extracted in jobs:
             row, start = rows[extracted["id"]], time.monotonic()
             box = (extracted.get("hinted") or {}).get("bbox_2d")
-            prompt = re.sub(r"(?i)^(the|a|an)\s+", "", extracted["spec"]["ref"])
+            prompt = extracted.get("sam_prompt") or pa.sam_prompt(extracted["spec"])
             record = {"id": row["id"], "box_2d": box, "sam_prompt": prompt, "labeling_commit": labeling_commit,
                       "checkpoint": args.checkpoint, "mask": None}
             if box is None:
