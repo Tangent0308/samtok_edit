@@ -5,7 +5,7 @@
 ## 1. 约定
 
 - **作业配置**：4 workers × 8 GPUs，四个 worker 运行同一段启动脚本。
-- **代码**：每个节点从 GitHub 把分支 `qwen-image-2.1-v3` clone 到本机 `/tmp`，并切到 `SAMTOK_EDIT_COMMIT` 指定的 commit。共享盘只放数据、日志和产物，不从共享盘执行代码。
+- **代码**：每个节点从 GitHub 把分支 `qwen-image-2.1-v3` clone 到本机 `/tmp`，并切到 `SAMTOK_EDIT_COMMIT` 指定的 commit。共享盘只放数据、日志和产物，不从共享盘执行代码。本页示例里固定的是 `06e668d0`，即当前训练与评测代码所在的 commit（之后只有文档提交）；代码再有改动时，用 `git -C /opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3 rev-parse HEAD` 取新的 SHA 并更新这里，前提是它已经推送。
 - **实验根目录**：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3`，每次运行写入 `runs/<SAMTOK_RUN_ID>/`。
 - **run ID**：每次提交都换一个新的，四个 worker 相同。用过的 ID 会被拒绝，这样调度器重试不会覆盖日志。建议写成 `<实验名>_<机器数>n_<序号>`，例如 `ea2b_4n_001`。
 - **一次运行做三件事**：训练 → 在全部 32 张卡上评测 → 0 号 worker 出配对分析报告。可以用 `SAMTOK_PHASES` 只跑其中一部分。
@@ -23,7 +23,7 @@
 # ===== 运行设置 =====
 export SAMTOK_RUN_ID=ea2b_4n_001            # 每次提交换新的
 export SAMTOK_RUN_NAME=E-A2b                # 报告里这次运行的名字
-export SAMTOK_EDIT_COMMIT=__CODE_COMMIT__   # 代码 commit，四个 worker 必须相同
+export SAMTOK_EDIT_COMMIT=06e668d0bcfc1a8d79f066e0d58806b9c3466342   # 代码 commit，四个 worker 必须相同
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_GROUND_DATA=$SAMTOK_EXPERIMENT/data/stageA_ea2_20261012
 # 32 卡 × accumulation 1 = batch 32，与 E-A2（8 卡 × 4）每次更新用到的样本完全相同
@@ -185,7 +185,7 @@ bash /opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/scripts/grounding/bootstrap
 # ===== 运行设置：四机冒烟 =====
 export SAMTOK_RUN_ID=smoke_4n_001
 export SAMTOK_RUN_NAME=smoke
-export SAMTOK_EDIT_COMMIT=__CODE_COMMIT__
+export SAMTOK_EDIT_COMMIT=06e668d0bcfc1a8d79f066e0d58806b9c3466342
 export SAMTOK_TRAIN_ARGS="--updates 4 --accumulation 1 --checkpoints 4 --quick-eval 0,4 --quick-limit 1"
 export SAMTOK_EVAL_ARGS="--limit 8 --remove-pairs 4 --edit-cases 4"
 ```
@@ -234,6 +234,6 @@ ls $R/nodes/*/failure.json 2>/dev/null
 
 ## 6. 这份入口验证到了什么程度
 
-- 入口脚本以单机模式（`SAMTOK_NNODES=1`）从 GitHub 上的固定 commit 完整跑通过：clone、装环境、训练、评测、出报告。见文档 03 的 5.4 节。
+- 入口脚本以单机模式（`SAMTOK_NNODES=1`）从 GitHub 上的固定 commit `06e668d0` 完整跑通过（2026-10-13）：clone、装环境、训练、评测、出报告，脚本是按 ARNOLD 的方式从标准输入喂给 bash 的。见文档 03 的 5.4 节。
 - 多机的 torchrun 参数与 v2 四机入口用的完全相同（v2 的四机运行都是这样启动的）。
 - **v3 的训练和评测还没有在四机上实际跑过。** 第一次提交建议先跑第 4 节的冒烟测试。

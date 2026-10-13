@@ -486,7 +486,7 @@ def broadcast_parameters(parameters, dist):
 | `--updates`、`--accumulation` | 1300、4 | 优化步数；每卡每步的样本数 |
 | `--lr`、`--warmup`、`--weight-decay` | 1e-4、33、0.01 | |
 | `--rank` | 32 | 新建 LoRA 的 rank |
-| `--init-adapter` | 无 | 从一个已有的 v3 权重目录热启动（阶段 B 用） |
+| `--init-adapter` | 无 | 从一个已有的 v3 权重目录热启动（阶段 B 用）：加载 LoRA、码本向量注入，路由层相同时还恢复路由仿射 |
 | `--lambda-route`、`--lambda-region`、`--lambda-distractor` | 0.05、1、1 | 三项损失的系数；`--lambda-route 0` 时不挂钩子 |
 | `--route-layers` | 6,10,14,18,22,26 | 路由损失加在哪些 block |
 | `--no-code-injector` | 关 | 消融：不用码本向量注入 |
@@ -635,10 +635,11 @@ samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 -
 
 ## 6. 测试与正确性验证
 
-- `tests/test_grounding.py`（16 项，全部在 CPU 上跑）：指认任务的读回精度、注入模块各位置的行为与保存加载、路由 logit 与 block 真实注意力 logit 的一致性、检查点下的梯度、损失各项的合成、片段位置（用真实分词器）、数据构建的泄漏防护与确定性、报告的配对与放行逻辑。路由相关的测试用的是真实 DiT 类的一个小号实例，走的是真实的 block 代码。
+- `tests/test_grounding.py`（17 项，全部在 CPU 上跑）：指认任务的读回精度、注入模块各位置的行为与保存加载、路由 logit 与 block 真实注意力 logit 的一致性、检查点下的梯度、热启动时路由标定的恢复、损失各项的合成、片段位置（用真实分词器）、数据构建的泄漏防护与确定性、报告的配对与放行逻辑。路由相关的测试用的是真实 DiT 类的一个小号实例，走的是真实的 block 代码。
 - `tests/test_docs.py`：文档代码块与源码一致。
-- 运行：`pytest tests`（当前共 104 项）。
-- 与 E-A2 当时脚本的等价性核对（逐位一致的数值与梯度、逐字节相同的数据文件、逐数字相同的报告）和 GPU 端到端回归的状态，记在文档 03 的 5.4 节。
+- 运行：`pytest tests`（当前共 113 项，含数据侧的测试）。
+- `python scripts/docs/check_paths.py`：检查五份文档里引用的路径是否都存在（需要挂着共享盘）。
+- 与 E-A2 当时脚本的等价性核对（逐位一致的数值与梯度、逐字节相同的数据文件、逐数字相同的报告）和 GPU 端到端回归（训练记录逐位复现、重跑评测差值为 0、四机入口单机跑通）的结果，记在文档 03 的 5.4 节。
 
 ---
 

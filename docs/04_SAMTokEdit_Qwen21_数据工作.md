@@ -920,7 +920,7 @@ E-A2 的 `epoch_rows.jsonl` 在 2026-10-13 迁移时改过一处：GRES 图片�
 | `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2/scripts/data_cleaning/{clean_pairs,checks,verify_cleaned,reprocess,select_types,protocol_adapt,protocol_remask}.py` | 是 | 文件 | — | ls |
 | `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2/scripts/edit_check/{run_arnold.sh,setup_env.sh}`、`scripts/annotation/` | 是 | 文件 | — | ls |
 | `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2/tests/test_protocol_adapt.py` | 是 | 文件 | 30 个 test 函数（17b2dee） | grep |
-| `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/src/samtok_edit21/preparation/grounding_data.py` | 是 | 文件 | 358 行（提交 7ee0b222） | wc、git log |
+| `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/src/samtok_edit21/preparation/grounding_data.py` | 是 | 文件 | 358 行 | wc |
 | `/opt/tiger/tanyue/sam3-{refedit,crispedit,scaleedit,samtok-derived-edit}-labeling` | 是 | 目录 | HEAD 分别为 72e0d25 / 407e913 / c253733 / 2274c50 | git log |
 | `/opt/tiger/samtok_edit_benchmark_v2branch`、`/opt/tiger/tanyue/samtok_edit_benchmark_v2branch` | **否** | — | benchmark v2 的文档和 delivery.json 引用了它们 | ls |
 | `sa1b-samtok-edit-data` 仓库 | **否**（本机无） | — | — | ls |
