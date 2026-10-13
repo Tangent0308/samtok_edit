@@ -172,6 +172,8 @@ def final(args):
     audits = read_audits(args.audit)
     out, count = [], Counter()
     for r in pa.read_jsonl(args.records):
+        if r["status"] == "accepted" and not r.get("edited_region"):
+            r = {**r, "status": "rejected", "reason": "edited_region_missing"}
         if r["status"] == "accepted":
             a = audits.get(r["id"])
             if not a or not a.get("passed"):
@@ -219,9 +221,17 @@ def report(args):
     print(json.dumps(summary, indent=1, ensure_ascii=False))
 
 
-def save_sheet(job):
+def finish(job):
+    """Per record, with the pair loaded once: the edited region (accepted records) and the review sheet."""
     row, record, root, path = job
-    pa.review_sheet(row, record, root).save(path, quality=88)
+    images = pa.open_pair(row, root)
+    if record["status"] == "accepted":
+        exec_mask = pa.decode(record["execution_region"]) if record.get("execution_region") else None
+        region, stats = pa.edited_region(*images, pa.decode(record["selection"]), exec_mask)
+        record = pa.attach_edited_region(record, region, stats)
+    if path:
+        pa.review_sheet(row, record, root, images).save(path, quality=88)
+    return record
 
 
 def build(args):
@@ -237,10 +247,12 @@ def build(args):
         records.append(record)
         items.append((record, f"sheets/{row['id']}.jpg"))
     with ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn")) as pool:
-        list(pool.map(save_sheet, [(row, record, args.root, str(out / name))
-                                   for row, (record, name) in zip(rows, items)], chunksize=4))
+        records = list(pool.map(finish, [(row, record, args.root, None if args.no_sheets else str(out / name))
+                                         for row, (record, name) in zip(rows, items)], chunksize=4))
+    items = [(record, name) for record, (_, name) in zip(records, items)]
     write_jsonl(out / "records.jsonl", records)
-    summary = {**pa.summarize(records), "adapter_version": pa.ADAPTER_VERSION, "protocol_source": pa.PROTOCOL_SOURCE,
+    summary = {**pa.summarize(records), "edited_region": {"method": pa.EDITED_METHOD, "params": pa.EDITED_PARAMS},
+               "adapter_version": pa.ADAPTER_VERSION, "protocol_source": pa.PROTOCOL_SOURCE,
                "protocol_sha256": file_hash(Path(pa.ip.__file__)), "code_commit": code_commit(),
                "time_utc": datetime.datetime.utcnow().isoformat(timespec="seconds")}
     (out / "summary.json").write_text(json.dumps(summary, indent=1, ensure_ascii=False) + "\n")
@@ -288,6 +300,7 @@ def main():
     s.add_argument("--slots", required=True)
     s.add_argument("--remask")
     s.add_argument("--workers", type=int, default=16)
+    s.add_argument("--no-sheets", action="store_true", help="skip the review sheets (full runs)")
     s.add_argument("--output", required=True)
     s = sub.add_parser("audit")
     s.add_argument("--rows", required=True)

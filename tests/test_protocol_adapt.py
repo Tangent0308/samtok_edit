@@ -234,3 +234,58 @@ def test_contents_removal_needs_the_container_inside_its_execution_region():
                              "cleaned_region")[1] == []
     assert pa.geometry_flags(contents, pa.geometry(contents, vase, square(5, 12, 10, 20, shape=(50, 50))),
                              "cleaned_region")[1] == ["execution_region_misses_container"]
+
+
+def _scene(seed=0, size=(200, 160)):
+    from PIL import Image
+    rng = np.random.default_rng(seed)
+    base = rng.integers(60, 200, size=(size[1] // 8, size[0] // 8, 3), dtype=np.uint8)
+    return Image.fromarray(base).resize(size, Image.Resampling.BILINEAR)
+
+
+def _with(image, box, color, noise=0.0, seed=1):
+    from PIL import Image
+    a = np.asarray(image).astype(np.float32).copy()
+    if box:
+        x1, y1, x2, y2 = box
+        a[y1:y2, x1:x2] = color
+    if noise:
+        a += np.random.default_rng(seed).normal(0, noise, a.shape)
+    return Image.fromarray(np.clip(a, 0, 255).astype(np.uint8))
+
+
+def test_edited_region_finds_the_change_and_ignores_noise():
+    source = _scene()
+    s_mask = square(40, 100, 50, 120, shape=(160, 200))
+    target = _with(source, (60, 50, 110, 90), (250, 20, 20), noise=1.5)
+    region, stats = pa.edited_region(source, target, s_mask)
+    truth = square(50, 90, 60, 110, shape=(160, 200))
+    iou = (region & truth).sum() / (region | truth).sum()
+    assert iou > 0.85 and stats["components"] == 1 and stats["in_anchor"] > 0.9
+    region, stats = pa.edited_region(source, _with(source, None, None, noise=1.5), s_mask)
+    assert region is None
+
+
+def test_edited_region_keeps_faint_shadows_joined_to_the_edit_and_drops_far_changes():
+    source = _scene(3)
+    s_mask = square(40, 100, 50, 120, shape=(160, 200))
+    target = _with(source, (60, 50, 110, 90), (20, 220, 40))
+    shadow = np.asarray(target).astype(np.float32)
+    shadow[90:100, 60:110] *= 0.85  # Delta E about 9: between the thresholds, kept only because it joins the edit
+    from PIL import Image
+    target = Image.fromarray(shadow.astype(np.uint8))
+    region, _ = pa.edited_region(source, target, s_mask)
+    assert region[95, 85] and region[70, 85]
+    far = _with(source, (0, 0, 20, 20), (255, 255, 255))
+    region, stats = pa.edited_region(source, far, s_mask)
+    assert region is None and stats["dropped_far_frac"] > 0
+
+
+def test_records_without_an_edited_region_are_not_accepted():
+    s, _ = pa.normalize_slots(slots(operation="attribute", attributes=[{"property": "color", "value": "red"}]))
+    record = {"status": "accepted", "flags": [], "instruction_spec": pa.to_spec(s)}
+    stats = {"area_frac": 0.1, "dropped_far_frac": 0.0, "s_covered": 0.05, "in_anchor": 0.9}
+    assert pa.attach_edited_region(record, None, stats)["status"] == "rejected"
+    kept = pa.attach_edited_region(record, square(1, 9, 1, 9, shape=(10, 10)), stats)
+    assert kept["status"] == "accepted" and "edited_region_misses_s" in kept["flags"]
+    assert kept["edited_region"]["method"] == pa.EDITED_METHOD and kept["edited_region"]["rle_counts"]

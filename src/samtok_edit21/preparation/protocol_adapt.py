@@ -48,7 +48,7 @@ SLOT_ATTEMPTS = 3
 PALETTE = (("red", (235, 50, 45)), ("blue", (40, 110, 240)), ("yellow", (250, 210, 0)),
            ("magenta", (220, 40, 220)), ("cyan", (0, 200, 220)), ("orange", (255, 140, 0)),
            ("green", (40, 190, 60)), ("white", (250, 250, 250)))
-S_COLOR, EXEC_COLOR = (40, 220, 60), (255, 150, 0)
+S_COLOR, EXEC_COLOR, EDITED_COLOR = (40, 220, 60), (255, 150, 0), (230, 40, 200)
 
 # ---------------------------------------------------------------- rows and regions
 
@@ -290,10 +290,12 @@ def crop_masks(masks, box):
 
 
 def close_up(source, target, masks, box_1000, max_long=ec.CLOSE_LONG_SIDE, left="BEFORE (close-up)",
-             right="AFTER (close-up)"):
+             right="AFTER (close-up)", after_masks=None):
     box = ec.crop_box(box_1000, source.size)
     before = outlined(source.crop(box), crop_masks(masks, box), 10 ** 9, numbers=False)
     after = target.convert("RGB").crop(box)
+    if after_masks:
+        after = outlined(after, crop_masks(after_masks, box), 10 ** 9, numbers=False)
     scale = min((max_long / 2 - 10) / max(before.width, before.height), ec.CLOSE_MAX_SCALE)
     size = (max(1, round(before.width * scale)), max(1, round(before.height * scale)))
     before = ec.labeled(before.resize(size, Image.Resampling.LANCZOS), left)
@@ -831,6 +833,111 @@ def summarize(records):
             "selection_sources": dict(Counter((r.get("selection") or {}).get("source") for r in records
                                               if r["status"] == "accepted"))}
 
+# ---------------------------------------------------------------- edited region
+
+EDITED_METHOD = "lab-diff-hysteresis-1"
+# Calibrated on round 7: backgrounds of pasted and most linked pairs are identical (Delta E 0); resized pairs carry
+# noise with a median of about 2 and a 99th percentile of about 6; real edits sit at 10 to 40 and more. The noise
+# level is 3x the median far from S, which matches that 99th percentile but ignores real changes elsewhere.
+EDITED_PARAMS = {"blur_sigma": 1.0, "t_low": 6.0, "t_high": 12.0, "low_k": 1.5, "high_k": 2.5,
+                 "noise_far_frac": 0.08, "zone_frac": 0.06, "close_frac": 0.004, "hole_frac": 0.005,
+                 "min_component_frac": 0.0002, "keep_in_zone": 0.3}
+
+
+def grow(mask, radius):
+    """Pixels within `radius` of the mask (Euclidean), in time independent of the radius."""
+    import cv2
+    return cv2.distanceTransform((~mask).astype(np.uint8), cv2.DIST_L2, 5) <= radius
+
+
+def color_difference(source, target, sigma=EDITED_PARAMS["blur_sigma"]):
+    """CIE76 Delta E per pixel after a light blur (JPEG and resampling noise)."""
+    import cv2
+    labs = []
+    for image in (source, target):
+        lab = cv2.cvtColor(cv2.GaussianBlur(np.asarray(image.convert("RGB")), (0, 0), sigma),
+                           cv2.COLOR_RGB2LAB).astype(np.float32)
+        lab[..., 0] *= 100 / 255
+        lab[..., 1:] -= 128
+        labs.append(lab)
+    return np.sqrt(((labs[0] - labs[1]) ** 2).sum(-1))
+
+
+def edited_region(source, target, s_mask, exec_mask=None, params=EDITED_PARAMS):
+    """Mask of the pixels that really changed between BEFORE and AFTER, and how it was found.
+
+    Hysteresis on Delta E: weak changes join a region only when connected to a strong change, so faint
+    regeneration noise is ignored while the full extent of an edit (soft shadows, anti-aliased edges) is kept.
+    Thresholds rise with this pair's own noise, measured far from S and the execution region. Components mostly
+    outside the neighborhood of S and the execution region are dropped and counted, never silently kept.
+    """
+    import cv2
+    p = params
+    d = color_difference(source, target, p["blur_sigma"])
+    h, w = d.shape
+    diag = (h * h + w * w) ** 0.5
+    anchor = s_mask | exec_mask if exec_mask is not None else s_mask
+    far = ~grow(anchor, p["noise_far_frac"] * diag)
+    noise = 3 * float(np.median(d[far] if far.sum() > 0.05 * h * w else d))
+    t_low, t_high = max(p["t_low"], p["low_k"] * noise), max(p["t_high"], p["high_k"] * noise)
+    low = d > t_low
+    count, labels = cv2.connectedComponents(low.astype(np.uint8), connectivity=8)
+    seeds = np.zeros(count, bool)
+    seeds[np.unique(labels[d > t_high])] = True
+    seeds[0] = False
+    mask = seeds[labels]
+    radius = max(2, round(p["close_frac"] * diag))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    mask = cv2.morphologyEx(mask.astype(np.uint8), cv2.MORPH_CLOSE, kernel) > 0
+    # Fill small holes (unchanged pixels inside a changed object); keep large ones, which can be real.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats((~mask).astype(np.uint8), connectivity=4)
+    border = np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]]))
+    small = stats[:, cv2.CC_STAT_AREA] < p["hole_frac"] * h * w
+    small[border] = False
+    mask |= small[labels]
+    zone = grow(anchor, p["zone_frac"] * diag)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    area = stats[:, cv2.CC_STAT_AREA].astype(np.float64)
+    in_zone = np.bincount(labels[zone], minlength=count)
+    on_anchor = np.bincount(labels[anchor], minlength=count)
+    # Size: a small piece counts when it touches S or the execution region (a sticker, a removed letter).
+    big = (area >= max(30, p["min_component_frac"] * h * w)) | ((area >= 12) & (on_anchor > 0))
+    # Place: mostly near S, or covering much of S and the execution region (a large replacement spills far).
+    near = (in_zone >= p["keep_in_zone"] * area) | (on_anchor >= p["keep_in_zone"] * anchor.sum())
+    keep = big & near
+    keep[0] = False
+    region = keep[labels]
+    total = float(h * w)
+    stats_out = {"noise": round(noise, 2), "t_low": round(t_low, 2), "t_high": round(t_high, 2),
+                 "area_frac": round(region.sum() / total, 5), "components": int(keep.sum()),
+                 "dropped_far_frac": round(float(area[1:][big[1:] & ~near[1:]].sum()) / total, 5),
+                 "dropped_small_frac": round(float(area[1:][~big[1:]].sum()) / total, 5),
+                 "s_covered": round(float((region & s_mask).sum()) / max(int(s_mask.sum()), 1), 3),
+                 "in_anchor": round(float((region & anchor).sum()) / max(int(region.sum()), 1), 3)}
+    return (region if region.any() else None), stats_out
+
+
+def attach_edited_region(record, region, stats):
+    """Store the edited region on an accepted record; a record without one cannot stay accepted."""
+    if record["status"] != "accepted":
+        return record
+    record = {**record, "flags": list(record["flags"])}
+    if region is None:
+        return {**record, "status": "rejected", "reason": "edited_region_empty", "edited_region": None,
+                "edited_region_stats": stats}
+    op = record["instruction_spec"]["operation"]
+    if stats["area_frac"] < 0.0003:
+        record["flags"].append("edited_region_tiny")
+    if stats["dropped_far_frac"] > stats["area_frac"]:
+        record["flags"].append("edited_region_far_changes")
+    if op in ("attribute", "remove", "replace") and stats["s_covered"] < 0.2:
+        record["flags"].append("edited_region_misses_s")
+    if stats["in_anchor"] < 0.3:
+        record["flags"].append("edited_region_off_anchor")
+    record["edited_region"] = {"method": EDITED_METHOD, **encode(region), "area_frac": stats["area_frac"],
+                               "stats": stats}
+    return record
+
 # ---------------------------------------------------------------- review sheets
 
 
@@ -846,9 +953,10 @@ def wrap(draw, text, font, width):
     return lines + ([line] if line else [])
 
 
-def review_sheet(row, record, root):
-    """BEFORE with S (green) and the execution region (orange), AFTER, a close-up, and the texts."""
-    source, target = open_pair(row, root)
+def review_sheet(row, record, root, images=None):
+    """BEFORE with S (green) and the execution region (orange), AFTER with the edited region (magenta),
+    a close-up, and the texts."""
+    source, target = images or open_pair(row, root)
     masks = []
     if record.get("selection"):
         masks.append((decode(record["selection"]), S_COLOR))
@@ -858,11 +966,19 @@ def review_sheet(row, record, root):
         masks = [(decode(i), PALETTE[k % len(PALETTE)][1]) for k, i in enumerate(row["instances"])]
     panel = 560 * 560
     before = ec.labeled(outlined(source, masks, panel, numbers=False), "BEFORE: S green, exec orange")
-    after = ec.labeled(ec.resized(target, panel), "AFTER")
+    if record.get("edited_region"):
+        after = ec.labeled(outlined(target, [(decode(record["edited_region"]), EDITED_COLOR)], panel, numbers=False),
+                           "AFTER: edited region magenta")
+    else:
+        after = ec.labeled(ec.resized(target, panel), "AFTER")
     boxes = [b for b in ((record.get("selection") or {}).get("box_1000"),
                          (record.get("execution_region") or {}).get("box_1000"), row["region"]["box_1000"]) if b]
     box = [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
-    close = close_up(source, target, masks, box, max_long=1100)
+    edited = [(decode(record["edited_region"]), EDITED_COLOR)] if record.get("edited_region") else None
+    if edited:
+        box = [min(box[0], record["edited_region"]["box_1000"][0]), min(box[1], record["edited_region"]["box_1000"][1]),
+               max(box[2], record["edited_region"]["box_1000"][2]), max(box[3], record["edited_region"]["box_1000"][3])]
+    close = close_up(source, target, masks, box, max_long=1100, after_masks=edited)
     width = before.width + after.width + 20
     if close.width > width:
         close = close.resize((width, round(close.height * width / close.width)), Image.Resampling.LANCZOS)
