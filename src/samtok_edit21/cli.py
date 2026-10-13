@@ -7,9 +7,21 @@ from pathlib import Path
 from samtok_edit21.data.io import read_rows, write_json, write_rows, row_hash, file_hash
 from samtok_edit21.models.pipeline import DEFAULT_QWEN, DEFAULT_SAMTOK
 
+# v3 token grounding: each command is implemented (and documented) by the module on the right.
+GROUNDING_COMMANDS = {
+    "ground-data": ("samtok_edit21.preparation.grounding_data", "Build Stage A training rows / the evaluation set"),
+    "ground-train": ("samtok_edit21.training.grounding_engine", "Stage A trainer (run under torchrun)"),
+    "ground-eval": ("samtok_edit21.evaluation.grounding", "Token-only evaluation (run under torchrun)"),
+    "ground-report": ("samtok_edit21.evaluation.grounding_report", "Paired report of an evaluation"),
+    "ground-gallery": ("samtok_edit21.evaluation.gallery", "Trained-vs-base gallery: generate / html"),
+}
+
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in GROUNDING_COMMANDS:
+        from importlib import import_module
+        return import_module(GROUNDING_COMMANDS[argv[0]][0]).main(argv[1:])
     if argv and argv[0] == "convert-v2":
         from samtok_edit21.preparation.v2_data import main as convert_v2_main
         return convert_v2_main(argv[1:])
@@ -21,6 +33,8 @@ def main(argv=None):
     subs.add_parser("train", help="Delegate to the canonical DiffSynth training entry point")
     subs.add_parser("cache", help="Delegate to the canonical raw-TE cache builder")
     subs.add_parser("convert-v2", help="Convert v1 training metadata to the v2 contract")
+    for name, (_, summary) in GROUNDING_COMMANDS.items():
+        subs.add_parser(name, help=summary + " (see `samtok-edit " + name + " --help`)")
     convert = subs.add_parser("convert")
     convert.add_argument(
         "--input", required=True, help="JSONL common records with units/mask_codes"
@@ -202,6 +216,7 @@ def inference(args):
     import numpy as np
     from PIL import Image
     from samtok_edit21.models.binding import BindingConfig
+    from samtok_edit21.models.code_injector import has_code_injector
     from samtok_edit21.models.pipeline import load_pipeline, edit, localize
     from samtok_edit21.training.objectives import adapter_binding, load_adapter
 
@@ -240,8 +255,11 @@ def inference(args):
         config = json.loads((Path(args.dit_adapter) / "adapter.json").read_text())
         if config["stage"] != "stage2":
             raise ValueError("--dit-adapter must belong to Stage 2")
-        pass2_te = pass2_text_encoder(config.get("conditioning_identity", {}),
-                                      args.qwen, args.samtok, args.te_adapter)
+        if "grounding" in config or has_code_injector(args.dit_adapter):
+            pass2_te = "raw"  # v3 adapters are trained on the raw SAMTok text encoder by construction
+        else:
+            pass2_te = pass2_text_encoder(config.get("conditioning_identity", {}),
+                                          args.qwen, args.samtok, args.te_adapter)
         binding = adapter_binding(config)
     if args.command == "infer" and args.binding != "adapter":
         trained = binding or BindingConfig()
@@ -269,21 +287,22 @@ def inference(args):
     )
     if args.te_adapter:
         load_adapter(pipe.text_encoder, args.te_adapter)
-    if getattr(args, "dit_adapter", None):
-        load_adapter(pipe.dit, args.dit_adapter)
-    pipe.eval()
     codec = None
 
     def get_codec():
         nonlocal codec
         if codec is None:
-            from samtok_edit21.models.codec import SamtokCodec
-            codec = SamtokCodec(
-                str(Path(args.samtok) / "sam2.1_hiera_large.pt"),
-                str(Path(args.samtok) / "mask_tokenizer_256x2.pth"),
-                device=args.device,
-            )
+            from samtok_edit21.models.codec import load_codec
+            codec = load_codec(args.samtok, args.device)
         return codec
+
+    if getattr(args, "dit_adapter", None):
+        if has_code_injector(args.dit_adapter):
+            from samtok_edit21.training.grounding import load_grounding_adapter
+            load_grounding_adapter(pipe, get_codec(), args.dit_adapter)
+        else:
+            load_adapter(pipe.dit, args.dit_adapter)
+    pipe.eval()
 
     if args.command == "localize":
         results = [

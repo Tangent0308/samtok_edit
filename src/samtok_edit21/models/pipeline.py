@@ -4,6 +4,10 @@ v2 two-pass inference: pass 1 generates the region JSON with the localization
 LoRA (Stage 1); pass 2 encodes the region-bound prompt with the raw SAMTok TE
 (adapters disabled), exactly as the Stage 2 cache did.  Optional structural
 region binding and latent blending act only inside the DiT pipeline call.
+
+v3 token-only inference uses the same ``edit(..., mode="inline")`` call with no
+binding and no blending; an optional ``CodeInjector`` attached to the text
+encoder adds the SAMTok code vectors at the mask-token positions.
 """
 
 from __future__ import annotations
@@ -52,6 +56,8 @@ class SamtokTextEncoder(torch.nn.Module):
         super().__init__()
         self.model = model
         self.config = model.config
+        # Optional v3 side channel (models.code_injector); None keeps the v2 behaviour bit for bit.
+        self.code_injector = None
 
     def encode(self, **inputs):
         captured = []
@@ -71,7 +77,14 @@ class SamtokTextEncoder(torch.nn.Module):
         return captured[0], output.last_hidden_state
 
     def forward(self, **inputs):
-        return self.encode(**inputs)[0]
+        injector = self.code_injector
+        if injector is None or not injector.enabled:
+            return self.encode(**inputs)[0]
+        # The side channel is trained against a frozen backbone: no graph through the text encoder,
+        # gradients reach only the injector's projections.
+        with torch.no_grad():
+            hidden = self.encode(**inputs)[0]
+        return hidden + injector(inputs["input_ids"]).to(hidden.dtype)
 
     def generate(self, **inputs):
         self.model.model.rope_deltas = None

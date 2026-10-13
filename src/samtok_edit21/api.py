@@ -11,6 +11,8 @@ _EXPORTS = {
     "localize": ("samtok_edit21.models.pipeline", "localize"),
     "SamtokCodec": ("samtok_edit21.models.codec", "SamtokCodec"),
     "load_adapter": ("samtok_edit21.training.objectives", "load_adapter"),
+    "load_codec": ("samtok_edit21.models.codec", "load_codec"),
+    "load_grounding_adapter": ("samtok_edit21.training.grounding", "load_grounding_adapter"),
 }
 __all__ = list(_EXPORTS)
 

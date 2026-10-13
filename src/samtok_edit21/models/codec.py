@@ -257,3 +257,9 @@ class SamtokCodec:
             )
             output.append(mask[0, 0].cpu().numpy().astype(np.uint8))
         return output
+
+
+def load_codec(samtok_dir, device="cuda"):
+    """The released SAMTok codec, whose two checkpoints ship inside the SAMTok text-encoder directory."""
+    root = Path(samtok_dir)
+    return SamtokCodec(root / "sam2.1_hiera_large.pt", root / "mask_tokenizer_256x2.pth", device=device)
