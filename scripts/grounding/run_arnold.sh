@@ -43,11 +43,30 @@ wait_for() {  # rank 0 writes the marker last; allow for NAS latency on the othe
   echo "Missing $1" >&2; return 1
 }
 
+run_watched() {  # run a command, but stop it as soon as another worker reports a failure
+  "$@" &
+  local pid=$! other
+  while kill -0 "$pid" 2>/dev/null; do
+    for other in "$RUN"/nodes/*/failure.json; do
+      if [[ -e "$other" && "$other" != "$RUN/nodes/$NODE/failure.json" ]]; then
+        echo "Another worker failed ($other); stopping this one." >&2
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep "${SAMTOK_KILL_GRACE:-10}"
+        kill -KILL "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        return 1
+      fi
+    done
+    sleep "${SAMTOK_WATCH_INTERVAL:-15}"
+  done
+  wait "$pid"
+}
+
 ADAPTER="${SAMTOK_ADAPTER:-}"
 if [[ "$PHASES" == *,train,* ]]; then
   phase train
   # shellcheck disable=SC2086  # SAMTOK_TRAIN_ARGS is a list of options
-  "${TORCHRUN[@]}" --log_dir "$RUN/logs/node${NODE}/train-ranks" --tee 3 -m samtok_edit21 ground-train \
+  run_watched "${TORCHRUN[@]}" --log_dir "$RUN/logs/node${NODE}/train-ranks" --tee 3 -m samtok_edit21 ground-train \
     --data "$SAMTOK_GROUND_DATA" --output "$RUN/train" ${SAMTOK_TRAIN_ARGS:-}
   wait_for "$RUN/train/TRAIN_DONE"
   ADAPTER="$RUN/train/$("$PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1]))["adapter"])' "$RUN/train/TRAIN_DONE")"
@@ -57,7 +76,7 @@ if [[ "$PHASES" == *,eval,* ]]; then
   phase eval
   [[ -f "$ADAPTER/adapter.safetensors" ]] || { echo "No adapter to evaluate: $ADAPTER" >&2; false; }
   # shellcheck disable=SC2086
-  "${TORCHRUN[@]}" --log_dir "$RUN/logs/node${NODE}/eval-ranks" --tee 3 -m samtok_edit21 ground-eval \
+  run_watched "${TORCHRUN[@]}" --log_dir "$RUN/logs/node${NODE}/eval-ranks" --tee 3 -m samtok_edit21 ground-eval \
     --data "$SAMTOK_GROUND_DATA" --adapter "$ADAPTER" --output "$RUN/eval" ${SAMTOK_EVAL_ARGS:-}
 fi
 

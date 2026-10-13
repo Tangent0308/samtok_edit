@@ -15,10 +15,10 @@ export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/
 # Data directory written by `samtok-edit ground-data train`.
 export SAMTOK_GROUND_DATA="${SAMTOK_GROUND_DATA:-$SAMTOK_EXPERIMENT/data/stageA_ea2_20261012}"
 # Trainer / evaluator arguments (see `samtok-edit ground-train --help`, `ground-eval --help`).
-export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---updates 325 --accumulation 4 --checkpoints 325 --quick-eval 0,160,325}"
+export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---updates 1300 --accumulation 1 --checkpoints 325,650,975,1300 --quick-eval 0,325,650,975,1300}"
 export SAMTOK_EVAL_ARGS="${SAMTOK_EVAL_ARGS:-}"
 # Reference evaluations for the paired report, "LABEL=PATH ..." with the base model first.
-export SAMTOK_REPORT_REFERENCES="${SAMTOK_REPORT_REFERENCES:-stock=$SAMTOK_EXPERIMENT/baselines/stock_highlight_eval}"
+export SAMTOK_REPORT_REFERENCES="${SAMTOK_REPORT_REFERENCES:-stock=$SAMTOK_EXPERIMENT/baselines/stock_highlight_eval E-A1=$SAMTOK_EXPERIMENT/runs/ea1_local8_001/eval E-A2=$SAMTOK_EXPERIMENT/runs/ea2_local8_001/eval}"
 # Phases to run: train,eval,report.  Without "train", set SAMTOK_ADAPTER to the adapter directory to evaluate.
 export SAMTOK_PHASES="${SAMTOK_PHASES:-train,eval,report}"
 export SAMTOK_ADAPTER="${SAMTOK_ADAPTER:-}"

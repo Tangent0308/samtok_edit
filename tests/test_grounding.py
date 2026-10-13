@@ -267,6 +267,22 @@ def test_router_gradients_survive_checkpointing_and_disarm_is_inert(tiny_dit):
         AttentionRouter(model, layers=(1, 9))
 
 
+def test_warm_start_restores_the_routing_calibration(tiny_dit, tmp_path):
+    from samtok_edit21.training.grounding_engine import restore_route_affine
+
+    router = AttentionRouter(tiny_dit.model, layers=(1, 3))
+    recipe = {"grounding": {"route_layers": [1, 3], "route_affine": [[0.9, -0.2], [1.1, 0.3]]}}
+    (tmp_path / "adapter.json").write_text(json.dumps(recipe))
+    assert restore_route_affine(router, tmp_path)
+    assert router.affine.flatten().tolist() == pytest.approx([0.9, -0.2, 1.1, 0.3])
+    other = AttentionRouter(tiny_dit.model, layers=(0, 2))            # different layers: keep the default
+    assert not restore_route_affine(other, tmp_path) and other.affine.tolist() == [[1.0, 0.0], [1.0, 0.0]]
+    (tmp_path / "adapter.json").write_text(json.dumps({"stage": "stage2"}))
+    assert not restore_route_affine(router, tmp_path)
+    router.remove()
+    other.remove()
+
+
 # ------------------------------------------------------------------------------------------ objective
 
 def test_region_terms_and_grid_coverage():
@@ -494,8 +510,8 @@ def test_report_pairs_items_and_applies_gates():
     trained = evaluation_of(0.7, 0.6, True)
     trained["recs"].pop(7)                                              # an item missing here is left out everywhere
     trained["remove_pairs"] = [{"model": model, "pair": 0, "tok": tok, "valid": True, "change_own": own, "change_other": 5.0, "change_far": 1.0}
-                               for model, own in (("ea2", 40.0), ("stock", 2.0)) for tok in "ab"]
-    trained["edits"] = [{"case_id": "c", "diff_in": 50.0, "diff_out": 2.0}]
+                               for model, own in (("trained", 40.0), ("base", 2.0)) for tok in "ab"]
+    trained["edits"] = [{"case_id": "c", "model": "trained", "diff_in": 50.0, "diff_out": 2.0}]
     lines, summary = build_report(items, trained, {"stock": evaluation_of(0.4, 0.65, False)}, name="run")
     assert summary["highlight"]["ho-noref"] == {"n": 7, "run": pytest.approx(0.7), "stock": pytest.approx(0.4)}
     assert summary["highlight"]["ho-noref (leak-free)"]["n"] == 6

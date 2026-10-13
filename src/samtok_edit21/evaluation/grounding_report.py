@@ -18,7 +18,6 @@ import numpy as np
 
 from samtok_edit21.evaluation.grounding import metric_key
 
-MODEL_ALIASES = {"ea2": "trained", "stock": "base"}   # labels written by the E-A2 scripts
 AREA_BUCKETS = (("<0.5%", 0, 0.005), ("0.5-5%", 0.005, 0.05), (">=5%", 0.05, 2))
 BOOTSTRAP = 3000
 
@@ -138,7 +137,9 @@ def build_report(items, evaluation, references, *, name, train_dir=None, gates=N
                          + boot.difference([follows(my_pairs[pair]) - follows(base_pairs[pair]) for pair in chosen]))
         per_token = np.mean([t["iou_self"] > t["iou_other"] for pair in chosen for t in my_pairs[pair].values()])
         lines.append(f"  {tag:22s} n={len(chosen):4d} pair-follow " + " | ".join(parts) + f" | per-token {name} {per_token:.3f}")
-        summary["highlight"][tag] = {"n": len(chosen), name: float(np.mean(ours)), "per_token": float(per_token)}
+        summary["highlight"][tag] = {
+            "n": len(chosen), name: float(np.mean(ours)), "per_token": float(per_token),
+            **{label: float(np.mean([follows(pairs[pair]) for pair in chosen])) for label, pairs in ref_pairs.items()}}
 
     got = summary["highlight"]
     lines.append(f"== gate (held-out noref >= {gates['heldout']:.2f}, dev noref >= {gates['dev']:.2f}, "
@@ -159,8 +160,7 @@ def build_report(items, evaluation, references, *, name, train_dir=None, gates=N
     probes = {}
     for record in evaluation.get("remove_pairs", []):
         if record.get("valid"):
-            model = MODEL_ALIASES.get(record["model"], record["model"])
-            probes.setdefault((model, record["pair"]), {})[record["tok"]] = record
+            probes.setdefault((record["model"], record["pair"]), {})[record["tok"]] = record
     if probes:
         lines.append("== remove probe ('Remove the object in this region <M>.', token only)")
         summary["remove"] = {}
@@ -184,7 +184,7 @@ def build_report(items, evaluation, references, *, name, train_dir=None, gates=N
         lines.append("== edit locality (benchmark instructions with phrase + token): mean change inside / far outside")
         summary["edits"] = {}
         for model in ("base", "trained"):
-            chosen = [record for record in edits if MODEL_ALIASES.get(record.get("model", "trained"), record.get("model", "trained")) == model]
+            chosen = [record for record in edits if record["model"] == model]
             if chosen:
                 inside, outside = np.mean([r["diff_in"] for r in chosen]), np.mean([r["diff_out"] for r in chosen])
                 shown = name if model == "trained" else "base"

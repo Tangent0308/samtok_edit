@@ -81,6 +81,17 @@ def rank_divergence(parameters, dist, world):
     return max(abs(value - gathered[0]) for value in gathered) / max(abs(gathered[0]), 1e-12)
 
 
+def restore_route_affine(router, adapter_dir):
+    """Warm start: reuse the per-layer logit calibration of the adapter when it was trained on the same layers."""
+    recipe = json.loads((Path(adapter_dir) / "adapter.json").read_text()).get("grounding", {})
+    saved = recipe.get("route_affine")
+    if saved and list(recipe.get("route_layers", [])) == list(router.layers):
+        with torch.no_grad():
+            router.affine.copy_(torch.tensor(saved, dtype=router.affine.dtype, device=router.affine.device))
+        return True
+    return False
+
+
 def average_gradients(parameters, dist, world):
     """Replace each rank's gradients by their mean over ranks."""
     grads = [p.grad if p.grad is not None else torch.zeros_like(p) for p in parameters]
@@ -143,6 +154,8 @@ def main(argv=None):
         if args.init_adapter and has_code_injector(args.init_adapter):
             load_code_injector(injector, args.init_adapter)
     router = AttentionRouter(pipe.dit, args.route_layers).to(device) if args.lambda_route > 0 else None
+    if router is not None and args.init_adapter:
+        restore_route_affine(router, args.init_adapter)
 
     lora = [p for p in pipe.dit.parameters() if p.requires_grad]
     extra = (list(injector.proj.parameters()) if injector is not None else []) + ([router.affine] if router else [])
