@@ -237,7 +237,7 @@ The example already shows an edit: describe that edit as AFTER shows it; never c
   S is never the new item or empty space.
 - remove, replace, attribute: S is the object or part the edit acts on, normally exactly the outlined object (if the outline is a part, such as a lid or a sleeve, S is that part).
 - written text: when the text itself is outlined, S is that text area; name it with a noun such as "lettering", "logo", "label", "number" or "banner", never with the word "text" (the sentence already says "the text on ..."); otherwise S is the object that carries it.
-- instances: give every outlined number a role: "main" (S itself or a visible piece of it), "anchor" (for an add, the outline marks S or the object or surface S belongs to), "attached" (belongs to S and changes with it, e.g. its contents, pedestal or carried bag), "new_item" (an added or replacing item, drawn where it appears in AFTER), "separate" (another object that is edited too; then the decision is "multi_object") or "unchanged".
+- instances: give every outlined number a role: "main" (S itself or a visible piece of it; for an add, the outline marks exactly S, e.g. the hand or the seat), "anchor" (for an add, the outline marks the larger object or surface S belongs to, e.g. the whole person or sofa), "attached" (belongs to S and changes with it, e.g. its contents, pedestal or carried bag), "new_item" (an added or replacing item, drawn where it appears in AFTER), "separate" (another object that is edited too; then the decision is "multi_object") or "unchanged".
 
 5. Slots. Reuse the instruction's wording where possible and never add details that neither the instruction nor AFTER shows. The sentences are rendered from these slots; follow the writing rules shared with the benchmark:
 {writing_rules}
@@ -251,7 +251,7 @@ The example already shows an edit: describe that edit as AFTER shows it; never c
 - payload: for add the new item, for replace the replacement, in the instruction's own words (count, size, color, kind), e.g. "a small red identification tag"; do not add colors, materials or other details the instruction does not state. The payload must be true of AFTER: name only what is new in AFTER, and drop or correct parts of the instruction that AFTER contradicts or that already existed in BEFORE (if the oranges were already there and only a basket appears, the payload is "a basket", not "a basket of oranges"). Placement words of the instruction say where S is: they belong in the ref ("the road next to the monk"), not in the payload, and the payload never refers to S with "its" or "it". For replace, one complete noun phrase for the new object including its changed form, e.g. "a square four-hole button". For remove and attribute "".
 - remove_mode: for remove one of "whole", "part" (needs target_part), "contents" (a container such as a basket, box or bag removed with what it holds), "contents_only" (only what a container holds), "lowerlegs" (trousers cut to shorts), "hem" (skirt or dress shortened); otherwise "whole". Vehicles, furniture and people are not containers.
 - attributes: for attribute a list of {{"property": ..., "value": ...}} with property one of color, material, finish, pattern, texture, text, tint, opacity. For text the value is the exact new text without quotes. tint and opacity stand alone; opacity is transparent, translucent or opaque. Otherwise [].
-- placement: for add {{"relation": ..., "site": ..., "anchor_mode": ...}}, otherwise {{}}. relation: how the new item meets S, true in AFTER, one of to, on, in, inside, around, across, along, over, at, attached to, clipped to, pinned to, hanging from, hooked over, resting on, mounted on, sewn onto, strapped over, tied around; "to" takes no site. Use "on" for a surface the item stands or lies on and "in" for the sky, water, sand, snow or a container it is in; "under" only for the exception above. anchor_mode: "reference" for that exception, otherwise "support". site: "" unless S is a whole object and the item goes on one spot of it (e.g. "side" for a sticker on the side of a candle); never repeat the part.
+- placement: for add {{"relation": ..., "site": ..., "anchor_mode": ...}}, otherwise {{}}. relation: how the new item meets S, true in AFTER, one of on, in, inside, around, across, along, over, at, attached to, clipped to, pinned to, hanging from, hooked over, resting on, mounted on, sewn onto, strapped over, tied around; never the bare "to". Use "on" for a surface the item stands or lies on and "in" for the sky, water, sand, snow or a container it is in; "over" only for something draped over or covering S (a blanket over a chair, lettering over a poster), never for something above S: an umbrella standing next to a chair stands in the sand; "under" only for the exception above. anchor_mode: "reference" for that exception, otherwise "support". site: "" unless S is a whole object and the item goes on one spot of it (e.g. "side" for a sticker on the side of a candle); never repeat the part.
 - qualifier: normally "". Only a short clause the result needs, e.g. "including its pedestal" when an attached item is removed together with S.
 - s_location: where S is in BEFORE, in a few words, e.g. "left foreground".
 
@@ -539,7 +539,9 @@ def selection_plan(row, slots, spec):
         anchors = [n for n, i in numbered if roles.get(n) in ("anchor", "main") and instance_side(i) == "source"]
         plan = {"source": "reused", "instances": anchors} if anchors else {"source": "sam3"}
         granularity = slots.get("granularity", "")
-        return {**plan, "granularity": granularity, "part": granularity == "part"}
+        label_is_part = granularity == "part" and bool(anchors) and all(roles[n] == "main" for n in anchors)
+        return {**plan, "granularity": granularity, "part": granularity == "part" and not label_is_part,
+                **({"label_is_part": True} if label_is_part else {})}
     # A labeled source instance that marks S is kept as it is (no re-mask by the user's rule, 2026-10-12);
     # only S that has no labeled source mask, e.g. a replace labeled in AFTER only, is re-masked.
     main = [n for n, i in numbered if roles.get(n) == "main" and instance_side(i) == "source"]
@@ -575,6 +577,9 @@ def anchor_problems(slots):
         problems.append("host_ref must name the whole object or surface S belongs to")
     if gran == "part" and (not slots.get("part") or RELATION_START.match(slots["part"].lower())):
         problems.append('part must name the part of the host that S is, e.g. "top" or "seat", without a relation word')
+    if relation == "to":
+        problems.append('relation "to" says nothing: name how the new item meets S, e.g. "on", "in", "attached to", '
+                        '"around" or "hanging from"; if it only stands next to or behind S, S is what it stands on')
     if relation in ("near", "above", "below", "beside"):
         problems.append(f'relation "{relation}" is not used: S is what the new item stands, rests or hangs on (an '
                         "object, a part of one, or a stretch of a surface such as the ground, floor, water or table "
@@ -598,11 +603,13 @@ def part_as_s(spec):
                         remove_mode="whole" if spec["remove_mode"] == "part" else spec["remove_mode"])
 
 
-def sam_prompt(spec, host_ref=""):
+def sam_prompt(spec, host_ref="", part=False):
     """SAM3's text prompt for S: the ref without its article. For add it is the whole object or surface S belongs
     to (host_ref, "left tower", "road"): SAM3 segments whole objects reliably; the part is then found with point and
-    box prompts inside it (part_candidates), and a large anchor is cut to the spot (localize_anchor)."""
-    text = (host_ref or spec["scope"]) if spec["operation"] == "add" else spec["ref"]
+    box prompts inside it (part_candidates), and a large anchor is cut to the spot (localize_anchor). For a named
+    part that became S (part_as_s) it is the part's kind ("shirt"): a ref such as "the shirt of the man on the
+    boat" makes SAM3 take the man."""
+    text = (host_ref or spec["scope"]) if spec["operation"] == "add" else spec["scope"] if part else spec["ref"]
     return re.sub(r"(?i)^(the|a|an)\s+", "", text)
 
 
@@ -659,7 +666,10 @@ async def extract(client, row, parts, ground, feedback=None, ground_after=None):
     if add and row["dataset"] != "derived":
         # The cleaned region marks the new item: the host box must reach that spot, and the part is the one there.
         item_hint = "the new item will be at about [{}, {}, {}, {}] (0-1000 coordinates)".format(*row["region"]["box_1000"])
-    calls = [("blind", ground_prompt(spec["ref"], part=plan.get("part", False)), ground)]
+    # A part that is S (a part-level add, or a named part of a labeled host) is boxed as a part: the object prompt
+    # asks for the complete object, "for a person head and limbs", and returns the wearer for a shirt.
+    part_ref = "part_as_s" in slots["fixes"]
+    calls = [("blind", ground_prompt(spec["ref"], part=plan.get("part", False) or part_ref), ground)]
     if add and row["dataset"] == "derived" and ground_after:
         item = re.sub(r"(?i)^(the|a|an|one)\s+", "", spec["payload"])
         calls.append(("item", ground_prompt(f"the {item}", f"{spec['placement'].get('relation', 'to')} {spec['ref']}"),
@@ -670,8 +680,9 @@ async def extract(client, row, parts, ground, feedback=None, ground_after=None):
         if (feedback or {}).get("remask"):
             hint += f"; a previous selection was wrong: {feedback['problems']}"
         # An add anchor is segmented whole (object or surface): its part is found inside it, a large one cut later.
-        calls.append(("hinted", ground_prompt(slots["host_ref"] if add else spec["ref"], hint.strip("; ")), ground))
-        record["sam_prompt"] = sam_prompt(spec, slots.get("host_ref", ""))
+        calls.append(("hinted", ground_prompt(slots["host_ref"] if add else spec["ref"], hint.strip("; "),
+                                              part=part_ref), ground))
+        record["sam_prompt"] = sam_prompt(spec, slots.get("host_ref", ""), part=part_ref)
     if plan.get("part"):
         calls.append(("part", None, ground))  # its hint needs the item box of a Derived add, asked above
     for name, prompt, image in calls:
@@ -690,6 +701,11 @@ async def extract(client, row, parts, ground, feedback=None, ground_after=None):
             record[name] = {"bbox_2d": box}
         except Exception as exc:  # noqa: BLE001 - recorded; the build step decides
             record[name] = {"bbox_2d": None, "error": f"{type(exc).__name__}: {exc}"[:200], "text": response["text"][-300:]}
+    part_box = (record.get("part") or {}).get("bbox_2d")
+    if plan.get("part") and plan["source"] != "sam3" and part_box:
+        label = union([row["instances"][n - 1] for n in plan["instances"]])
+        if box_iou(label["box_1000"], part_box) >= PART_PARAMS["label_part_iou"]:
+            plan.update(part=False, label_is_part=True)  # the label is the part itself: no search inside it
     return record
 
 # ---------------------------------------------------------------- audit
@@ -713,7 +729,7 @@ Return only JSON: {{"edit": "pass", "relation": "pass", "target": "pass", "outli
 AUDIT_KEYS = ("edit", "relation", "target", "outline", "noref", "wording")
 HOST_SUFFIX = "#host"  # audit id of a record's host view
 AUDIT_RULES = {
-    "add": {
+    "add_spot": {
         "relation": "the stated relation of the new item to S ({relation}) is true in AFTER, and the new item touches "
                     "S: it stands, rests, hangs or is attached on it, holds it up, or flies or floats inside the "
                     "outlined sky or water. S across open space from the new item fails.",
@@ -726,14 +742,14 @@ AUDIT_RULES = {
                    "it covers a large whole object or surface of which the new item takes only a small spot, marks a "
                    "place away from the new item, takes in other objects, or traces marks, text or specks instead of "
                    "the object or surface."},
-    "add_host": {
+    "add_whole": {
         "relation": "the stated relation of the new item to S ({relation}) is true in AFTER, at the spot of S the "
-                    "instruction names, and the new item touches S there.",
-        "target": "the green outline marks the whole object that the instruction's target phrase names (the "
-                  "instruction then names the spot on it, e.g. \"the top of\"), and the new item is at that spot in "
-                  "AFTER.",
+                    "instruction names if it names one, and the new item touches S there (or holds S up).",
+        "target": "the green outline marks the whole object that the instruction's target phrase names, and the new "
+                  "item is on it (at the spot the instruction names, e.g. \"the top of\", if any) in AFTER.",
         "outline": "the green outline covers the visible extent of that object, with no large missing piece and no "
-                   "large area of something else."},
+                   "large area of something else; a whole object is right even when the new item takes only a small "
+                   "spot of it."},
     "other": {
         "relation": 'answer "pass" (only for add).',
         "target": "the green outline marks the object or part that the instruction's target phrase names, not a "
@@ -755,10 +771,12 @@ def audit_view(record, view="canonical"):
 def audit_prompt(record):
     spec = record["instruction_spec"]
     add = spec["operation"] == "add"
-    host = record.get("view") == "host"
-    if host:
-        role = ("For add, S is the whole existing object the new item goes on, and the instruction names the spot on "
-                "it. The new item does not exist in BEFORE.")
+    selection = record.get("selection") or {}
+    whole = record.get("view") == "host" or (
+        selection.get("granularity") == "object" and not (selection.get("anchor") or {}).get("cut"))
+    if add and whole:
+        role = ("For add, S is the whole existing object the new item goes on (or, for \"under\", holds up); the "
+                "instruction names the spot on it when one is needed. The new item does not exist in BEFORE.")
     elif add:
         role = ("For add, S is the existing object, part or surface at the spot where the new item goes: what it "
                 "stands, rests or hangs on, is attached or printed on, or the sky or water it flies or floats in; the "
@@ -766,7 +784,7 @@ def audit_prompt(record):
                 "exist in BEFORE.")
     else:
         role = "S is the object or part the edit acts on."
-    rules = AUDIT_RULES["add_host" if host else "add" if add else "other"]
+    rules = AUDIT_RULES[("add_whole" if whole else "add_spot") if add else "other"]
     orange = (", and, where it differs from S, the area that changes outlined in orange"
               if record.get("execution_region") else "")
     return AUDIT_PROMPT.format(orange=orange, ref=record["instruction_ref"], noref=record["instruction_noref"],
@@ -904,8 +922,10 @@ ANCHOR_PARAMS = {"local_extent_k": 4.0, "local_k": 3.0, "local_frac": 0.05, "sma
                  "margin_k": 0.35, "margin_min_frac": 0.015, "grow": 1.5, "steps": 6, "min_area_k": 0.5,
                  "min_area_frac": 0.002, "keep_whole": 0.85, "piece_keep": 0.25, "adjacent_frac": 0.015,
                  "apart_frac": 0.03}
-CONTACT_RELATIONS = {"to", "on", "in", "inside", "at", "around", "attached to", "clipped to", "resting on",
-                     "mounted on", "sewn onto", "tied around"}
+CONTACT_RELATIONS = {"to", "on", "in", "inside", "at", "around", "across", "along", "over", "attached to",
+                     "clipped to", "pinned to", "resting on", "mounted on", "sewn onto", "tied around", "hooked over",
+                     "strapped over"}
+OVER_OVERLAP = 0.2  # "over" is draped over or covering S: a fifth of the item on S, or of S under the item
 
 
 def add_footprint(exec_mask, s_mask, images, item_box=None):
@@ -987,17 +1007,19 @@ def main_pieces(mask, keep_frac=ANCHOR_PARAMS["piece_keep"]):
 
 
 # A part is one of SAM's masks for the contact point and the model's part box (protocol_remask.py): mostly inside
-# the host (85 %), at most 70 % of it (else it is the host), at least 0.3x the new item and 0.1 % of the image (else a
-# speck), within 3 % of the diagonal of the item, and not a near-duplicate (IoU 0.85) of a smaller one. The model
+# the host (70 %), at most 85 % of it (else it is the host), at least 0.3x the new item and 0.02 % of the image (else
+# a speck), within 3 % of the diagonal of the item, and not a near-duplicate (IoU 0.85) of a smaller one. The model
 # picks among these outlined and numbered (pick_part); without its pick, the one holding the contact point (1 % of
-# the diagonal) that best matches the part box wins. A label whose box matches the part box (IoU 0.5) is the part.
-PART_PARAMS = {"inside": 0.85, "max_host_frac": 0.7, "min_item_k": 0.3, "min_area_frac": 0.001, "touch_frac": 0.03,
+# the diagonal) that best matches the part box wins. A label the model calls S itself ("main"), or whose box matches
+# the part box (IoU 0.5), is the part.
+PART_PARAMS = {"inside": 0.7, "max_host_frac": 0.85, "min_item_k": 0.3, "min_area_frac": 0.0002, "touch_frac": 0.03,
                "same_iou": 0.85, "contact_frac": 0.01, "label_part_iou": 0.5, "score_k": 0.2}
 
 
 # An item that rests on S has S under its center; one that hangs from S has S above it. The probe is the middle 40 %
-# of the item's width, from its center down to its bottom (up to its top) and 3 % of the diagonal beyond. Items held,
-# contained, attached, sewn, wrapped or flying meet S anywhere ("in the hand" is not "on").
+# of the item's width: from its center down to its bottom and 3 % of the diagonal beyond for resting, and from its
+# center up to the top of the image for hanging (the cord or chain it hangs by may be thin or already there). Items
+# held, contained, attached, sewn, wrapped or flying meet S anywhere ("in the hand" is not "on").
 BASE_RELATIONS = {"on", "resting on"}
 TOP_RELATIONS = {"hanging from", "hooked over"}
 PROBE_PARAMS = {"column_frac": 0.4, "beyond_frac": 0.03}
@@ -1014,7 +1036,7 @@ def support_probe(footprint, relation="", host_scope="", params=PROBE_PARAMS):
     beyond = round(params["beyond_frac"] * (h * h + w * w) ** 0.5)
     probe = np.zeros((h, w), bool)
     if relation in TOP_RELATIONS:
-        probe[max(0, ys.min() - beyond):cy + 1, max(0, cx - half):cx + half + 1] = True
+        probe[:cy + 1, max(0, cx - half):cx + half + 1] = True
     else:
         probe[cy:ys.max() + 1 + beyond, max(0, cx - half):cx + half + 1] = True
     return probe
@@ -1170,36 +1192,38 @@ async def pick_part(client, extracted, parts, count):
 
 
 def add_anchor(slots, spec, plan, host_sel, footprint, kind, remasked, extracted):
-    """S of an add at its granularity: the object, its part at the new item, or the stretch of a surface there; a
-    large one is cut to the spot (localize_anchor). Returns (selection, host_view, flags, hard): a part-level add
-    also gets the host view, the whole host selected and the part named as the site."""
+    """S of an add at its granularity. Returns (selection, host_view, spec, flags, hard).
+
+    object: the object; part: the semantic part at the new item, chosen among SAM's candidates (the host when none
+    fits); surface: the surface. Whatever is still large next to the new item is cut to the spot (localize_anchor),
+    so that S says where the item goes; the object a new item holds up ("under") stays whole. A part-level add, or
+    an object that was cut, also gets the host view: the whole host selected, the part (if any) named as the site."""
     gran, host = slots["granularity"], decode(host_sel)
     full = {k: host_sel[k] for k in ("rle_size", "rle_counts", "box_1000")}
     meta = {k: v for k, v in host_sel.items() if k not in full}
     info, flags = {"footprint": kind}, []
     if footprint is None:
-        return {**host_sel, "granularity": gran, "anchor": info}, None, ["anchor_not_localized"], []
+        return {**host_sel, "granularity": gran, "anchor": info}, None, spec, ["anchor_not_localized"], []
     base, host_known = host, True
-    if gran == "part":
-        part_box = (extracted.get("part") or {}).get("bbox_2d")
-        if plan["source"] != "sam3" and part_box and box_iou(full["box_1000"], part_box) >= PART_PARAMS["label_part_iou"]:
-            host_known = False  # the labeled anchor is the part itself; its host is not segmented
-            info["part"] = {"source": "label"}
-            flags.append("label_is_part")
+    if gran == "part" and plan.get("label_is_part"):
+        host_known = False  # the labeled anchor is the part itself; its host is not segmented
+        info["part"] = {"source": "label"}
+        flags.append("label_is_part")
+    elif gran == "part":
+        found = (remasked or {}).get("part") or {}
+        part, info["part"] = choose_part(found.get("candidates", []), host, footprint,
+                                         (extracted.get("part") or {}).get("bbox_2d"), found.get("point"),
+                                         found.get("pick"))
+        if part is None:
+            flags.append("part_not_found")  # S is cut from the host instead
         else:
-            found = (remasked or {}).get("part") or {}
-            part, info["part"] = choose_part(found.get("candidates", []), host, footprint, part_box,
-                                             found.get("point"), found.get("pick"))
-            if part is None:
-                flags.append("part_not_found")  # S is cut from the host instead
-            else:
-                base = part
+            base = part
     if spec["placement"]["anchor_mode"] == "reference":
         local, cut = base, {"cut": False}  # the object the new item holds up, as a whole
     else:
         local, cut = localize_anchor(base, footprint)
     if local is None:
-        return {**host_sel, "granularity": gran, "anchor": info}, None, flags, ["anchor_not_at_item"]
+        return {**host_sel, "granularity": gran, "anchor": info}, None, spec, flags, ["anchor_not_at_item"]
     info.update(cut)
     selection = {**meta, **(encode(local) if local is not host else full), "granularity": gran, "anchor": info}
     if base is not host:
@@ -1210,12 +1234,12 @@ def add_anchor(slots, spec, plan, host_sel, footprint, kind, remasked, extracted
     if gran == "object" and cut.get("cut"):
         flags.append("object_cut")
     host_view = None
-    if gran == "part" and host_known:
-        hs = host_spec(slots, spec)
+    if host_known and local is not host and gran in ("part", "object"):
+        hs = host_spec(slots, spec) if gran == "part" else spec
         host_view = {"instruction_spec": hs, "instruction_ref": ip.render(hs, True),
                      "instruction_noref": ip.render(hs, False), "mask_semantics": ip.mask_contract(hs),
                      "selection": dict(host_sel)}
-    return selection, host_view, flags, []
+    return selection, host_view, spec, flags, []
 
 
 def text_flags(row, spec, ref, noref, original):
@@ -1281,6 +1305,8 @@ def geometry_flags(spec, geo, exec_kind):
             elif geo.get("s_in_probe") is False:
                 # It touches S, but S is not under the item it carries (above the one hanging from it): a neighbor.
                 hard.append("support_not_under_item")
+            elif relation == "over" and max(geo["exec_in_s"], geo["s_in_exec"]) < OVER_OVERLAP:
+                hard.append("over_without_overlap")  # above S, not over it: S is what the item stands on
             elif geo["gap_frac"] > ANCHOR_PARAMS["adjacent_frac"]:
                 flags.append("item_not_touching_anchor")
         elif geo and mode == "reference":
@@ -1350,8 +1376,8 @@ def build(row, extracted, remasked, derived_exec=None, images=None):
     anchor_flags, hard = [], []
     if spec["operation"] == "add":
         footprint, kind = add_footprint(exec_mask, s_mask, images, (extracted.get("item") or {}).get("bbox_2d"))
-        selection, host_view, anchor_flags, hard = add_anchor(slots, spec, plan, selection, footprint, kind,
-                                                              remasked, extracted)
+        selection, host_view, spec, anchor_flags, hard = add_anchor(slots, spec, plan, selection, footprint, kind,
+                                                                    remasked, extracted)
         s_mask = decode(selection)
     geo = geometry(spec, s_mask, footprint if spec["operation"] == "add" else exec_mask, slots.get("host_scope", ""))
     fixes = []

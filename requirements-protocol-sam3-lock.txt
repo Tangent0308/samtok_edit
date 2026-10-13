@@ -1,0 +1,9 @@
+# SAM3 packages added to the locked edit-check environment (requirements-mllm-check-lock.txt) for the
+# protocol 1.0 adaptation (scripts/data_cleaning/protocol_remask.py imports SAM3 from the CrispEdit labeling repo).
+# Installed with --no-deps by scripts/data_cleaning/protocol_arnold.sh; their dependencies are in the lock above.
+ftfy==6.1.1
+iopath==0.1.10
+portalocker==4.3.0
+setuptools==78.1.0
+timm==1.0.29
+wcwidth==0.9.2

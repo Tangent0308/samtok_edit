@@ -188,6 +188,7 @@ def repair(args):
     out = []
     geometry = {"reference_anchor_not_adjacent": "S is across open space from the new item",
                 "support_not_touching_item": "the new item does not touch S",
+                "over_without_overlap": "the new item is above or next to S, not draped over or covering it",
                 "support_not_under_item": "S is not under the new item it is said to carry (or above the item hanging "
                                           "from it); it is only next to it",
                 "anchor_not_at_item": "S is nowhere near where the new item appears",

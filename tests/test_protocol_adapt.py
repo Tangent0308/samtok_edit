@@ -384,6 +384,10 @@ def test_a_derived_add_finds_the_new_item_in_the_pixels():
     assert host["instruction_ref"] == record["instruction_ref"] == "Add a brown saddle on the back of the zebra."
     assert host["selection"]["rle_counts"] == r["instances"][0]["rle_counts"]  # the label, byte for byte
     assert "anchor_not_localized" in pa.build(r, extracted, None)["flags"]
+    own = {**extracted, "plan": {**extracted["plan"], "part": False, "label_is_part": True}}
+    labeled = pa.build(r, own, None, images=images)  # the label is the back itself
+    assert "label_is_part" in labeled["flags"] and labeled["instruction_noref"] == "Add a brown saddle on the selected zebra back."
+    assert labeled["host_view"] is None
 
 
 def test_an_add_anchor_is_segmented_whole_and_its_ref_may_name_the_spot():
@@ -397,6 +401,12 @@ def test_an_add_anchor_is_segmented_whole_and_its_ref_may_name_the_spot():
     assert cup["host_ref"] == "the table" and cup["host_scope"] == "table"
     assert pa.normalize_slots(slots())[0]["host_ref"] == "" and pa.normalize_slots(slots())[0]["granularity"] == ""
     assert pa.sam_prompt(pa.to_spec(pa.normalize_slots(slots())[0])) == "red jar"
+    shirt = pa.part_as_s(pa.to_spec(pa.normalize_slots(slots(operation="attribute", ref="the man on the boat", scope="man",
+                                                             target_part="shirt",
+                                                             attributes=[{"property": "color", "value": "red"}]))[0]))
+    assert shirt["ref"] == "the shirt of the man on the boat" and pa.sam_prompt(shirt, part=True) == "shirt"
+    assert "part of an object" in pa.ground_prompt(shirt["ref"], part=True) and "head and limbs" not in pa.ground_prompt(
+        shirt["ref"], part=True)
     assert pa.box_holds_center([100, 100, 500, 500], [280, 300, 320, 340])
     assert not pa.box_holds_center([100, 100, 500, 500], [600, 600, 700, 700]) and not pa.box_holds_center(None, [1, 1, 2, 2])
 
@@ -453,6 +463,7 @@ def test_only_the_holding_up_exception_is_a_reference_and_the_sky_takes_in():
     sky = dict(granularity="surface", ref="the sky above the bridge", scope="sky", host_ref="the sky", host_scope="sky")
     assert pa.slot_problems(add_slots(**sky, placement={"relation": "on"})[0])
     assert pa.slot_problems(add_slots(**sky, placement={"relation": "in"})[0]) == []
+    assert any("says nothing" in x for x in pa.slot_problems(add_slots(placement={"relation": "to"})[0]))
     assert pa.slot_problems(add_slots(payload="a patch on its sleeve")[0])
     assert pa.slot_problems(add_slots(payload="a bird with its wings spread")[0]) == []
 
@@ -501,7 +512,7 @@ def test_a_part_level_add_takes_the_sam_part_and_keeps_the_host_view():
     assert record["host_view"]["instruction_noref"] == "Add a golden horn on the top of the selected cake."
     assert (pa.decode(record["host_view"]["selection"]) == cake).all()
     view = pa.audit_view(record, "host")
-    assert view["id"].endswith(pa.HOST_SUFFIX) and "whole object" in pa.audit_prompt(view)
+    assert view["id"].endswith(pa.HOST_SUFFIX) and "a whole object is right" in pa.audit_prompt(view)
     assert "large whole object" in pa.audit_prompt(record)
 
 
@@ -514,7 +525,42 @@ def test_a_support_must_be_under_the_item_it_carries():
     geo = pa.geometry(on, right, person)
     assert geo["s_in_probe"] is False and geo["gap_frac"] <= pa.ANCHOR_PARAMS["adjacent_frac"]
     assert pa.geometry_flags(on, geo, "cleaned_region")[1] == ["support_not_under_item"]
+    over = add_spec("over", ref="the beach chair", scope="chair")
+    chair, umbrella = square(120, 170, 100, 140, shape=shape), square(40, 80, 60, 180, shape=shape) | square(80, 175, 141, 145, shape=shape)
+    assert pa.geometry_flags(over, pa.geometry(over, chair, umbrella), "cleaned_region")[1] == ["over_without_overlap"]
+    blanket = square(115, 150, 95, 145, shape=shape)
+    assert pa.geometry_flags(over, pa.geometry(over, chair, blanket), "cleaned_region")[1] == []
+    hang = add_spec("hanging from", ref="the beam", scope="beam")
+    beam, lantern = square(10, 25, 0, 300, shape=shape), square(90, 150, 130, 170, shape=shape)  # a long cord between
+    assert pa.geometry(hang, beam, lantern)["s_in_probe"] is True
+    assert pa.geometry(hang, square(10, 25, 200, 300, shape=shape), lantern)["s_in_probe"] is False  # not above it
     sky = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="a balloon", ref="the sky", scope="sky",
                                               placement={"relation": "in"}, granularity="surface", host_ref="the sky",
                                               host_scope="sky"))[0])
     assert "s_in_probe" not in pa.geometry(sky, left, person, "sky")
+
+
+def test_a_large_object_is_cut_to_the_spot_and_keeps_a_whole_host_view():
+    pizza, olive = square(40, 160, 20, 280, shape=(200, 300)), square(95, 105, 145, 155, shape=(200, 300))
+    r = row("add", [instance(olive, "black olive", side="target")])
+    s, _ = pa.normalize_slots(slots(operation="add", payload="a single black olive", ref="the pizza", scope="pizza",
+                                    placement={"relation": "on", "site": "center"}, granularity="object",
+                                    instances=[{"n": 1, "role": "new_item"}]))
+    extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s),
+                 "plan": {"source": "sam3", "granularity": "object", "part": False},
+                 "blind": {"bbox_2d": pa.box_1000(pizza)}, "hinted": {"bbox_2d": pa.box_1000(pizza)}}
+    record = pa.build(r, extracted, {"mask": pa.encode(pizza)})
+    local = pa.decode(record["selection"])
+    assert record["status"] == "accepted" and record["selection"]["anchor"]["cut"] and "object_cut" in record["flags"]
+    assert local[olive].all() and local.sum() < 0.2 * pizza.sum() and (local <= pizza).all()
+    assert record["instruction_noref"] == "Add a single black olive on the center of the selected pizza."
+    host = record["host_view"]
+    assert (pa.decode(host["selection"]) == pizza).all() and host["instruction_noref"] == record["instruction_noref"]
+    assert "large whole object" in pa.audit_prompt(record) and "a whole object is right" in pa.audit_prompt(
+        pa.audit_view(record, "host"))
+    candle, sticker = square(80, 110, 104, 116, shape=(200, 300)), square(88, 96, 106, 114, shape=(200, 300))
+    small = pa.build(row("add", [instance(sticker, "sticker", side="target")]), extracted, {"mask": pa.encode(candle)})
+    assert not small["selection"]["anchor"]["cut"] and small["host_view"] is None
+    assert "a whole object is right" in pa.audit_prompt(small)
+    far = square(0, 10, 0, 10, shape=(200, 300))
+    assert "anchor_not_at_item" in pa.build(r, extracted, {"mask": pa.encode(far)})["reason"]

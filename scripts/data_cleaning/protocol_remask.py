@@ -77,6 +77,7 @@ def main():
     p.add_argument("--labeling-repo", default="/opt/tiger/tanyue/sam3-crispedit-labeling")
     p.add_argument("--checkpoint", default=CHECKPOINT)
     p.add_argument("--device", default="cuda")
+    p.add_argument("--part", default="0/1", help="K/N: only the K-th of N interleaved parts of the jobs (one per GPU)")
     p.add_argument("--output", required=True)
     args = p.parse_args()
     sys.path.insert(0, args.labeling_repo)
@@ -90,6 +91,8 @@ def main():
     rows = {r["id"]: r for r in pa.read_jsonl(args.rows)}
     jobs = [e for e in ec.completed_records(args.slots).values()
             if (e.get("plan") or {}).get("source") == "sam3" or (e.get("plan") or {}).get("part")]
+    part, parts = (int(v) for v in args.part.split("/"))
+    jobs = sorted(jobs, key=lambda e: e["id"])[part::parts]
     done = ec.completed_records(args.output)
     jobs = [e for e in jobs if e["id"] not in done]
     if not jobs:
