@@ -539,6 +539,7 @@ token 直接写在指令里，和普通文字一起过文本编码器进 DiT。*
 | 完整评测 | `runs/ea2_local8_001/eval/`：`eval.json`、`images/`（指认）、`remove_pairs/{trained,base}/`（remove 探针）、`edits/trained/`（普通编辑）。`eval.as_run.json` 是迁移标签前的原文件 |
 | 汇总 | `runs/ea2_local8_001/analysis.txt`（当时生成）；用仓库代码可逐数字复现 |
 | 图 | `runs/ea2_local8_001/vis/`：`fig_ea2_results.png`、`fig_ea2_training.png`、`fig_ea2_remove_probe.jpg`、`fig_ea2_highlight.jpg`，生成脚本 `make_figures.py` |
+| 指认任务可视化页 | `runs/ea2_local8_001/vis/highlight_report.html`（单文件，图片内嵌）：总览表、按区域大小与失败方式的统计、各子集随机样例（原版 / E-A1 / E-A2 输出与读回对比）、反事实成对、小区域、失败、提升与退步样例；生成脚本 `make_highlight_report.py` |
 | 对比页 | `runs/ea2_local8_001/gallery/`：`index.html`、`single_file.html`、`records.json`、`img/` |
 | 运行日志 | `runs/ea2_local8_001/bootstrap/`、`logs/`、`nodes/`、`SUCCESS.json` |
 | 当时运行的脚本（留档） | `legacy_code/ea2/` |
