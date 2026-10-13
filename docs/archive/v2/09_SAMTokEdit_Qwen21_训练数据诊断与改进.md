@@ -224,7 +224,7 @@
 
 **图 2**　三个来源的典型错位与重绘（列：原图 + 区域、目标图、差异图）。第 1–2 行是 RefEdit 的 attribute，区域外整图被轻微重画；第 3–4 行是 CrispEdit 的 attribute，改动越出区域，整图也有差异；第 5–6 行是 ScaleEdit 的 add，整张目标图错位
 
-![图 2](assets/v2_data_audit_20261008/fig02_alignment_ref_crisp_scale.jpg)
+![图 2](../../assets/v2_data_audit_20261008/fig02_alignment_ref_crisp_scale.jpg)
 
 尺寸差异与错位的关系（主四类，全部 92,303 对）：
 
@@ -257,7 +257,7 @@
 
 **图 1**　贴回原图的效果（列：原图+区域、目标图、贴回后的图、贴回图与原图的差异）
 
-![图 1](assets/v2_data_audit_20261008/fig01_pasteback.jpg)
+![图 1](../../assets/v2_data_audit_20261008/fig01_pasteback.jpg)
 
 - 第 1 行（`crispedit-a6f011eb`，四个孩子换红衣服）：区域只盖住一个孩子，贴回后只有他穿红衣服，另外三个仍是绿衣服，与指令矛盾。这类应该丢弃或重新推区域。
 - 第 3 行（`crispedit-838826f9`，48% 的画面保留目标内容）：区域本身接近半张图，贴回等于保留了大部分重绘内容，收益有限。
@@ -280,7 +280,7 @@
 
 **图 3**　Derived 的 add 与 remove（列同图 2）。第 1–3 行的 add 是几乎看不出的小物件，区域内改动 0–5%；第 4–6 行的 remove，改动都在区域内
 
-![图 3](assets/v2_data_audit_20261008/fig03_derived_add_remove.jpg)
+![图 3](../../assets/v2_data_audit_20261008/fig03_derived_add_remove.jpg)
 
 ### 4.2 空操作与改动过弱
 
@@ -408,7 +408,7 @@
 
 **图 6**　第 2 轮被检查丢掉的样本的贴回结果，用于校准阈值（列：原图+区域、原始目标图、贴回结果、贴回结果与原图的差异）
 
-![图 6](assets/v2_data_audit_20261008/fig06_trial_gate_calibration.jpg)
+![图 6](../../assets/v2_data_audit_20261008/fig06_trial_gate_calibration.jpg)
 
 ### 6.4 最终验证（换一批新样本：另一个随机种子，每组 40 对，共 640 对）
 
@@ -442,11 +442,11 @@
 
 **图 4**　最终验证：随机抽取的 12 个处理过的样本（列：原图+区域、原始目标图、处理后的目标图、处理后与原图的差异）
 
-![图 4](assets/v2_data_audit_20261008/fig04_trial_fixed12.jpg)
+![图 4](../../assets/v2_data_audit_20261008/fig04_trial_fixed12.jpg)
 
 **图 5**　最终验证：原样保留 4 个（第 1–4 行）、因改动扩散丢弃 3 个（第 5–7 行）、因检查不过丢弃 3 个（第 8–10 行，第三列为贴回结果）
 
-![图 5](assets/v2_data_audit_20261008/fig05_trial_keep_drop.jpg)
+![图 5](../../assets/v2_data_audit_20261008/fig05_trial_keep_drop.jpg)
 
 ### 6.5 全量预估
 
@@ -559,7 +559,7 @@
 
 **图 7**　新规则在新批上的决定分布（左），以及按各组真实行数加权的全量预估与旧规则的对比（右）
 
-![图 7](assets/v2_data_audit_20261008/fig07_v2_overview.png)
+![图 7](../../assets/v2_data_audit_20261008/fig07_v2_overview.png)
 
 #### 6.7.5 人工抽查
 
@@ -583,19 +583,19 @@
 
 **图 8**　新规则新丢的样本（列：原图 + 区域、目标图、区域外的成块改动（红）、贴回会得到的图，即旧规则的输出）。第 1–5 行丢得对：删人后伞悬空 ×2、木箱被抹掉、吊臂被截断、蛋糕顶层留在光秃的柱子上。第 6–8 行是误伤，其中第 8 行由对齐检查丢掉。
 
-![图 8](assets/v2_data_audit_20261008/fig08_v2_newly_dropped.jpg)
+![图 8](../../assets/v2_data_audit_20261008/fig08_v2_newly_dropped.jpg)
 
 **图 9**　对齐检查丢掉的样本（列：原图 + 区域、目标图、贴回会得到的图）：第 2 行鞋带的残影错位，第 3 行旗子悬在空中，第 4 行珍珠周围有错位的暗边
 
-![图 9](assets/v2_data_audit_20261008/fig09_v2_misaligned.jpg)
+![图 9](../../assets/v2_data_audit_20261008/fig09_v2_misaligned.jpg)
 
 **图 10**　新规则救回的样本（列：原图 + 区域、目标图、区域外的成块改动、处理后的目标图）
 
-![图 10](assets/v2_data_audit_20261008/fig10_v2_rescued.jpg)
+![图 10](../../assets/v2_data_audit_20261008/fig10_v2_rescued.jpg)
 
 **图 11**　新批随机抽查中不合格的 4 对（列：原图 + 区域、目标图、处理后的目标图）。前 3 行是上游编辑没做对，第 4 行广告牌的支撑被贴回切掉
 
-![图 11](assets/v2_data_audit_20261008/fig11_v2_audit_failures.jpg)
+![图 11](../../assets/v2_data_audit_20261008/fig11_v2_audit_failures.jpg)
 
 #### 6.7.6 全量预估
 
@@ -708,11 +708,11 @@
 
 **图 12**　坐标更正前后对比：红色是按直接缩放得到的旧位置，绿色是更正后的位置。上排和下排左一是偏移最大的 4 个；下排后两个偏移极小，两条轮廓基本重合
 
-![图 12](assets/v2_data_audit_20261008/fig12_region_correction.jpg)
+![图 12](../../assets/v2_data_audit_20261008/fig12_region_correction.jpg)
 
 **图 13**　全量结果中随机抽的 8 对「区域被移动」样本（列：原图 + 旧区域、原目标图、清洗后的目标图、清洗后的目标图 + 更正后的区域（绿）和框（黄））
 
-![图 13](assets/v2_data_audit_20261008/fig13_full_moved_regions.jpg)
+![图 13](../../assets/v2_data_audit_20261008/fig13_full_moved_regions.jpg)
 
 #### 6.8.4 结果
 
@@ -748,7 +748,7 @@
 
 **图 14**　全量清洗的判定分布（全部 98,574 对，按来源 × 类型）
 
-![图 14](assets/v2_data_audit_20261008/fig14_full_overview.png)
+![图 14](../../assets/v2_data_audit_20261008/fig14_full_overview.png)
 
 #### 6.8.5 输出与校验
 
@@ -848,15 +848,15 @@
 
 **图 15**　已知的 10 对坏样本，以及 A、B、C 的判定。图中轮廓只画在原图上；编辑后的图就是训练用的样子
 
-![图 15](assets/v2_data_audit_20261008/fig15_mllm_known_failures.jpg)
+![图 15](../../assets/v2_data_audit_20261008/fig15_mllm_known_failures.jpg)
 
 **图 16**　随机样本中被 C 标出的 8 对，大多数是真问题
 
-![图 16](assets/v2_data_audit_20261008/fig16_mllm_random_flagged.jpg)
+![图 16](../../assets/v2_data_audit_20261008/fig16_mllm_random_flagged.jpg)
 
 **图 17**　人工判为合格、却被 B 标出的样本：误把轮廓当残留，或误判悬空
 
-![图 17](assets/v2_data_audit_20261008/fig17_mllm_false_alarms_B.jpg)
+![图 17](../../assets/v2_data_audit_20261008/fig17_mllm_false_alarms_B.jpg)
 
 ### 6.10 换用 Qwen3.8-Flash-Next 并迭代提示词（2026-10-10）
 
@@ -951,15 +951,15 @@
 
 **图 18**　开发集中被抓到的坏样本（10 例），附人工结论、3 次采样的判定和第 1 次的理由
 
-![图 18](assets/v2_data_audit_20261008/fig18_flash_caught.jpg)
+![图 18](../../assets/v2_data_audit_20261008/fig18_flash_caught.jpg)
 
 **图 19**　开发集中漏掉的坏样本（多数票口径）
 
-![图 19](assets/v2_data_audit_20261008/fig19_flash_missed.jpg)
+![图 19](../../assets/v2_data_audit_20261008/fig19_flash_missed.jpg)
 
 **图 20**　留出集的 10 对坏样本，以及模型的判定
 
-![图 20](assets/v2_data_audit_20261008/fig20_flash_holdout_bad.jpg)
+![图 20](../../assets/v2_data_audit_20261008/fig20_flash_holdout_bad.jpg)
 
 脚本、全部结果、盲审标注和示例图都在 `experiments2/SAMTokEdit/qwen21_v2/data/mllm_pilot_20261010/flash_next/`。
 
@@ -1060,15 +1060,15 @@ Q2 的提问：
 
 **图 21**　27B 新抓到的坏样本（前 11 例）：原图（画轮廓）、编辑后的图、区域放大图（前后并排），附人工结论、6.10 组合方案和 Q2 的判定
 
-![图 21](assets/v2_data_audit_20261008/fig21_27b_newly_caught.jpg)
+![图 21](../../assets/v2_data_audit_20261008/fig21_27b_newly_caught.jpg)
 
 **图 22**　27B Q2 仍然漏掉的坏样本（前 11 例）
 
-![图 22](assets/v2_data_audit_20261008/fig22_27b_still_missed.jpg)
+![图 22](../../assets/v2_data_audit_20261008/fig22_27b_still_missed.jpg)
 
 **图 23**　27B Q2 误判的好样本（全部 11 例）
 
-![图 23](assets/v2_data_audit_20261008/fig23_27b_false_alarms.jpg)
+![图 23](../../assets/v2_data_audit_20261008/fig23_27b_false_alarms.jpg)
 
 #### 6.11.5 用于过滤的效果估计
 
@@ -1143,11 +1143,11 @@ Q2 的提问：
 
 **图 24**　方案二比方案一多抓到的坏样本（全部 11 例），附两种判定、模型理由和盲描述节选
 
-![图 24](assets/v2_data_audit_20261008/fig24_27b_describe_extra_caught.jpg)
+![图 24](../../assets/v2_data_audit_20261008/fig24_27b_describe_extra_caught.jpg)
 
 **图 25**　方案二比方案一多出的误判（全部 9 例）
 
-![图 25](assets/v2_data_audit_20261008/fig25_27b_describe_extra_false_alarms.jpg)
+![图 25](../../assets/v2_data_audit_20261008/fig25_27b_describe_extra_false_alarms.jpg)
 
 ### 6.12 方案 2 的四机全量核验：实现与本机验证（2026-10-11）
 

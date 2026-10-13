@@ -85,8 +85,8 @@ remove 以外的类型在所有 setting 上都下降。benchmark 中 remove 有 
 - **0586 mixed（删右猫 + 中猫换狗）**：final 四种 setting 都正确且背景稳定；baseline 在 box 下把狗放到了右猫位置。
 - **0472 replace 右侧白马 → 棕马**：显式区域下 final 与 baseline 都好。
 
-![0233](assets/failure_analysis_20261005/case_0233.jpg)
-![0586](assets/failure_analysis_20261005/case_0586.jpg)
+![0233](../../assets/failure_analysis_20261005/case_0233.jpg)
+![0586](../../assets/failure_analysis_20261005/case_0586.jpg)
 
 > 每张案例图的列为：输入（显式 setting 叠加 locator）、SAMTok token decode（实际送入 DiT 的区域）、baseline、final、target；行为 text/mask/box/point。
 
@@ -102,12 +102,12 @@ remove 以外的类型在所有 setting 上都下降。benchmark 中 remove 有 
 | F6 | 多区域属性串扰 | 0610, 0557, 0588 | “区域 1 改白、区域 2 变光亮”，final 把两人都改白、第二个属性丢失 |
 | F7 | 语言理解退化 / pass-1 不处理否定 | 0548(text), 0555, 0038 | “all people except the athlete” 把运动员也抹掉；pass-1 把 “remove all but X” 的 X 也分割进来；“similar to the others” 不再被遵守 |
 
-![0000](assets/failure_analysis_20261005/case_0000.jpg)
-![0024](assets/failure_analysis_20261005/case_0024.jpg)
-![0137](assets/failure_analysis_20261005/case_0137.jpg)
-![0574](assets/failure_analysis_20261005/case_0574.jpg)
-![0643](assets/failure_analysis_20261005/case_0643.jpg)
-![0610](assets/failure_analysis_20261005/case_0610.jpg)
+![0000](../../assets/failure_analysis_20261005/case_0000.jpg)
+![0024](../../assets/failure_analysis_20261005/case_0024.jpg)
+![0137](../../assets/failure_analysis_20261005/case_0137.jpg)
+![0574](../../assets/failure_analysis_20261005/case_0574.jpg)
+![0643](../../assets/failure_analysis_20261005/case_0643.jpg)
+![0610](../../assets/failure_analysis_20261005/case_0610.jpg)
 
 ---
 
@@ -162,7 +162,7 @@ remove 以外的类型在所有 setting 上都下降。benchmark 中 remove 有 
 
 在真实推理路径（KV cache decode）上 hook 全部 32 层，统计 target 图像 token 对 mask token（code1、code2、mt_end）的注意力质量（除以均匀分布水平）、区域内富集度（区域内注意力占比 / 区域面积），以及 target → 同位置 source token 的“拷贝”注意力。24 个 case（add / remove / replace+mixed 各 8 个），mask setting，去噪第 14/40 步：
 
-![attention probe](assets/failure_analysis_20261005/attn_probe_layers.png)
+![attention probe](../../assets/failure_analysis_20261005/attn_probe_layers.png)
 
 | 层 | 0 | 3 | 7* | 11* | 15* | 19* | 23* | 27 | 31 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -187,13 +187,13 @@ remove 以外的类型在所有 setting 上都下降。benchmark 中 remove 有 
 | add，22 个 CompBench 同类双放置区（`Add a zebra in this region <M>.`） | 0.18 | 0.32（+0.18） | 0.64（+0.39） |
 | 部件颜色，24 个 MIRAGE 双区域（`Change the color of this region <M> to blue.`） | — | 0.29（+0.17） | 0.58（+0.31） |
 
-![counterfactual remove/add](assets/failure_analysis_20261005/counterfactual_remove_add.jpg)
+![counterfactual remove/add](../../assets/failure_analysis_20261005/counterfactual_remove_add.jpg)
 
 - 第 9.17 节记录的“大部分 case 编辑不随 token 迁移”在当前模型的 remove 上已不成立：final 能把 token 当实例级几何指针使用。
 - Stage-1-only 经常把所有同类实例都删掉（0524 的鹅、0519 的斑马），raw TE + 原 DiT 则几乎不删，说明两阶段训练都在起作用。
 - add 和部件属性只有约 60% 的跟随率，且常伴随同类扩散（0557、0588）或部件 → 整物体（0574）。
 
-![counterfactual color](assets/failure_analysis_20261005/counterfactual_color.jpg)
+![counterfactual color](../../assets/failure_analysis_20261005/counterfactual_color.jpg)
 
 ### 3.6 Attention knockout：模型实际靠哪条通路定位？
 
@@ -231,7 +231,7 @@ remove 以外的类型在所有 setting 上都下降。benchmark 中 remove 有 
 | Stage-1-only，mask（noref 原模板） | 20% | 3.23 / 2.82 / 3.23 / 0.44 |
 | final，mask（noref 原模板，原评测） | 15% | 3.34 / 3.23 / 3.36 / 0.59 |
 
-![ladder](assets/failure_analysis_20261005/ladder_examples.jpg)
+![ladder](../../assets/failure_analysis_20261005/ladder_examples.jpg)
 
 按类型（E / P / strict）：
 
@@ -252,7 +252,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 - **Stage 2 是 remove 收益的来源**，并部分修复了 Stage 1 的损伤（S1-only mask 0.44 → final mask 0.59），但 add/replace/mixed 仍明显低于 stock。
 - **评测 prompt 修正的作用很大**：MIRAGE 32 个 case 上，同一 final 模型、同一 token，只把编译器改为保留属性名词和部件名（`Change the color of the duck's eyes <M> to blue.`），E 2.59 → 3.56、P 1.97 → 2.44、Q 3.22 → 3.62、strict 0.16 → 0.31（stock two-image：3.59 / 3.16 / 3.88 / 0.47）。见下图：0583 原 prompt 把三个人的衬衫都改绿，修正后只改中间一人；0623 原 prompt 把整只狐狸染蓝并重画场景，修正后不再出现。
 
-![fix prompt](assets/failure_analysis_20261005/fixed_prompt_mirage.jpg)
+![fix prompt](../../assets/failure_analysis_20261005/fixed_prompt_mirage.jpg)
 
 ---
 
@@ -260,7 +260,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 
 ### 4.1 attention 监督（A）
 
-![training attention](assets/failure_analysis_20261005/stage2_training_attention.png)
+![training attention](../../assets/failure_analysis_20261005/stage2_training_attention.png)
 
 - **退化解在训练极早期就出现**：前 100 个 update（A 系数 ≤ 0.02），聚合比例从 0.25 升到 0.77，L7/L15/L23 的 mask 注意力质量下降 2–4 nats（约 10–80 倍）。最终 L7/L11/L15/L23 的对数质量为 −17 到 −21（约为均匀水平的 1e-4 到 1e-6；推理期实测中位数 1.6e-5、4.3e-5、2.3e-5、2.7e-6），聚合比例与 L19 曲线几乎重合。
 - **原因**：`total = logsumexp(stats, dim=0)` 跨层（和跨头、跨位置）先求和再取比例，等价于按质量加权平均。把低比例层的质量压到 0 是最省力的下降方向；比例本身对质量尺度不敏感，loss 中也没有质量下界。
@@ -305,8 +305,8 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 | ScaleEdit | 79% | **70%** | **30%** | 0.38 |
 | SAMTok Derived | 100% | **1%** | 0% | 0.00 |
 
-![ScaleEdit pairs](assets/failure_analysis_20261005/pairs_scaleedit.jpg)
-![CrispEdit pairs](assets/failure_analysis_20261005/pairs_crispedit.jpg)
+![ScaleEdit pairs](../../assets/failure_analysis_20261005/pairs_scaleedit.jpg)
+![CrispEdit pairs](../../assets/failure_analysis_20261005/pairs_crispedit.jpg)
 
 图中第三列是 source/target 差分：ScaleEdit 和 CrispEdit 的大部分样本差分遍布全图（重渲染、尺寸不一致导致错位）。region cache 构建时使用了 `alignment: certified-full-frame`，即假设所有样本全图对齐，这个假设对 CrispEdit/ScaleEdit 不成立。
 
@@ -431,7 +431,7 @@ judge 复评检查：对 40 个 final 输出重新打分，单项完全一致率
 
 （类型列为 strict）
 
-![latent blending](assets/failure_analysis_20261005/latent_blend_mirage.jpg)
+![latent blending](../../assets/failure_analysis_20261005/latent_blend_mirage.jpg)
 
 - remove/replace/mixed 在两个免训练修正后 strict 全部超过 stock：replace 0.36 → 0.72、mixed 0.20 → 0.40、remove 0.78 → 0.82；P 接近满分。图中 0610 第三个人的衬衫不再被改白，0626 只有第一只鸽子变蓝，0623 不再重画场景。
 - 融合解决的是 P，不解决 E：鸭眼、鸟喙、裤子材质等细粒度属性仍然经常没有改出来。

@@ -58,7 +58,7 @@ step-12000 的 add 也没有解决问题；它的 edit 分数略高于 final，�
 
 图中每行依次是输入、baseline、final；红色区域是 benchmark 的输入标注可视化。
 
-![add 案例对比：输入、baseline、final](../assets/add_failure_analysis_20261005/add_case_montage.jpg)
+![add 案例对比：输入、baseline、final](../../../assets/add_failure_analysis_20261005/add_case_montage.jpg)
 
 ### 1.3 小区域尤其差
 
@@ -89,7 +89,7 @@ Add NEW_CONTENT in this region <mask>.
 
 评测脚本中的 noref 编译代码见：
 
-[`code/samtok_stage2_benchmark_noref_aligned.py:171`](/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/code/samtok_stage2_benchmark_noref_aligned.py#L171)，训练数据统计见 [`docs/04_SAMTokEdit_Qwen21_训练数据盘点.md:127`](archive/v1/04_SAMTokEdit_Qwen21_训练数据盘点.md)。
+[`code/samtok_stage2_benchmark_noref_aligned.py:171`](/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/code/samtok_stage2_benchmark_noref_aligned.py#L171)，训练数据统计见 [`docs/04_SAMTokEdit_Qwen21_训练数据盘点.md:127`](../v1/04_SAMTokEdit_Qwen21_训练数据盘点.md)。
 
 ### 2.2 add 没有获得与难度匹配的采样权重
 
@@ -105,8 +105,8 @@ Add NEW_CONTENT in this region <mask>.
 
 区域 loss 的实现位于：
 
-- 区域权重：[`regions/supervision.py:53-75`](../src/samtok_edit21/regions/supervision.py#L53)
-- FM 与区域 loss 合并：[`training/objectives.py:306-323`](../src/samtok_edit21/training/objectives.py#L306)
+- 区域权重：[`regions/supervision.py:53-75`](../../../src/samtok_edit21/regions/supervision.py#L53)
+- FM 与区域 loss 合并：[`training/objectives.py:306-323`](../../../src/samtok_edit21/training/objectives.py#L306)
 
 它做的是预测误差的区域/背景重加权，不是“是否新增了一个实例”的目标函数。对 add 而言，这有两个后果：
 
@@ -127,7 +127,7 @@ region_weight       0.5
 
 ## 4. attention loss：全局指标变好，但 attention 可能被“投机”满足
 
-attention 实现见 [`training/attention.py:102-117`](../src/samtok_edit21/training/attention.py#L102)。当前配置为：
+attention 实现见 [`training/attention.py:102-117`](../../../src/samtok_edit21/training/attention.py#L102)。当前配置为：
 
 ```text
 attention_weight       = 0.1
@@ -191,9 +191,9 @@ layer 23 = 2.2e-09
 
 下图展示训练 loss 曲线、逐层比例以及绝对 attention mass 的数量级。
 
-![训练 loss 曲线与逐层 attention 比例](../assets/add_failure_analysis_20261005/stage2_attention_diagnostics.png)
+![训练 loss 曲线与逐层 attention 比例](../../../assets/add_failure_analysis_20261005/stage2_attention_diagnostics.png)
 
-![逐层绝对 attention mass](../assets/add_failure_analysis_20261005/stage2_attention_absolute_mass.png)
+![逐层绝对 attention mass](../../../assets/add_failure_analysis_20261005/stage2_attention_absolute_mass.png)
 
 ### 4.3 attention 对总 loss 的实际贡献很小
 

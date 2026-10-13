@@ -1,6 +1,6 @@
 # SAMTokEdit（Qwen-Image-2.1）v2 实验记录
 
-本文按时间记录 v2 分支的实验：做了什么、命令、结果、产物路径、遇到的问题和处理。方法与代码见[代码实现说明](01_SAMTokEdit_Qwen21_代码实现说明.md)，计划与进度见 [v1 分析与 v2 计划](07_SAMTokEdit_Qwen21_v1分析与v2计划.md)第 8 节。v1 的全部实验记录已存档在 [archive/v1](archive/v1/02_SAMTokEdit_Qwen21_实验记录.md)。
+本文按时间记录 v2 分支的实验：做了什么、命令、结果、产物路径、遇到的问题和处理。方法与代码见[代码实现说明](01_SAMTokEdit_Qwen21_代码实现说明.md)，计划与进度见 [v1 分析与 v2 计划](07_SAMTokEdit_Qwen21_v1分析与v2计划.md)第 8 节。v1 的全部实验记录已存档在 [archive/v1](../v1/02_SAMTokEdit_Qwen21_实验记录.md)。
 
 2026-10-06 起，v2 产物写在 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/`（下文记为 `$V2`）。此前的产物在 intern 旧根目录 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`（下文记为 `$V2_OLD`）：数据、评测和 smoke 数据已逐字节复制到 `$V2`，本地 smoke 运行和日志只在 `$V2_OLD`（第 8 节）。
 
@@ -302,11 +302,11 @@ Merlin 作业 `65f2a3f151b31f87` 重新启动（trial `303529456`），run ID `q
 | 本地完整编排（八卡、256²）：默认阶段 `stage1,stage2`，`--binding bias_clause` | `SUCCESS.json`；审计通过；推理 smoke 8 种路径完成；峰值显存 33.5 GiB/卡 |
 | 本地完整编排（八卡、1M 像素，10/7 补做）：`region_embed`、`region_rope`、`bias_span` 各 3 个 update，只跑 Stage 2、即时计算 | 三个都 `SUCCESS.json`、审计通过；每个 update 75% 的区域行全部绑定（bound_units 0.75）；region_embed 的 2 个张量写入 adapter；推理 smoke 8 种路径完成；峰值显存 38.6 GiB/卡。至此四种绑定都在即时计算下跑通 |
 
-脚本：[`check_online_conditioning.py`](../scripts/diagnostics/check_online_conditioning.py)、[`compare_stage2_runs.py`](../scripts/diagnostics/compare_stage2_runs.py)；产物在本地 `/tmp/sa/online/`（check1、check1b、check2、check3）。
+脚本：[`check_online_conditioning.py`](../../../scripts/diagnostics/check_online_conditioning.py)、[`compare_stage2_runs.py`](../../../scripts/diagnostics/compare_stage2_runs.py)；产物在本地 `/tmp/sa/online/`（check1、check1b、check2、check3）。
 
 ## 10. E1：Stage 1 pass-1 定位评测（2026-10-07）
 
-**做法。** [`evaluation/localize.py`](../src/samtok_edit21/evaluation/localize.py) 只跑 pass 1：
+**做法。** [`evaluation/localize.py`](../../../src/samtok_edit21/evaluation/localize.py) 只跑 pass 1：
 - 输入与 text setting 的 pass 1 相同（`localize`，同一画布）。
 - 区域用训练和推理共用的解码器 `unit_masks` 解码（mask span 走 codec，框按外向取整栅格化），与 case 的标注区域比较。
 - 用全部 715 个 case（dev 183），同一套代码评三个 TE：v2 Stage 1（运行 A）、v1 Stage 1（`qwen21_full_4n_formal_003/stage1/adapter`）、raw SAMTok（不加 adapter）。
@@ -431,7 +431,7 @@ E1 通过。产物在 `$V2/eval/protocol_v2_001/e1_pass1/`：每个 TE 一个子
 
 ## 13. 区域敏感性诊断：DiT 用了多少区域信息（2026-10-07）
 
-**做法。** [`region_sensitivity.py`](../scripts/diagnostics/region_sensitivity.py)：
+**做法。** [`region_sensitivity.py`](../../../scripts/diagnostics/region_sensitivity.py)：
 - 从 stage2.jsonl 取训练日程从未采样过的单区域行，四个主类型各 48 行，共 192 行（ref 147 行、noref 45 行）。
 - 每行把区域 token 换成另一行的同类区域（与真区域的 IoU < 0.2），其余输入不变。
 - 在 timestep 250/500/750、按行固定的噪声下，计算真区域内的速度预测误差，看换 token 后误差升高多少。

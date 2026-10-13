@@ -1,21 +1,27 @@
-# SAMTokEdit Qwen-Image-2.1 文档（v2 分支）
+# SAMTokEdit Qwen-Image-2.1 文档（v3 分支）
 
-v2 主要文档：
+当前文档共五份，按用途分工，互相不重复：
 
-1. [代码实现说明](01_SAMTokEdit_Qwen21_代码实现说明.md)：v2 方法与代码（区域协议、数据转换、Stage 1 定位、raw-TE 缓存、Stage 2 结构性绑定、推理融合、评测协议、测试与路径）。
-2. [实验记录](02_SAMTokEdit_Qwen21_实验记录.md)：v2 的数据转换、单元测试、GPU 等价性检查、八卡 smoke、评测管线 smoke、问题与处理。
-3. [四机实验运行指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)：ARNOLD 完整入口、运行 A（Stage 1 + 缓存 + B0）、Stage 2 消融臂、四机 smoke、产物与失败处理。
-4. [训练数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)：v2 训练数据 `train_v2_box_001` 的来源、转换规则、统计、行格式与复现命令。
+| 文档 | 回答的问题 |
+|---|---|
+| [01 代码实现说明](01_SAMTokEdit_Qwen21_代码实现说明.md) | 当前方法是怎样在官方 DiffSynth 和 SAMTok 代码之上实现的；每一块在哪个文件、关键代码是什么；命令、格式、默认超参数、测试 |
+| [02 v2 分析](02_SAMTokEdit_Qwen21_v2分析.md) | v2 为什么不如原版；v2 的 DiT 到底有没有用 mask token。每个结论对应的证据、图和产物路径 |
+| [03 v3 优化计划与进度](03_SAMTokEdit_Qwen21_v3优化计划与进度.md) | 相关工作与创新点；v3 的优化方案和实验计划；每个实验做了什么、结果如何；发现的问题与修正；下一步 |
+| [04 数据工作](04_SAMTokEdit_Qwen21_数据工作.md) | 训练数据和评测 benchmark 的盘点；v2 数据的问题；清洗和协议适配的方案与进度；哪些路径是当前真正在用的，哪些是中间产物 |
+| [05 四机实验运行指南](05_SAMTokEdit_Qwen21_四机实验运行指南.md) | 在 ARNOLD 上怎样启动一次 v3 实验（以 E-A2b 为样例）；怎样改参数；产物、进度查看和失败处理 |
 
-v1 的分析与 v2 计划：
+维护约定：
+- 代码有改动时同步改文档 01。它的代码块由 `python scripts/docs/sync_code_blocks.py` 从源码生成，`pytest tests/test_docs.py` 检查两者是否一致。
+- 新的实验结果记在文档 03 第 5 节，并更新它第 0 节的状态表；数据侧的进展记在文档 04。
+- 文档里的图放在 `assets/` 下对应的子目录（`v2_review/`、`v3_progress/` 等）。
 
-5. [独立案例研究](05_SAMTokEdit_Qwen21_独立案例研究.md)：v1 逐例视觉观察和方法相对 baseline 的表现。
-6. [add 失败原因分析](06_SAMTokEdit_Qwen21_add失败原因分析.md)：v1 add 评测、数据与 loss 诊断、attention 证据和改进建议。
-7. [v1 分析与 v2 计划](07_SAMTokEdit_Qwen21_v1分析与v2计划.md)：v1 的逐 case 复核、探针、反事实与 knockout、逐级消融、数据审计；第 8 节为 v2 实施计划、决策与进度。
-8. [v2 阶段分析](08_SAMTokEdit_Qwen21_v2阶段分析.md)：v2 全部 dev 结果的综合分析（与原版及原版 + 融合的对比、judge 偏差与像素校验、组件有效性、训练数据对齐、下一步改进）。
-9. [训练数据诊断与改进](09_SAMTokEdit_Qwen21_训练数据诊断与改进.md)：第 0 节是总览，包括当前可用的数据、做了什么、结果和全部路径。正文依次是：98,574 个编辑对的逐对审计与诊断，清洗规则与全量清洗，MLLM 编辑核验的方案选择与全量结果，去掉 text 和 action，以及区域协议修订（锚点与编辑区域）的调研与下一步。
+路径：
+- 代码：`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3`，分支 `qwen-image-2.1-v3`（从 `qwen-image-2.1-v2` 分出，v2 分支保持不变）。
+- v3 实验产物：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/`。
+- v2 实验产物：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/`。
 
-存档：v1 版本的 01–04 在 [`archive/v1/`](archive/v1/)（代码链接指向 v1 commit a93fe56）；更早的原始记录在 [`archive/`](archive/)。
-
-- 代码：`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2`，分支 `qwen-image-2.1-v2`（基于 `qwen-image-2.1-dev` 的 a93fe56；`qwen-image-2.1-dev` 保持不变）。
-- 实验产物：`/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`（`data/`、`smoke/`、`runs/`、`eval/`）。
+存档：
+- [`archive/v2/`](archive/v2/)：v2 阶段的九份文档，原样保留（内部链接已改成能从新位置打开）。
+  - 01 代码实现说明（v2）、02 实验记录、03 四机实验运行指南（v2 的 Stage 1 / Stage 2 / MLLM 编辑核验入口，仍然有效）、04 训练数据盘点；
+  - 05 独立案例研究、06 add 失败原因分析、07 v1 分析与 v2 计划、08 v2 阶段分析、09 训练数据诊断与改进（逐对审计的完整记录，文档 04 是它的提要）。
+- [`archive/v1/`](archive/v1/) 和 [`archive/`](archive/) 下的其余文件：v1 及更早的记录。

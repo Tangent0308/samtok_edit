@@ -1,290 +1,679 @@
-# SAMTokEdit（Qwen-Image-2.1）v2 代码实现说明
+# SAMTokEdit（Qwen-Image-2.1）代码实现说明（v3）
 
-本文说明分支 `qwen-image-2.1-v2` 的方法实现：数据协议、训练数据转换、两阶段训练、推理和评测分别在哪里实现、做了什么、为什么这样做。v1 的分析和 v2 的决策依据见 [v1 分析与 v2 计划](07_SAMTokEdit_Qwen21_v1分析与v2计划.md)；实验过程与数值见 [实验记录](02_SAMTokEdit_Qwen21_实验记录.md)；训练数据见 [训练数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)；四机启动见 [四机实验运行指南](03_SAMTokEdit_Qwen21_四机实验运行指南.md)。v1 的实现说明已存档在 [archive/v1](archive/v1/01_SAMTokEdit_Qwen21_代码实现说明.md)。
+- **分支**：`qwen-image-2.1-v3`，本地 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3`。
+- **本文档讲什么**：当前方法是怎样在官方 DiffSynth 和官方 SAMTok 代码之上实现的，每一块在哪个文件、关键代码是什么。方法为什么这样设计、实验结果如何，见 [03_SAMTokEdit_Qwen21_v3优化计划与进度.md](03_SAMTokEdit_Qwen21_v3优化计划与进度.md)。
+- **维护约定**：代码有改动时同步改本文档。文中的代码块不是手抄的，而是由 `scripts/docs/sync_code_blocks.py` 从源码生成；改完代码后运行一次该脚本即可更新，测试 `tests/test_docs.py` 会检查两者是否一致。文末有更新记录。
+- **v2 的实现说明**：v2 独有的部分（Stage 1 定位、结构性绑定、缓存、v2 训练引擎）仍在代码里，本文第 7 节只列出它们的位置，细节见 [archive/v2/01_SAMTokEdit_Qwen21_代码实现说明.md](archive/v2/01_SAMTokEdit_Qwen21_代码实现说明.md)。
 
-- 本地 checkout：`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v2`，分支 `qwen-image-2.1-v2`（远程 `https://github.com/Tangent0308/samtok_edit.git`）。
-- 基础：v1 分支 `qwen-image-2.1-dev` 的 commit `a93fe56`；v1 分支本身未改动。
-- 文中代码链接指向本分支源码；行号以撰写时的 commit 为准。
+---
 
 ## 1. 总览
 
-### 1.1 v2 相对 v1 改了什么
+### 1.1 方法与数据流
 
-| 部分 | v1 | v2 | 计划编号 |
+编辑区域由 SAMTok 编码成一个 **mask token 片段**（4 个 token），直接写在指令里：
+
+```
+Remove the second person on the left <|mt_start|><|mt_0097|><|mt_0411|><|mt_end|>
+```
+
+推理时模型的输入只有源图和这句指令：
+
+```
+源图 ──┐
+       ├─► 文本编码器（Qwen3-VL-8B-SAMTok，冻结）──► 逐 token 特征 ──(+ 码本向量注入)──┐
+指令 ──┘                                                                              ├─► DiT（原版权重 + LoRA）──► 编辑结果
+源图 ──► VAE ──► 源图 latent ─────────────────────────────────────────────────────────┘
+```
+
+没有把 token 解码成像素 mask，没有注意力区域偏置，没有 latent 融合。mask 只在**训练时**出现，用来构造目标图和损失权重。
+
+v3 相对原版模型新增的可训练部分只有两样：
+1. **DiT 上的 LoRA**（rank 32，83.9M 参数）。
+2. **码本向量注入**（3 个线性层，3.16M 参数）：把 SAMTok 码本里这两个码对应的向量，经零初始化投影后加到文本编码器在这 4 个 token 位置的输出上。
+
+训练时另有 12 个只用于损失标定的参数（注意力路由损失的逐层仿射），推理不用。
+
+### 1.2 基于哪些官方代码，各改了什么
+
+| 依赖 | 版本 | 放在哪里 | 本项目做了什么 |
 |---|---|---|---|
-| add 的区域表示 | SAMTok mask span ⟨M⟩（codec 往返 IoU 仅 0.38） | Qwen3-VL 框 ⟨B⟩ = `<\|box_start\|>[x1, y1, x2, y2]<\|box_end\|>`，0–1000 相对源图坐标 | 8.2 |
-| 其他类型 | ⟨M⟩ | ⟨M⟩（不变） | 8.2 |
-| Derived 的 add | add + 宿主实例 mask | 归入 attribute，保留 ⟨M⟩ | D3 |
-| composite | 训练 | 本轮剔除 | 8.1 |
-| Stage 1 | TE LoRA：NTP×0.05 + 经冻结 DiT 的 FM（含区域加权 C） | 定位 LoRA：纯 NTP（edit_ntp + 1/8 rec_ntp 框 grounding 回放），不加载 DiT/VAE | 方案 A，D6 |
-| pass-2 编码 / 缓存 | Stage-1 TE | raw SAMTok TE（推理时关闭 adapter，与 raw 逐位一致） | 方案 A |
-| Stage 2 loss | FM + 区域加权 C + attention loss A | 官方 FM；可选结构性绑定 `--binding` | 8.5 |
-| 推理 | 无区域保持 | 可选 latent 融合（区域外按当前 σ 注入加噪源图） | 8.6 |
-| 评测 | 旧编译器丢属性名词；含 mixed | 与训练同一 noref 转换器；只评原子编辑；MIRAGE 拆分；dev/test 划分 | 8.7，D2/D4/D5/D8/D9 |
+| DiffSynth-Studio | 2.1.8，commit `7686e54d` | `third_party/diffsynth/`（整库收进仓库，以独立包 `diffsynth` 安装） | 四处**默认关闭**的扩展，不传相应参数时与上游逐位一致：`diffusion/runner.py`（调度采样、梯度审计）、`core/attention/`（可微的 FlexAttention）、`models/qwen_image_21_dit.py`（`region_binding` 挂载点）、`pipelines/qwen_image_21.py`（返回裁剪后的 token id）。清单见 `third_party/README.md` 和 `upstream_versions.json` |
+| SAMTok | 官方源码 | `third_party/samtok/`（包名 `samtok`） | 源码和码本都没有改。只用它的 `samtok.models`（VQ-SAM2 编解码器），由 `src/samtok_edit21/models/codec.py` 包一层 |
+| Qwen-Image-2.1 | `b3179ad3` | 权重在 `/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1` | DiT、VAE、processor 原样使用 |
+| Qwen3-VL-8B-SAMTok | `b78aef11` | 权重在 `/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok` | 替换原版文本编码器；目录里同时带着 codec 的两个权重文件 |
 
-所有新增功能关闭时（`--binding none`、不融合、v1 adapter + pass-2 用 Stage-1 TE），v2 代码对 v1 权重的推理输出与 v1 代码**逐位一致**（见[实验记录第 4 节](02_SAMTokEdit_Qwen21_实验记录.md#4-gpu-等价性检查)）。
+运行环境由 `scripts/training/setup_env.sh` 固定：Python 3.11、torch 2.8.0（cu128）、transformers 5.12.1、accelerate 1.14.0、peft 0.20.0。
 
-### 1.2 数据流
-
-~~~text
-纯文本：源图 + 指令
-  pass 1（TE + 定位 LoRA）→ [{"mask_2d": ⟨M⟩ | "bbox_2d": [..], "label": ...}]
-  → 绑定原指令短语，插入 ⟨M⟩/⟨B⟩（ref prompt）
-  pass 2（同一 TE，关闭 LoRA = raw SAMTok TE）→ 官方编辑模板编码
-  → Qwen-Image-2.1 DiT（+ 可选区域绑定、latent 融合）→ RGBA 编辑图
-
-交互：源图 + 用户区域（mask/框/点）
-  → ⟨M⟩（codec 编码，或 SAM2 候选再编码）/ ⟨B⟩（框）插入 noref prompt → 从 pass 2 开始
-
-训练：
-  Stage 1：TE LoRA，NTP（edit_ntp: 编辑指令 → 区域 JSON；rec_ntp: grounding 请求 → bbox_2d）
-  缓存：raw TE 编码 edit / edit_umt 行 + 源/目标 VAE latent + 区域绑定 payload
-  Stage 2：DiT LoRA，官方 FM（+ 可选 --binding）
-~~~
-
-Stage 2 不再依赖 Stage 1：条件只用 raw TE，所以 Stage 1 与 Stage 2 可以独立运行。Stage 2 默认在训练时即时计算条件、不建缓存（第 5.1 节），所有消融臂用同一份 metadata；缓存路径仍然保留。
+**v3 的方法代码全部在 `src/samtok_edit21/` 里，没有再改 `third_party/` 下的任何文件。** 注意力路由损失需要读 DiT 内部的量，用的是 PyTorch 的 forward pre-hook，不改 DiffSynth 源码。
 
 ### 1.3 目录与模块
 
-| 路径 | 内容 |
-|---|---|
-| [data/protocol.py](../src/samtok_edit21/data/protocol.py) | 区域 token（⟨M⟩/⟨B⟩）、定位 JSON、短语绑定、ref/noref 渲染、metadata 行校验 |
-| [data/io.py](../src/samtok_edit21/data/io.py) | metadata 读写、两阶段配比与调度 |
-| [data/provenance.py](../src/samtok_edit21/data/provenance.py) | 缓存格式 v3、条件身份、pass-2 TE 选择 |
-| [preparation/v2_data.py](../src/samtok_edit21/preparation/v2_data.py) | v1 → v2 训练数据转换 |
-| [preparation/semantic.py](../src/samtok_edit21/preparation/semantic.py) | 9B noref 转换器（训练数据与评测共用） |
-| [models/pipeline.py](../src/samtok_edit21/models/pipeline.py) | 模型装配、pass 1/2、adapter 开关、推理 `edit()` |
-| [models/binding.py](../src/samtok_edit21/models/binding.py) | 区域绑定：token 布局、区域图、四种模式、融合区域 |
-| [models/codec.py](../src/samtok_edit21/models/codec.py) | 发布的 VQ-SAM2 codec 包装（未改动） |
-| [training/objectives.py](../src/samtok_edit21/training/objectives.py) | adapter、缓存条件构造、FM loss |
-| [training/engine.py](../src/samtok_edit21/training/engine.py) | DiffSynth runner 适配：Stage 1、缓存、Stage 2 |
-| [distributed/training.py](../src/samtok_edit21/distributed/training.py) | ARNOLD 四机编排（按阶段独立运行） |
-| [evaluation/](../src/samtok_edit21/evaluation/) | 评测协议 v2：case、编译、推理、judge manifest、汇总 |
-| [third_party/diffsynth](../third_party/diffsynth/diffsynth/models/qwen_image_21_dit.py) | vendored DiffSynth 2.1.8：新增绑定钩子与 latent 融合 |
-| [scripts/diagnostics/](../scripts/diagnostics/) | 审计、八卡推理 smoke、GPU 等价性检查、smoke 数据 |
-| [tests/](../tests/) | CPU 单元测试（45 项） |
-
-v1 的区域监督 C/A 相关模块（`regions/supervision.py`、`regions/build.py`、`training/attention.py`、`training/calibration.py`、`data/preflight.py`）和 18 行 debug harness 已删除；`regions/selection.py`（SAM2 候选）保留供评测使用。
-
-## 2. 数据协议
-
-**需求。** add 放置新物体，SAMTok mask 无法表示"物体应该出现在哪里"；其他类型编辑已有区域，mask 合适。每个类型只能有一种区域表示，训练与推理一致。
-
-**实现。** [`REGION_KIND`](../src/samtok_edit21/data/protocol.py#L71) 是唯一规则：add → `box`，其余原子类型 → `mask`。
-
-- ⟨M⟩：`<|mt_start|><|mt_XXXX|><|mt_YYYY|><|mt_end|>`，code0 ∈ [0,255]，code1 ∈ [256,511]（不变）。
-- ⟨B⟩：[`box_of`](../src/samtok_edit21/data/protocol.py#L94) 生成 `<|box_start|>[x1, y1, x2, y2]<|box_end|>`。坐标为 0–1000 相对整数，x1<x2、y1<y2；拒绝前导零、浮点和越界，不做修复。`<|box_start|>`/`<|box_end|>` 是词表已有 token（151648/151649），不新增 token。
-- 像素框转相对框用 [`relative_box`](../src/samtok_edit21/data/protocol.py#L143)：向外取整（左上 floor、右下 ceil），保证非空。
-- 定位 JSON（[`to_cot`](../src/samtok_edit21/data/protocol.py#L183) / [`parse_cot`](../src/samtok_edit21/data/protocol.py#L202)）：mask 项 `{"mask_2d": "⟨M⟩", "label": ...}`，框项 `{"bbox_2d": [x1, y1, x2, y2], "label": ...}`（Qwen3-VL 原生格式）。解析后两种区域都用 token 字符串表示，渲染统一。
-- 一个单元（短语）内不能混用 mask 和框；多实例用多个同类区域直接相连。
-
-**metadata 行类型**（[`validate_row`](../src/samtok_edit21/data/protocol.py#L528)，v2 拒绝 composite）：
-
-| sample_type | 字段 | 用途 | 例子 |
-|---|---|---|---|
-| `edit_ntp` | edit_image, prompt, mt_cot | Stage 1：编辑指令 → 区域 JSON | `Add a little bluebird perched on the rightmost birdbath` → `[{"bbox_2d": [663, 294, 908, 460], "label": "little bluebird perched on the rightmost birdbath"}]` |
-| `rec_ntp` | edit_image, prompt, mt_cot | Stage 1：框 grounding 回放 | `Locate the plain stump that is farthest away in this image and output its bbox coordinates in JSON format.` → `[{"bbox_2d": [201, 406, 448, 657], "label": "plain stump that is farthest away"}]` |
-| `edit_umt` ref | edit_image, image, prompt, instr_variant | Stage 2：带位置描述的区域编辑 | `Add a little bluebird perched on the rightmost birdbath <|box_start|>[663, 294, 908, 460]<|box_end|>` |
-| `edit_umt` noref | 同上 | Stage 2：只靠区域 token 定位 | `Add a little bluebird perched in this region <|box_start|>[663, 294, 908, 460]<|box_end|>.` |
-| `edit` | edit_image, image, prompt | Stage 2：普通编辑 | 原指令 |
-
-- `edit_ntp` 的区域类型必须符合 `REGION_KIND`（add 必须输出 bbox_2d，其他必须输出 mask_2d）。
-- `rec_ntp` 的 prompt 必须是 [`REC_TEMPLATE`](../src/samtok_edit21/data/protocol.py#L38) 加 label，答案只有 bbox_2d。它用 Qwen3-VL 原生 grounding 请求，与编辑定位请求 `LOC_REQUEST` 不同，所以"编辑类型 → 输出格式"的规则不会被打乱。
-- `edit_umt` 的 [`validate_inline`](../src/samtok_edit21/data/protocol.py#L475)：区域组数、组内类型、空格和 noref 短语（add 必须是 `in this region`）。
-
-## 3. 训练数据转换（v1 → v2）
-
-**需求。** 沿用 v1 数据，只做计划规定的改动：剔除 composite、add 改框、Derived add 改类型、加回放数据，其余行必须与 v1 逐字节一致。
-
-**实现。** [`preparation/v2_data.py`](../src/samtok_edit21/preparation/v2_data.py) 读取 v1 corpus 的构建目录（`input-XX.jsonl` 原始记录 + `encoded/worker-XX` 已编码行），按源索引顺序归并：
-
-1. 每一条 v1 行先与 v1 `provenance.jsonl` 的 row hash 核对，保证读到的就是 v1 训练用的行。
-2. composite 记录整条丢弃。
-3. add（RefEdit/CrispEdit/ScaleEdit）：[`add_boxes`](../src/samtok_edit21/preparation/v2_data.py#L100) 取生成该 span 的**同一组实例 mask**（`masks_for_record` + codec 的多实例排序 `_ordered_masks`），计算外接框，原位替换 NTP 答案和两条 UMT prompt 中的 span。
-4. Derived add：所有行 `edit_type` 改为 attribute，保留 ⟨M⟩。
-5. rec_ntp：从 RefEdit/Derived 的单实例非 add 单元（remove/replace/attribute/action）中，按 `sha256("rec:"+id)` 选取 `round(edit_ntp 行数 / 7)` 条，框取该单元 mask 的外接框（[`rec_row`](../src/samtok_edit21/preparation/v2_data.py#L144)）。
-6. 输出 `stage1.jsonl`（只有 NTP）、`stage2.jsonl`（edit + edit_umt）、逐行 `provenance.jsonl`（含 v1 row hash 和转换类型）、`conversion_report.json`、`metadata_report.json`。
-
-读 mask 的 I/O 是瓶颈，所以先单遍分类、再用线程池只读需要的 mask；全量转换约 3.5 分钟。数据统计与校验结果见[数据盘点](04_SAMTokEdit_Qwen21_训练数据盘点.md)。
-
-## 4. Stage 1：定位 LoRA（纯 NTP）
-
-**需求。** pass 1 只负责输出准确的区域 JSON；不再通过 FM 改变 pass-2 的编码（v1 中这一项导致普通 prompt 漂移）。
-
-**实现。**
-
-- 只加载 TE（[`SamtokTrainingModule`](../src/samtok_edit21/training/engine.py#L136)，Stage 1 组件仅 `text_encoder`），LoRA 注入所有 LM 层的 q/k/v/o 与 gate/up/down（`TE_TARGETS`），视觉塔冻结。
-- [`localization_inputs`](../src/samtok_edit21/models/pipeline.py#L182)：SAMTok chat template，user = 图像 + 文本，assistant 预填空 think。`edit_ntp` 的文本是"指令 + `LOC_REQUEST`"；`rec_ntp`（`request=None`）的文本就是 grounding 请求本身。
-- [`ntp_loss`](../src/samtok_edit21/models/pipeline.py#L233)：只监督答案 JSON 加 `<|im_end|>` 的交叉熵，`--ntp-weight` 默认 1.0。
-- 调度（[`RATIOS`](../src/samtok_edit21/data/io.py#L20)）：每个 optimizer update 中 edit_ntp : rec_ntp = 7 : 1，每个 rank 都精确满足。类型采样由 `--type-weights` 决定（[`type_probabilities`](../src/samtok_edit21/data/io.py)）：Stage 1 默认 `natural`（按各类型行数，每行被采次数相同；Stage 1 约 3 遍，避免少数类型被反复采样），rec_ntp 始终按自然分布。
-
-## 5. 条件缓存：raw TE + 绑定 payload
-
-**需求。** Stage 2 的条件必须与推理 pass 2 完全相同的编码器（raw TE）；所有绑定臂共用一份缓存，因此每个区域行都要预存绑定信息。
-
-**实现。**
-
-- 缓存阶段加载 TE + VAE + codec，**不加载任何 TE adapter**。[`prepare_fm`](../src/samtok_edit21/training/objectives.py#L233) 对每行编码目标/源图 latent 和 prompt；含区域的行另外生成绑定 payload（[`binding_payload`](../src/samtok_edit21/models/binding.py#L194)）。
-  - [`token_layout`](../src/samtok_edit21/models/binding.py#L141)：在官方 PromptEmbedder 实际输入的 token 序列（去掉 system 后）中定位每个区域单元（连续的 ⟨M⟩/⟨B⟩ token）和指令范围（`<|vision_end|>` 之后到序列末尾）。逐单元 decode 回字符串，与 prompt 中的区域组逐字比对，避免绑错 token。
-  - [`unit_masks`](../src/samtok_edit21/models/binding.py#L119)：⟨M⟩ 用 codec 在源图上解码（raw logits > 0.5），⟨B⟩ 在源图像素上向外取整栅格化；同一单元取并集。
-  - [`coverage_grid`](../src/samtok_edit21/models/binding.py#L73)：双线性抗锯齿缩放到画布、16×16 平均池化（每个 latent token 的覆盖率），再 3×3 最大池化膨胀 1 个 token。目标网格和源网格各存一份（float32）。
-  - 区域解码为空的单元标记为 `empty`，训练和推理都不绑定它。
-- 缓存格式 v3（[`provenance.py`](../src/samtok_edit21/data/provenance.py)）：identity 记录 `te_adapter: null`、模型文件 hash、codec 与 SAM2 hash、绑定几何版本、metadata hash 和逐行 hash 摘要。[`validate_cache_inputs`](../src/samtok_edit21/data/provenance.py#L164) 要求区域行必须带 payload、普通行不能带，payload 结构由 [`validate_payload`](../src/samtok_edit21/models/binding.py#L214) 检查。
-- Stage 2 启动时，各 rank 按 `行号 % world_size` 并行校验全部行（[`verify_cache_shard`](../src/samtok_edit21/data/provenance.py#L201)），因此任意卡数都能使用同一份缓存。
-- 存储：1M 像素下每行约 9.6 MB（主要是图像 token 的 TE hidden states，与 v1 相同），全量约 2.8 TB。
-
-### 5.1 不建缓存：Stage 2 即时计算条件（默认）
-
-**需求。** 全量缓存 2.8 TB，user 和 intern 的 NAS 配额都放不下（运行 A 在缓存写到 52% 时因配额失败，见实验记录第 9 节）。而算条件本身很快（集群上约 0.6 s/行/卡），所以 Stage 2 改为每个样本训练前现算条件，不落盘。要求训练结果与"先建缓存再训练"完全相同。
-
-**实现。**
-
-- [`OnlineConditioning`](../src/samtok_edit21/training/engine.py)：在训练进程里另外加载与缓存阶段完全相同的 raw TE + VAE（`load_pipeline(components=("text_encoder", "vae"))`）和 codec，对每个样本调用同一个 `prepare_fm`。保证一致的三点：
-  - `prepare_fm` 整个在 `torch.no_grad()` 下运行（缓存阶段的 runner 也是这样调用的）；
-  - 结果先拷到 CPU，再用 data loader 的 `send_to_device` 送回 GPU，与缓存 payload"存盘、读回、送 GPU"走同一条路；
-  - 整个计算在 `torch.random.fork_rng` 内，不消耗训练的随机数，所以 timestep 和噪声的抽取与读缓存训练逐个相同。
-- 它不是 `nn.Module`：冻结的 TE/VAE 不进 DDP、优化器、checkpoint 和 rank 权重 hash，被训练的模块与读缓存时完全相同。
-- [`run_train`](../src/samtok_edit21/training/engine.py)：Stage 2 给 `--metadata` 时，读同一个 `stage2.jsonl`，在 rank 0 计算与缓存相同的条件身份（`conditioning_identity`，含模型 hash），用同样的调度。adapter.json 记录的 `conditioning_identity` 与建缓存时逐字相同，推理端的 pass-2 选择不受影响；`run.json` 的 plan 里多记一项 `conditioning: on_the_fly`。
-- 每个样本训练时多一次 TE/VAE 前向，每卡显存多约 17 GB（TE 8B，bf16）。
-
-**等价性验证**（实验记录第 9 节）：
-- 64 个集群生产缓存 payload（`5443a7b`，1M 像素）和 212 行本地 smoke 缓存：即时计算结果逐张量逐位一致；row hash 和条件身份一致；训练随机数状态不变。
-- 读缓存与即时计算各训练 3 个 update（同种子，`none` 与 `bias_clause` 两种绑定）：逐 update 的 metrics、optimizer 日志、各 rank 梯度日志、各 rank 权重 hash、checkpoint 和最终 adapter 逐位一致。
-
-## 6. Stage 2：DiT LoRA + 结构性绑定
-
-**需求。** 去掉 v1 的区域加权 C 和 attention loss A（第 4 节分析：A 退化、监督的不是模型实际使用的通路）；改用训推一致的结构性绑定，按优先级逐一消融。
-
-**loss。** [`flow_loss`](../src/samtok_edit21/training/objectives.py#L261) 与官方 `FlowMatchSFTLoss` 相同：均匀抽 timestep、`x_t = (1−σ)x0 + σε`、目标 `ε − x0`、MSE × 官方时间权重。日志额外记录 `region_row`（该行是否含区域）和 `bound_units`（实际绑定的单元数）。
-
-**绑定模式**（[`BindingConfig`](../src/samtok_edit21/models/binding.py#L57)，训练 `--binding`，参数写入 adapter.json，推理自动沿用）：
-
-| 模式 | 作用 | 参数 |
+| 路径 | 作用 | 来源 |
 |---|---|---|
-| `none` | B0：不绑定 | — |
-| `bias_span` | 目标 query q 对该单元区域 token 的 attention logit 加 `β·log(ε + (1−ε)·m(q))` | β（默认 1.0）、ε（默认 0.05）；ε=0 时下限为 log(1e-6) |
-| `bias_clause` | 同上，作用于源图之后的整条指令（含尾部模板 token）；单单元 prompt 时等价于区域化 prompt | 同上；多单元 prompt 报错 |
-| `region_embed` | 目标 token q 加 `m(q)·W(h)`，h 为该单元最后一个区域 token 经 `txt_in` 后的特征，W 为秩 64 的低秩映射，上投影零初始化 | rank（默认 64） |
-| `region_rope` | 该单元区域 token 的 RoPE (h, w) 索引改为区域质心在目标网格上的居中坐标，帧索引不变 | — |
+| `src/samtok_edit21/models/pipeline.py` | 加载模型、替换文本编码器、指令编码、推理入口 `edit()` | v2，v3 加了注入的接入点 |
+| `src/samtok_edit21/models/codec.py` | SAMTok 编解码器的封装：mask ↔ token | v2，v3 加了 `load_codec` |
+| `src/samtok_edit21/models/code_injector.py` | **码本向量注入**，以及 v3 权重的开关 | **v3 新增** |
+| `src/samtok_edit21/data/highlight.py` | **指认任务**：指令模板、目标图、从输出读回区域 | **v3 新增** |
+| `src/samtok_edit21/training/routing.py` | **注意力路由损失** | **v3 新增** |
+| `src/samtok_edit21/training/grounding.py` | **样本准备与损失**，v3 权重的加载 | **v3 新增** |
+| `src/samtok_edit21/training/grounding_engine.py` | **训练循环**（多机多卡） | **v3 新增** |
+| `src/samtok_edit21/preparation/grounding_data.py` | **训练数据与评测集的构建**，含内容级泄漏防护 | **v3 新增** |
+| `src/samtok_edit21/evaluation/grounding.py` | **只给 token 的评测**（三种探针） | **v3 新增** |
+| `src/samtok_edit21/evaluation/grounding_report.py` | **配对分析报告** | **v3 新增** |
+| `src/samtok_edit21/evaluation/gallery.py` | **训练后模型与原版的逐例对比页** | **v3 新增** |
+| `src/samtok_edit21/cli.py` | 命令行入口，v3 的命令以 `ground-` 开头 | v2，v3 加了分发 |
+| `scripts/grounding/` | v3 的四机入口脚本 | **v3 新增** |
+| `scripts/docs/sync_code_blocks.py` | 文档代码块与源码同步 | **v3 新增** |
+| `tests/test_grounding.py`、`tests/test_docs.py` | v3 的单元测试 | **v3 新增** |
+| `src/samtok_edit21/training/objectives.py` | LoRA 的注入、保存、加载；v2 的 FM 损失 | v2 |
+| `src/samtok_edit21/data/protocol.py`、`data/io.py` | 区域 token 的文本协议；读写与图像尺寸 | v2 |
+| 其余（`models/binding.py`、`training/engine.py`、`distributed/`、`evaluation/` 的其他文件、`preparation/` 的其他文件、`regions/`） | v2 的两阶段方法、评测协议 v2、数据准备与清洗 | v2，见第 7 节 |
 
-m(q) 是目标 token q 的区域覆盖率（第 5 节，0–1）。
+---
 
-**DiT 钩子（vendored DiffSynth）。**
+## 2. 基础层：模型加载、token 协议与官方 pipeline
 
-- [`QwenImage21DiT.forward(region_binding=...)`](../third_party/diffsynth/diffsynth/models/qwen_image_21_dit.py#L539)：调用 `region_binding.bind(...)` 把 TE 位置映射到联合序列位置（图像 pad 展开为 4 个 latent token），然后 `apply_embedding`、`apply_rope`。
-- 无缓存/首步（FlexAttention）：[`score_mod`](../src/samtok_edit21/models/binding.py#L361) 按"key 属于哪个单元 × query 位置"查表加偏置，经各 block 传给 attention processor（[行 247](../third_party/diffsynth/diffsynth/models/qwen_image_21_dit.py#L247)）。
-- KV cache 解码步：同样的偏置写成加性 SDPA mask（[`decode_mask`](../src/samtok_edit21/models/binding.py#L378)），一次 forward 只构造一次。
-- 只有目标 query 被偏置，region_rope 只改前缀 token 的 RoPE（首步写入 cache），所以首步缓存的前缀 K/V 在后续步骤中仍然有效。
-- `region_embed` 对不含区域的行也用零向量调用一次映射，保证 DDP 中每个参数都参与反向（`find_unused_parameters=False`）；新增参数与 LoRA 一起保存在 adapter 中，`load_adapter` 根据 adapter.json 的 `binding` 字段重建模块。
-- v1 的 attention probe/LSE 统计接口已从 vendored DiT 中移除；不传 `region_binding` 时计算路径与原实现相同。
+这一层 v2 就有，v3 原样沿用。读懂它才能看懂第 3 节在哪里动了手。
 
-**调度。** ref : noref : plain = 1 : 2 : 1，每个 rank 每个 update 精确满足。UMT 池默认 `main4`：其他类型（action、text 等）按自然占比抽取、不被放大，其余份额由 add/remove/replace/attribute 按 v1 的 14:14:14:20 分配；plain 按自然分布（background/global 单类上限 15%）。`v1`（原类型权重）仍可选。
+### 2.1 模型加载与文本编码器替换
 
-## 7. 推理
+文件：`src/samtok_edit21/models/pipeline.py`，函数 `load_pipeline`。
 
-**pass 1 / pass 2 的 TE。** [`te_adapters(pipe, enabled)`](../src/samtok_edit21/models/pipeline.py#L160) 临时开关 TE 的全部 PEFT 层，并恢复 requires_grad。`localize` 生成时启用定位 LoRA；[`edit`](../src/samtok_edit21/models/pipeline.py#L359) 的 pass 2 由 `pass2_te` 决定，CLI 根据 Stage 2 adapter 的 conditioning identity 自动选择（[`pass2_text_encoder`](../src/samtok_edit21/data/provenance.py#L93)）：
+- DiT 和 VAE 用官方的 `QwenImage21Pipeline.from_pretrained(...)` 从 Qwen-Image-2.1 目录加载，bf16。
+- 文本编码器换成 `Qwen3VLForConditionalGeneration.from_pretrained(<SAMTok 目录>)`，外面包一层 `SamtokTextEncoder`；加载时检查隐藏维度是 4096、视觉 patch 是 16，保证和 Qwen-Image-2.1 的 DiT 接得上。
+- processor 用 Qwen-Image-2.1 自带的，但分词器和对话模板换成 SAMTok 的（`build_processor`），并检查 `<|mt_start|>`、512 个 `<|mt_XXXX|>`、`<|mt_end|>` 这 514 个 token 都是词表里互不相同的单个 token。
+- 加载完整个 pipeline 冻结（`requires_grad_(False)`、`eval()`）。
 
-- v2 adapter（缓存 v3、`te_adapter: null`）→ `raw`：关闭 adapter。关闭后的编码与 raw SAMTok TE 逐位一致（已验证）。
-- v1 adapter（缓存 v2）→ `adapter`：必须加载完全相同的 Stage 1 adapter，pass 2 保持启用（复现 v1）。
+DiT 吃的是文本编码器**最后一层归一化之前**的特征。`SamtokTextEncoder.encode` 用一个临时的 forward pre-hook 在最终 norm 的入口取这份特征，取完就摘掉钩子：
 
-**推理期绑定（D8）。** [`region_binding_for`](../src/samtok_edit21/models/pipeline.py#L263) 对 pass 2 实际编码的 prompt 重新计算 token 布局和区域图（⟨M⟩ 由 codec 解码，⟨B⟩ 栅格化），计算方式与缓存相同。CLI `--binding` 默认沿用 adapter 的配方，也可在推理时覆盖模式/β/ε（用于 E4：在 B0 上只加推理期偏置）；`region_embed` 只能用于带该模块训练的 adapter。
+<!-- code: src/samtok_edit21/models/pipeline.py::SamtokTextEncoder.encode -->
+```python
+def encode(self, **inputs):
+    captured = []
+    norm = self.model.model.language_model.norm
+    handle = norm.register_forward_pre_hook(
+        lambda module, args: captured.append(args[0])
+    )
+    try:
+        self.model.model.rope_deltas = None
+        output = self.model.model(**inputs, use_cache=False, return_dict=True)
+    finally:
+        handle.remove()
+    if len(captured) != 1:
+        raise RuntimeError(
+            f"Expected one final norm invocation, got {len(captured)}"
+        )
+    return captured[0], output.last_hidden_state
+```
+<!-- /code -->
 
-**latent 融合。** [`blend_outside_region`](../third_party/diffsynth/diffsynth/pipelines/qwen_image_21.py#L138)：每个去噪步之后，`latents = m·latents + (1−m)·((1−σ_{t+1})·x_src + σ_{t+1}·ε)`。x_src 是源图按目标画布精确缩放后的 VAE latent，ε 是初始噪声，最后一步 σ=0（区域外等于源图）。[`blend_inputs`](../src/samtok_edit21/models/pipeline.py#L284) 构造融合区域：源图像素 mask → latent 网格（格内任一像素属于区域即为区域）→ 膨胀 2 个 token → 高斯羽化（σ=1 token）。add 的框先外扩 10%（每边按框宽/高的 10%）。全 1 mask 时融合是 no-op（已验证逐位一致）。
+### 2.2 区域 token 的写法
 
-**CLI 例子**（安装后 `samtok-edit`，或 `python -m samtok_edit21`）：
+文件：`src/samtok_edit21/data/protocol.py`。
 
-```bash
-# 纯文本两遍：pass 1 定位 LoRA，pass 2 raw TE，融合区域取 pass-1 解码区域
-python -m samtok_edit21 infer --mode online --image src.png --prompt "Remove the leftmost bird." \
-  --te-adapter <run>/stage1/adapter --dit-adapter <run>/stage2/adapter \
-  --blend-prompt --output out.png
-# 交互 add：框 token 直接写入 prompt，融合区域为外扩 10% 的框
-python -m samtok_edit21 infer --mode inline --image src.png \
-  --prompt "Add a red ball in this region <|box_start|>[300, 300, 700, 700]<|box_end|>." \
-  --dit-adapter <run>/stage2/adapter --blend-box 300 300 700 700 --output out.png
-# 在 B0 上只加推理期偏置（E4）
-python -m samtok_edit21 infer --mode inline ... --binding bias_clause --binding-beta 2 --binding-eps 0.05
+- **mask token 片段**：`<|mt_start|><|mt_XXXX|><|mt_YYYY|><|mt_end|>`。SAMTok 的码本是两级残差量化，每级 256 个码；第一级的码写成 `0000`–`0255`，第二级的码加 256 后写成 `0256`–`0511`（`span_of`、`valid_span_codes`）。
+- **框 token**：`<|box_start|>[x1, y1, x2, y2]<|box_end|>`，坐标是 0–1000 的相对值。v2 的 add 用它；v3 的指认训练不用框（见 3.6）。
+- `spans_in(text)`、`boxes_in(text)`、`regions_in(text)` 从一段文字里取出这些片段；`SPAN_RE` 是对应的正则。
+
+### 2.3 SAMTok 编解码器
+
+文件：`src/samtok_edit21/models/codec.py`，类 `SamtokCodec`，辅助函数 `load_codec(samtok_dir, device)`。
+
+- `codec.encode(image, [mask, ...])` → 每个 mask 一个 token 片段。交互式场景下用户给的 mask 就是这样变成 token 的。
+- `codec.decode_strict(image, text)` → 按顺序把文字里的每个片段解码回像素 mask。**"token 指的区域"在整个项目里的定义就是它**：训练目标、损失权重、评测打分都以这个解码结果为准，而不是原始标注，所以监督和 token 天然一致。
+- codec 始终是 fp32。它的码本（`codec.vq.quantizer.codebooks[0/1].weight`）就是 3.2 节注入用的向量来源。
+
+### 2.4 指令编码与 DiT 的联合序列
+
+文件：`src/samtok_edit21/models/pipeline.py`。
+
+- `resize_sources(pipe, images, height, width)`：用官方 `QwenImage21Unit_EditImageEmbedder` 把源图缩放到与目标画布匹配的尺寸。
+- `encode_edit(pipe, prompt, images, return_ids=False)`：先检查每个 mask 片段确实被切成 4 个 token，再调用官方 `QwenImage21Unit_PromptEmbedder().process(...)`。返回 `prompt_embeds`（逐 token 特征）、`edit_image_pad_mask`（哪些位置是源图占位 token），`return_ids=True` 时还返回 `prompt_input_ids`（裁掉系统提示后的 token id，本项目加的可选输出，3.4 节用它定位片段）。
+
+DiT 是单流结构（32 个 block、宽度 4096、32 个头），把所有东西排成一条**联合序列**（`third_party/diffsynth/diffsynth/models/qwen_image_21_dit.py` 的 `QwenImage21DiT.forward`）：
+
+```
+[ 文本前缀 | 源图 latent | 指令文字（其中 4 个位置是 mask 片段） | 目标图 latent ]
 ```
 
-## 8. 评测协议 v2（代码）
+- 文本编码器输出里的每个源图占位 token 展开成 4 个 DiT token，这些位置填入源图 latent；目标图的 token 接在最后。
+- 时间步调制只作用在目标 token 上，前面的条件部分恒为 t=0；注意力是按块因果的：前缀看不到目标，目标能看到全部前缀。所以推理时前缀只算一次、缓存 K/V（`use_kv_cache=True`），之后每一步只算目标 token。
+- **含义**：mask 片段的 4 个 token 在序列里的位置是固定的，目标 token 通过注意力读它。3.3 节的路由损失监督的就是这条"目标 token → 片段"的注意力。
 
-模块在 [`src/samtok_edit21/evaluation/`](../src/samtok_edit21/evaluation/)，按计划第 8.7 节实现：
+### 2.5 推理入口 `edit()`
 
-| 步骤 | 模块 | 说明 |
+`edit(pipe, instruction, images, mode=..., binding=..., blend_region=..., **kwargs)` 是所有推理的统一入口。v3 的"只给 token"推理就是其中的 `mode="inline"`（指令里已经带着 token），不传绑定、不传融合区域：
+
+<!-- code: src/samtok_edit21/evaluation/grounding.py::generate -->
+```python
+@torch.no_grad()
+def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0):
+    """Token-only inference: inline region tokens, raw text encoder, no binding, no blending, CFG 1."""
+    from samtok_edit21.models.binding import BindingConfig
+    from samtok_edit21.models.pipeline import edit
+
+    height, width = canvas(source_rgb)
+    image, _ = edit(pipe, prompt, [source_rgb.convert("RGBA")], mode="inline", height=height, width=width,
+                    num_inference_steps=steps, cfg_scale=1.0, seed=seed, use_kv_cache=True, pass2_te="raw",
+                    binding=BindingConfig("none"), codec=codec, blend_region=None)
+    return export(image, source_rgb.size), (height, width)
+```
+<!-- /code -->
+
+`mode="online"` / `"oracle"` 是 v2 的两遍推理（先让文本编码器生成区域，再编辑），`binding` 和 `blend_region` 是 v2 的结构性绑定与 latent 融合，v3 都不用。
+
+### 2.6 LoRA 的注入、保存与加载
+
+文件：`src/samtok_edit21/training/objectives.py`。
+
+- `add_adapter(model, "stage2", rank, dropout)`：用 PEFT 给 DiT 注入 LoRA，目标模块用 DiffSynth 的自动检测结果（`to_q`、`to_k`、`to_v`、`to_out.0`、`proj`、`out`、`gate_layer`），alpha 等于 rank；可训练参数转成 fp32。
+- `save_adapter(model, directory, config)` 写 `adapter.safetensors` 和 `adapter.json`（含 rank、目标模块和配方指纹）；`load_adapter(model, directory, trainable=False)` 按 `adapter.json` 重新注入并核对每个张量的名字和形状。
+
+---
+
+## 3. v3 方法的实现
+
+### 3.1 指认任务：让输出本身就是区域
+
+文件：`src/samtok_edit21/data/highlight.py`。
+
+训练行有三种，都用同一种方式指代区域——带物体名时写 `<短语> <M>`，不带时写 `this region <M>`（`region_reference`）：
+
+| 类型（`kind`） | 指令 | 目标图 |
 |---|---|---|
-| case | [cases.py](../src/samtok_edit21/evaluation/cases.py#L63) | 517 个单区域 case + MIRAGE 99 个双区域 case 拆成 198 个原子编辑（[`mirage_atomic`](../src/samtok_edit21/evaluation/cases.py#L35)：带位置指令按 ", and " 拆分，region-only 指令按 "For {region_k}," 拆分，第 k 个子句对应第 k 个区域），共 715 个；按源图 hash 固定划分 30% dev / 70% test（[`split_of`](../src/samtok_edit21/evaluation/cases.py#L23)） |
-| 编译（D2） | [compile.py](../src/samtok_edit21/evaluation/compile.py#L41) | `sources` 把 case 写成转换器输入（add/remove 类型钉住，replace 由规则判定）；在 vLLM 0.17.1 环境运行**训练数据用的同一个** `preparation.semantic`（Qwen3.5-9B + 规则回退）；`compile` 生成带 `{region}` 的 noref 模板，失败时退回确定性的 `interactive_prompt`；所有模板用训练 noref 语法校验；`review.md` 每类抽样供人工检查。2026-10-06 起转换器对 add 多一条规则（删除整个放置、保留新物体的姿态/外观，见实验记录 6.3），其他类型的 prompt 不变；训练数据仍是旧 prompt 的结果 |
-| 推理 | [run.py](../src/samtok_edit21/evaluation/run.py#L139) | torchrun 每卡一个进程，可断点续跑；设置与区域处理见下表；`--stock` 用 benchmark 仓库的 two-image 定位协议跑 stock |
-| judge | [manifest.py](../src/samtok_edit21/evaluation/manifest.py) | 生成原 pair_v2 judge 的 manifest（字段与 input digest 与 judge 自带 prepare 一致）；未改动的 517 个 case 直接复用已有 stock 输出 |
-| 汇总 | [score.py](../src/samtok_edit21/evaluation/score.py) | 方法 × setting × 编译类型 × dev/test 的 E/P/Q/strict；`--compare A B` 给出按 case 配对的 bootstrap 区间 |
-| pass-1 定位（E1） | [localize.py](../src/samtok_edit21/evaluation/localize.py) | 只跑 pass 1：与 text setting 相同的 `localize`（同一画布），区域用训练/推理同一个解码器 `unit_masks`；按 dev/test × 编译类型报告解析率、格式率（add 应为框、其余为 mask）、mask IoU、框 IoU 与 Acc@0.5；解析失败记 IoU 0。不给 `--te-adapter` 即 raw SAMTok |
+| `hl` 指认 | "Apply a red semi-transparent mask to X and keep everything else unchanged." 等 4 个模板 × 8 种颜色 | 源图在 token 所指区域上叠 50% 透明度的颜色 |
+| `proc` 程序化局部编辑 | "Convert X to grayscale …" 等 5 种（灰度、提亮、压暗、模糊、反色） | 只在区域内做这个精确变换 |
+| `real` 真实编辑 | 数据集原本的指令 | 数据集的目标图 |
 
-| setting | mask 类（remove/replace/attribute/...） | box 类（add） |
-|---|---|---|
-| `mask` | codec(用户 mask)；融合区域 = 用户 mask | 用户 mask 的外接框；融合 = 框外扩 10% |
-| `box` | SAM2(框) 最高分候选 → codec；融合 = 用户框 | 用户框；融合 = 框外扩 10% |
-| `point` | SAM2(点) 最高分候选 → codec；融合 = 该候选 | 以点为中心、训练 add 框中位尺寸（宽 214、高 267，0–1000）的默认框（D5） |
-| `text` | pass 1 → ref prompt；融合 = 解码区域 | pass 1 → ref prompt；融合 = 框外扩 10% |
-| `text_plain` | — | 原指令，不加区域（D9 对照） |
+指认和程序化编辑的目标图在训练时现场生成，画在**模型实际看到的那张缩放后的源图**上，所以区域外与源图逐像素相同：
 
-每个 setting 可同时跑融合开/关（输出目录 `<setting>` 与 `<setting>+blend`）。交互 setting 默认用 noref 模板；`--prompt-variant ref` 改用 ref 模板（原指令 + 区域 token，输出目录加 `+ref`），用于检查 noref 改写丢失信息的影响（见实验记录 6.1）。画布 = 源图宽高比、面积约 1024²、边长 32 的倍数；40 步、CFG 1、seed 0、KV cache；输出为白底合成的 RGB，缩放回源图尺寸（与 stock 协议相同）。
+<!-- code: src/samtok_edit21/data/highlight.py::render_target -->
+```python
+def render_target(prepared_rgb, mask, row):
+    """Target image of a highlight or procedural row, built on the resized source the model is conditioned on."""
+    rgb = np.asarray(prepared_rgb.convert("RGB"), np.float32)
+    weight = resize_mask(mask, prepared_rgb.size)
+    if row["kind"] == "hl":
+        out = overlay(rgb, weight, PALETTE[row["color"]])
+    elif row["kind"] == "proc":
+        out = procedural_edit(rgb, weight, row["op"])
+    else:
+        raise ValueError(f"Row kind {row['kind']!r} has a real target image")
+    return Image.fromarray(out.clip(0, 255).astype(np.uint8))
+```
+<!-- /code -->
 
-## 9. 四机编排、审计与诊断脚本
+同一个定义反过来就是评测用的**读回**：让模型生成一张指认图，再从输出里把涂色区域恢复出来，和 token 的区域算 IoU。对精确叠色，`输出 − 源图` 在 `颜色 − 源图` 方向上的投影就是透明度：
 
-- [`distributed/training.py`](../src/samtok_edit21/distributed/training.py#L217)：`--phases` 取 `stage1,cache,stage2` 的子集，默认 `stage1,stage2`。Stage 2 的输入有三种来源：本次 `cache` 阶段建的缓存；`--cache` 指向的已完成缓存；两者都没有时即时计算（5.1 节，默认）。`--binding*` 传给 Stage 2。每个阶段之后跨节点 barrier；最后由 rank 0 运行审计。非 `--full-training` 时额外跑八卡推理 smoke。
-- [`scripts/diagnostics/audit_run.py`](../scripts/diagnostics/audit_run.py)：对已运行的阶段检查 update 数、每个 rank 的精确配比、梯度日志、各 rank 权重 hash 一致、adapter 有限且 LoRA B 已更新、adapter 的绑定配方与参数一致、W&B 完成、缓存行（小缓存全部，全量随机 1000 行）。即时计算的运行没有缓存，改为检查 adapter 记录的条件身份：须是 raw TE 的 v2 协议，且 metadata hash 和分辨率与本次运行一致。
-- [`scripts/diagnostics/check_online_conditioning.py`](../scripts/diagnostics/check_online_conditioning.py)：对缓存 payload 逐个用即时计算重算，逐张量比较，并检查 row hash、条件身份和训练随机数状态。
-- [`scripts/diagnostics/compare_stage2_runs.py`](../scripts/diagnostics/compare_stage2_runs.py)：比较读缓存与即时计算的两次 Stage 2 训练，要求 metrics、日志、权重 hash、checkpoint、adapter 全部逐位一致。
-- [`scripts/diagnostics/smoke_inference8.py`](../scripts/diagnostics/smoke_inference8.py)：八卡分别跑 direct、inline（mask/框 × ref/noref）、online、oracle（mask/框）、推理期绑定覆盖、无 KV cache 循环，含融合。
-- [`scripts/diagnostics/check_v2_equivalence.py`](../scripts/diagnostics/check_v2_equivalence.py)：单卡逐位/no-op 检查（第 10 节）。
-- [`scripts/diagnostics/make_smoke_data.py`](../scripts/diagnostics/make_smoke_data.py)：每个（数据集, 类型）组取前 N 个源（按 id hash）的全部行，加同比例 rec_ntp。
+<!-- code: src/samtok_edit21/data/highlight.py::extract_mask -->
+```python
+def extract_mask(source_rgb, output_rgb, color, threshold=0.5):
+    """Recover the highlighted region from a generated image.
 
-## 10. 测试与等价性
+    For an exact overlay ``out = src + alpha (color - src)``; projecting ``out - src`` on ``color - src`` gives alpha,
+    scaled here so a 50% overlay reads 1.  Pixels already close to the colour carry no signal and read 0.
+    """
+    source = np.asarray(source_rgb, np.float32) / 255.0
+    output = np.asarray(output_rgb.resize(source_rgb.size, Image.BILINEAR), np.float32) / 255.0
+    direction = np.asarray(color, np.float32)[None, None] / 255.0 - source
+    energy = (direction * direction).sum(-1)
+    alpha = ((output - source) * direction).sum(-1) / np.maximum(energy, 1e-3) / OVERLAY_ALPHA
+    alpha[energy < 0.02] = 0.0
+    smooth = Image.fromarray((alpha.clip(0, 1) * 255).astype(np.uint8)).filter(ImageFilter.BoxBlur(2))
+    return np.asarray(smooth, np.float32) / 255.0 > threshold
+```
+<!-- /code -->
 
-CPU 单元测试（`pytest tests/`，48 项）覆盖：框格式与外向取整、bbox JSON 往返与类型规则、rec_ntp 校验、v1→v2 转换（合成 v1 corpus：多实例排序、Derived 改类型、回放选择、provenance 漂移检测）、两阶段调度配比、缓存 v3 身份与 payload 校验、真实 tokenizer 下的 token 布局、`score_mod` 与解码 mask 一致、region_embed 零初始化与 DDP 参数参与、region_rope 质心、评测 case 拆分/编译回退/默认框/manifest、Stage 2 输入来源参数（`--cache` 与 `--metadata` 二选一）、即时计算运行的审计条件。
+评测时颜色取离图像平均色最远的一种（`pick_color`），避免源图本身就是那个颜色。
 
-GPU 检查（结果见[实验记录第 4 节](02_SAMTokEdit_Qwen21_实验记录.md#4-gpu-等价性检查)）：
+### 3.2 码本向量注入
 
-1. pass 2 关闭 adapter 与 raw TE 逐位一致；
-2. region_embed 零初始化与无绑定逐位一致；
-3. 全 1 融合 mask 与不融合逐位一致；
-4. 偏置在 KV cache 与无缓存路径下的差异与无偏置时相同量级；
-5. β=0 与无绑定相同（kernel 级差异）；
-6. v1 adapter 经 v2 代码（绑定、融合关闭）与 v1 代码输出逐位一致。
+文件：`src/samtok_edit21/models/code_injector.py`。
 
-## 11. 超参数与默认值
+**动机。** 文本编码器只把 `<|mt_0097|>` 当作词表里的一个 id；而这个码在 SAMTok 码本里对应一个 256 维向量，两级向量之和就是量化后的 mask 表示。与其让 DiT 去硬记 512 个 id 的含义，不如把这些向量直接送到它面前。
 
-| 项 | Stage 1 | Stage 2 |
-|---|---|---|
-| 训练对象 | TE LoRA（LM 全部 attention + MLP 线性层） | DiT LoRA（DiffSynth 自动检测的 224 个模块）+ 可选 region_embed |
-| rank / alpha / dropout | 64 / 64 / 0.05 | 32 / 32 / 0 |
-| LR / 调度 / warmup | 4e-5 / cosine / 4% | 1e-4 / constant / 2.5% |
-| weight decay / 梯度裁剪 | 0.05 / 1.0 | 0.01 / 1.0 |
-| 每卡 accumulation / 32 卡全局 batch | 8 / 256 | 4 / 128 |
-| 配比 | edit_ntp : rec_ntp = 7 : 1 | ref : noref : plain = 1 : 2 : 1 |
-| 类型采样（`--type-weights`） | `natural`（四个主类型约 95%，每行约见 3 次） | `main4`（四个主类型约 95%，按 14:14:14:20） |
-| optimizer updates | 1,300（约 3 个 epoch） | 1,000（缩减日程 R，选型用） |
-| loss | NTP（权重 1.0） | 官方 FM（+ 绑定无额外 loss） |
-| max_pixels | 1,048,576 | 同缓存 |
+**做法。** 对一个片段的 4 个位置：
 
-推理：面积约 1024²、40 步、CFG 1、seed 0、KV cache、pass-1 `max_new_tokens=256`、融合膨胀 2 token/羽化 σ=1、add 框外扩 10%。
-
-## 12. 重要路径
-
-| 类别 | 路径 |
+| 位置 | 加到文本编码器输出上的量 |
 |---|---|
-| v2 实验根目录 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/`（2026-10-06 起；代码中为 `data/io.py` 的 `EXPERIMENT_ROOT`） |
-| 旧根目录（存档，intern 配额已满） | `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_v2/`：本地 smoke 运行和日志（`smoke/runs/`、`smoke/logs/`）只在这里；数据、评测和 smoke 数据已逐字节复制到新根目录 |
-| v2 训练数据 | `qwen21_v2/data/train_v2_box_001/` |
-| smoke 数据 | `qwen21_v2/smoke/data_smoke_001/`（运行和日志见旧根目录） |
-| 正式运行 | `qwen21_v2/runs/<SAMTOK_RUN_ID>/` |
-| 评测 | `qwen21_v2/eval/protocol_v2_001/`（cases、转换器输出、编译模板、smoke） |
-| v1 数据（转换输入） | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/data/train_full_9b_rules_003/` |
-| v1 adapter（参照） | Stage 1 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003/stage1/adapter`；Stage 2 `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_full4_20260928/runs/qwen21_full_4n_formal_003_resume_006/stage2/adapter` |
-| Qwen-Image-2.1 | `/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1` |
-| SAMTok TE / codec | `/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok`（含 `sam2.1_hiera_large.pt`、`mask_tokenizer_256x2.pth`） |
-| noref 转换器 / judge 模型 | `.../pretrained_models/Qwen3.5-9B`、`.../pretrained_models/Qwen3.8-27B` |
-| benchmark | 数据 `/mnt/bn/strategy-mllm-train/user/tanyue/datasets/samtok_edit_benchmark`；仓库 `/opt/tiger/tanyue/samtok_edit_benchmark`（MIRAGE 原子编辑选择、stock 协议） |
-| 已有 stock 输出 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments/SAMTokEdit/qwen21_656/inference/qwen21/` |
-| judge 代码 | `/mnt/bn/strategy-mllm-train/intern/users/tanyue/experiments/SAMTokEdit/qwen21_stage2_benchmark_noref_aligned_20261004/judge/code` |
-| 本地环境（节点 /tmp，非持久） | 训练/推理 `/tmp/samtok21-fixes-dUnbt5/venv`（torch 2.8、transformers 5.12.1、peft 0.20）；转换器 `/tmp/samtok21-layout-annotation-env`（vLLM 0.17.1）；judge `/tmp/samtok21-benchmark-judge-env`（vLLM 0.28）。集群上由 `scripts/training/setup_env.sh`、`scripts/annotation/setup_env.sh` 重建 |
+| `<|mt_start|>` | 无 |
+| 第一级码 | `W0 · e0 + b0` |
+| 第二级码 | `W1 · e1 + b1` |
+| `<|mt_end|>` | `W2 · (e0 + e1) + b2`，即量化后的 mask 表示 |
+
+三个线性层（256 → 4096）**全部零初始化**，所以没训练时模型与原版完全相同。
+
+<!-- code: src/samtok_edit21/models/code_injector.py::CodeInjector.forward -->
+```python
+def forward(self, input_ids):
+    """``[B, L]`` token ids -> ``[B, L, hidden]`` correction (zero away from mask spans)."""
+    index = self.code_index(input_ids)
+    length = index.shape[1]
+    level0 = (index >= 0) & (index < CODES_PER_LEVEL)
+    level1 = index >= CODES_PER_LEVEL
+    book = self.codebook
+
+    def rows(position, level):
+        low = level * CODES_PER_LEVEL
+        return book[position.clamp(low, low + CODES_PER_LEVEL - 1)]
+
+    delta = self.proj[0](rows(index, 0)) * level0[..., None] + self.proj[1](rows(index, 1)) * level1[..., None]
+    pad = index.new_full((index.shape[0], 1), -1)
+    previous = torch.cat([pad, index], 1)[:, :length]
+    before = torch.cat([pad, pad, index], 1)[:, :length]
+    closes = ((input_ids.to(index.device) == self.end_token_id)
+              & (before >= 0) & (before < CODES_PER_LEVEL) & (previous >= CODES_PER_LEVEL))
+    return delta + self.proj[2](rows(before, 0) + rows(previous, 1)) * closes[..., None]
+```
+<!-- /code -->
+
+- `CodeInjector.from_codec(codec, tokenizer)` 从 codec 里取出两级码本拼成 `[512, 256]`，并建立 token id → 码本行号的查找表。
+- `<|mt_end|>` 只有紧跟在"第一级码 + 第二级码"之后才加量，孤立的结束符不处理。
+
+**接入点。** `attach_code_injector(pipe, injector)` 把模块挂到 `pipe.text_encoder.code_injector`，`SamtokTextEncoder.forward` 在输出上加它。文本编码器主干放在 `no_grad` 里，梯度只流进注入模块：
+
+<!-- code: src/samtok_edit21/models/pipeline.py::SamtokTextEncoder.forward -->
+```python
+def forward(self, **inputs):
+    injector = self.code_injector
+    if injector is None or not injector.enabled:
+        return self.encode(**inputs)[0]
+    # The side channel is trained against a frozen backbone: no graph through the text encoder,
+    # gradients reach only the injector's projections.
+    with torch.no_grad():
+        hidden = self.encode(**inputs)[0]
+    return hidden + injector(inputs["input_ids"]).to(hidden.dtype)
+```
+<!-- /code -->
+
+因为注入加在文本编码器的输出上，官方的指令编码流程（裁剪系统提示、拼接、缓存前缀）完全不用改，训练和推理走同一段代码。
+
+**保存与加载。** `save_code_injector` 写 `code_injector.safetensors` 和 `code_injector.json`；后者记录码本和 token 映射的指纹（`CodeInjector.fingerprint`），加载时指纹不符就拒绝，防止把权重用到另一个码本上。`load_code_injector` 也能读 E-A2 当时的保存格式 `ea2_extra.pt`。
+
+**开关。** `trained_weights(pipe, enabled)` 是一个上下文管理器，同时开关 DiT 的 LoRA 和注入模块。`enabled=False` 时就是"同一个文本编码器下的原版模型"，所有配对比较的基线都这样得到，不需要加载两份模型。
+
+### 3.3 注意力路由损失
+
+文件：`src/samtok_edit21/training/routing.py`。
+
+**要监督什么。** FM 损失只奖励"图对不对"，从不告诉模型某个片段对应哪里。路由损失直接监督这条联系：在选定的几层上，**区域内的目标 token 对片段的注意力，应当高于区域外的目标 token**；落在同图其他实例上的目标 token 是最重要的反例。
+
+**读的是模型自己的量。** 被监督的是 block 内部真正送进注意力的 query 和 key 的内积（softmax 之前的 logit）。`span_attention_logits` 按 block 的 `forward` 原样重算到 query/key 为止——norm1、时间步调制、带 LoRA 的 `to_q` / `to_k`、RMS norm、RoPE——然后对头和片段的 4 个 token 取平均：
+
+<!-- code: src/samtok_edit21/training/routing.py::span_attention_logits -->
+```python
+def span_attention_logits(block, hidden_states, modulation, target_token_mask, rotary_emb, n_target, span_positions):
+    """Mean attention logit from each target token to the span tokens, as this block computes it.
+
+    Mirrors ``QwenImage21TransformerBlock.forward`` up to the query/key that enter attention (norm1, timestep
+    modulation, to_q/to_k with their LoRA, RMS norm, RoPE).  The target tokens are the last ``n_target`` positions of
+    the joint sequence.  Returns ``[n_target]`` for batch element 0: the scaled dot product averaged over heads and
+    over the span's tokens.
+    """
+    attention = block.attn
+    scale_shift = modulation.chunk(2, dim=-1)[0]
+    states, _ = block._modulate(block.img_norm1(hidden_states), scale_shift, target_token_mask)
+    start = states.shape[1] - n_target
+    query = attention.norm_q(attention.to_q(states[:, start:]).unflatten(-1, (attention.heads, -1))).to(states.dtype)
+    query = apply_rotary_emb_qwen(query, rotary_emb[start:], use_real=False)
+    key = attention.norm_k(attention.to_k(states[:, span_positions]).unflatten(-1, (attention.heads, -1))).to(states.dtype)
+    key = apply_rotary_emb_qwen(key, rotary_emb[span_positions], use_real=False)
+    logits = torch.einsum("bnhd,bshd->bn", query.float(), key.float())[0]
+    return logits / (math.sqrt(query.shape[-1]) * query.shape[2] * key.shape[1])
+```
+<!-- /code -->
+
+测试 `test_routing_logit_is_the_blocks_own_attention_logit` 截获 block 内部真实的 query/key 做了核对，两者一致。
+
+**标签和权重**（`route_targets`）。正例是区域覆盖率超过 0.5 的目标 token，其余是反例；正、反两类各占一半总权重，这样小区域不会被淹没；落在其他实例上的反例权重乘 3：
+
+<!-- code: src/samtok_edit21/training/routing.py::route_targets -->
+```python
+def route_targets(region, distractors, distractor_weight=DISTRACTOR_WEIGHT):
+    """Labels and balanced weights on the target latent grid.
+
+    ``region`` / ``distractors`` are coverage maps in [0, 1].  Positives (inside the region) and negatives (outside)
+    each carry half of the total weight, so a small region is not drowned out; negatives lying on other instances of
+    the image count ``distractor_weight`` times.
+    """
+    labels = (region > 0.5).float().flatten()
+    negative = 1 - labels
+    weight_neg = negative + (distractor_weight - 1) * (distractors > 0.5).float().flatten() * negative
+    weights = torch.zeros_like(labels)
+    if labels.sum() > 0:
+        weights = weights + labels * (0.5 / labels.sum())
+    if weight_neg.sum() > 0:
+        weights = weights + weight_neg * (0.5 / weight_neg.sum())
+    return labels, weights
+```
+<!-- /code -->
+
+**损失。** 每层的 logit 先减去均值、乘 4，再过一个可学习的逐层仿射（初值 scale=1、bias=0），最后做带权的二元交叉熵。仿射的作用是让损失去适应每层 logit 的量级，而不是逼注意力本身取某个绝对值。各层的损失取平均。
+
+**怎样挂到 DiT 上。** `AttentionRouter` 给选定的 block 注册 forward pre-hook，不改 DiffSynth 源码，也不改变前向结果（钩子只读不写）：
+
+<!-- code: src/samtok_edit21/training/routing.py::AttentionRouter._hook -->
+```python
+def _hook(self, index):
+    def before_block(block, args, kwargs):
+        context = self._context
+        if context is None:
+            return
+        logits = span_attention_logits(
+            block, kwargs["hidden_states"], kwargs["modulation"], kwargs["target_token_mask"],
+            kwargs["rotary_emb"], context["n_target"], context["span"])
+        scale, bias = self.affine[index]
+        calibrated = scale * (logits - logits.mean()) * self.logit_scale + bias
+        term = F.binary_cross_entropy_with_logits(
+            calibrated, context["labels"], weight=context["weights"], reduction="sum")
+        if self._recording:
+            self._terms.append(term)
+
+    return before_block
+```
+<!-- /code -->
+
+**与梯度检查点配合的注意事项。** DiT 训练时每个 block 都走非重入的梯度检查点（`torch.utils.checkpoint`，`use_reentrant=False`），`backward` 时会把 block 再执行一遍。钩子在第二遍里必须做完全相同的运算，否则 autograd 会发现保存的张量数量对不上而报错。所以：
+- `arm(...)` 之后钩子一直生效，直到 `backward` 完成后调用 `disarm()`；
+- 只有在 `with router.recording():` 里（也就是第一遍前向）才把损失项记下来，第二遍只重算不记录。
+
+用法固定为：`arm` → `with recording(): 前向` → `collect()` 取损失 → `backward` → `disarm()`。测试 `test_router_gradients_survive_checkpointing_and_disarm_is_inert` 验证了开、关检查点时梯度一致，以及钩子不改变前向结果。
+
+默认层是第 6、10、14、18、22、26 层（`DEFAULT_LAYERS`）。
+
+### 3.4 样本准备与损失
+
+文件：`src/samtok_edit21/training/grounding.py`。
+
+`prepare_sample(pipe, codec, row)` 把一行数据变成一次前向需要的全部东西：
+
+1. 用 codec 把这一行的 token 解码成区域；把 `others`（同图其他 token，最多 3 个）也解码，并集去掉本区域后就是**干扰实例区域**。
+2. 确定画布（约 1MP，边长取 32 的倍数），用官方流程缩放源图；指认和程序化编辑现场生成目标图，真实编辑读数据集的目标图。
+3. VAE 编码源图和目标图；`encode_edit` 编码指令（这一步带梯度，但只有注入模块可训练）。
+4. 把区域换算到目标 token 网格上：每个目标 token 对应 16×16 像素，取覆盖率（`grid_coverage`）。
+5. 算出片段的 4 个 token 在联合序列里的位置（`span_token_positions`）。指令里的位置来自 `prompt_input_ids`；每个源图占位 token 在 DiT 里展开成 4 个，所以要按展开后的长度累加偏移。
+
+<!-- code: src/samtok_edit21/training/grounding.py::span_token_positions -->
+```python
+def span_token_positions(tokenizer, prompt, conditioning):
+    """Positions of the single mask span in the DiT's joint sequence.
+
+    ``prompt_input_ids`` index the trimmed text-encoder sequence; every image placeholder token there expands to four
+    DiT tokens (``QwenImage21DiT.forward``), all of which precede the instruction.
+    """
+    ids = conditioning["prompt_input_ids"][0]
+    layout = token_layout(tokenizer, ids[ids >= 0], prompt)
+    if len(layout["units"]) != 1 or layout["units"][0][1] - layout["units"][0][0] != 4:
+        raise ValueError("A grounding row carries exactly one mask-token span")
+    start, end = layout["units"][0]
+    repeats = torch.where(conditioning["edit_image_pad_mask"][0], 4, 1)
+    offsets = (repeats.cumsum(0) - repeats).tolist()
+    return [offsets[index] for index in range(start, end)]
+```
+<!-- /code -->
+
+`grounding_loss(pipe, sample, router)` 的损失是
+
+```
+loss = w(t) · ( FM + λ_region · FM_region + λ_distractor · FM_distractor ) + λ_route · routing
+```
+
+- 时间步采样、加噪、目标和权重 `w(t)` 与官方 `FlowMatchSFTLoss` 完全相同；
+- `FM` 是逐 token 平方误差的全图平均；
+- `FM_region` 是同一份误差只在区域内（向外扩一个 token）取平均，这样小区域和大区域一样重要；
+- `FM_distractor` 是在干扰实例上取平均，这些位置的目标就是源图本身，等于要求"别的实例不许动"；
+- `routing` 来自 3.3 节。
+
+<!-- code: src/samtok_edit21/training/grounding.py::region_terms -->
+```python
+def region_terms(squared_error, region, distractors):
+    """Region-normalised and distractor-normalised means of a per-token squared error map."""
+    mean = squared_error.mean()
+    weight = F.max_pool2d(region[None, None].float(), 3, 1, 1)[0, 0]   # one token of context around the region
+    in_region = (squared_error * weight).sum() / weight.sum() if float(weight.sum()) > 0 else mean.detach() * 0
+    other = (distractors > DISTRACTOR_COVERAGE).float()
+    on_distractors = (squared_error * other).sum() / other.sum() if float(other.sum()) > 0 else mean.detach() * 0
+    return mean, in_region, on_distractors
+```
+<!-- /code -->
+
+`timestep_index` 和 `noise` 两个可选参数用来固定随机性，供测试使用。
+
+### 3.5 训练循环
+
+文件：`src/samtok_edit21/training/grounding_engine.py`，命令 `samtok-edit ground-train`，在 `torchrun` 下运行。
+
+**并行方式。** 每张卡是一个进程，各自处理自己的样本；每次更新时把各卡的梯度取平均，每张卡执行同一步优化。有效 batch = 卡数 × `--accumulation`。
+
+- 数据顺序由数据目录里的 `schedule.json` 决定，第 r 张卡取 `order[r::world]`。所以**总卡数 × accumulation 相同，每次更新用到的样本就完全相同**：8 卡 × 4 和 32 卡 × 1 是同一批样本。
+- 梯度平均（`average_gradients`）：把全部可训练参数的梯度拼成一条向量做一次 all-reduce。
+
+**各卡权重必须一致。** LoRA 的 A 矩阵是随机初始化的。模型建好后，把 0 号卡的全部可训练参数广播给所有卡；开始时和每次保存权重时核对各卡参数的校验和，不一致就报错停下：
+
+<!-- code: src/samtok_edit21/training/grounding_engine.py::broadcast_parameters -->
+```python
+def broadcast_parameters(parameters, dist):
+    """Give every rank rank 0's values (LoRA A matrices are random and would otherwise differ per rank)."""
+    flat = torch.cat([p.detach().flatten().float() for p in parameters])
+    dist.broadcast(flat, src=0)
+    offset = 0
+    with torch.no_grad():
+        for p in parameters:
+            p.copy_(flat[offset:offset + p.numel()].view_as(p).to(p.dtype))
+            offset += p.numel()
+```
+<!-- /code -->
+
+（E-A1、E-A2 当时的脚本没有这一步，各卡的初始化不一致，见文档 03 的 5.5 节。`--unsynced-init` 能重现当时的行为，只用于回归核对。）
+
+**优化设置。** AdamW，学习率线性预热后保持不变；LoRA 用权重衰减，注入模块和路由仿射不用。每 10 次更新往 `train_metrics.jsonl` 写一行各项损失的平均值；在 `--quick-eval` 指定的更新次数上，用数据目录里的 160 条快速评测项跑一次指认评测，写进 `quick_summary.jsonl`。
+
+**每个保存点写什么**（`<output>/adapter_<更新次数>/`）：
+
+| 文件 | 内容 |
+|---|---|
+| `adapter.safetensors`、`adapter.json` | DiT 的 LoRA；`adapter.json` 的 `grounding` 字段记录完整训练配方、路由仿射的值、各卡一致性校验结果 |
+| `code_injector.safetensors`、`code_injector.json` | 码本向量注入的三个投影，以及码本指纹 |
+
+另外 `<output>/resume.pt` 保存优化器状态用于 `--resume` 续跑，`<output>/TRAIN_DONE` 标记完成并记下最终权重目录名。
+
+**主要参数**：
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--data` / `--output` | 必填 | 数据目录 / 训练输出目录 |
+| `--updates`、`--accumulation` | 1300、4 | 优化步数；每卡每步的样本数 |
+| `--lr`、`--warmup`、`--weight-decay` | 1e-4、33、0.01 | |
+| `--rank` | 32 | 新建 LoRA 的 rank |
+| `--init-adapter` | 无 | 从一个已有的 v3 权重目录热启动（阶段 B 用） |
+| `--lambda-route`、`--lambda-region`、`--lambda-distractor` | 0.05、1、1 | 三项损失的系数；`--lambda-route 0` 时不挂钩子 |
+| `--route-layers` | 6,10,14,18,22,26 | 路由损失加在哪些 block |
+| `--no-code-injector` | 关 | 消融：不用码本向量注入 |
+| `--checkpoints`、`--quick-eval` | 325,650,975,1300；0,325,650,975,1300 | 保存点；快速评测点 |
+| `--seed` | 2000 | 第 r 张卡的时间步和噪声用 `seed + r` |
+| `--resume` | 关 | 从 `resume.pt` 续跑 |
+
+### 3.6 训练数据与评测集的构建
+
+文件：`src/samtok_edit21/preparation/grounding_data.py`，命令 `samtok-edit ground-data train` 和 `samtok-edit ground-data eval-set`。数据来源和各文件的清单见 [04_SAMTokEdit_Qwen21_数据工作.md](04_SAMTokEdit_Qwen21_数据工作.md)。
+
+**基本单位是"一张图上的一个 token"（unit）。** 来源有两处：
+- v2 的 stage-2 清单里只带一个 mask 片段、不带框的行（`single_token_rows`）。add 行选的是"新物体放哪里"，不是一个已有的实例，所以不用。
+- GRES 指代数据（parquet 里的 `answer` 和内嵌图片）。它的图通常有多个带名字的实例，是"同图多实例"的主要来源。
+
+每个 unit 记下同一张图上的其他 token（`others`，最多 3 个），训练时它们就是干扰实例。然后每个 unit 生成指认行、程序化编辑行；清洗后判定保留的 RefEdit / Derived 真实编辑对生成真实编辑行。
+
+**泄漏防护。** 预留集按源图**路径**的哈希划分（`heldout`），但同一张图会以不同路径出现（同图多条指令、同一批图存了两份），只按路径划分会泄漏。所以构建时还按**图像内容**排除：训练源图的 16×16 均值哈希只要与任何一张评测图相同就丢掉，排除后再核对一次，仍有重合就报错。
+
+<!-- code: src/samtok_edit21/preparation/grounding_data.py::average_hash -->
+```python
+def average_hash(image):
+    gray = np.asarray(image.convert("L").resize((16, 16), Image.BILINEAR), np.float32)
+    return np.packbits((gray > gray.mean()).flatten()).tobytes().hex()
+```
+<!-- /code -->
+
+**确定性。** 行的顺序、颜色、模板、操作都由带种子的随机数决定，随机数的调用顺序是数据集定义的一部分。同样的输入和种子会产出逐字节相同的文件（E-A2 的数据就是这样复现核对的）。
+
+**输出目录的内容**：
+
+| 文件 | 内容 |
+|---|---|
+| `epoch_rows.jsonl` | 一轮的全部训练行 |
+| `schedule.json` | 各轮打乱后的行号序列，训练按它取样 |
+| `eval.json` | 评测项；可带 `leaky_<名字>` 标记，表示该图在某个更早的训练集里出现过 |
+| `eval_quick_idx.json` | 训练中快速评测用的评测项下标 |
+| `gres_images/` | 从 GRES parquet 里取出的图片；行里用相对路径引用，所以数据目录可以整体搬动 |
+| `data_stats.json` | 统计和输入路径 |
+
+**训练行的格式**（一行一个 JSON）：
+
+```json
+{"kind": "hl", "edit_image": "<源图路径>", "span": "<|mt_start|>…<|mt_end|>", "others": ["…"], "color": "red", "variant": "noref", "prompt": "Apply a red semi-transparent mask to this region <|mt_start|>…<|mt_end|> and keep everything else unchanged."}
+{"kind": "proc", "edit_image": "…", "span": "…", "others": [], "op": "blur", "variant": "ref", "prompt": "Blur the left cup <|mt_start|>…<|mt_end|> and keep everything else unchanged."}
+{"kind": "real", "edit_image": "…", "image": "<目标图路径>", "span": "…", "prompt": "<数据集指令>", "variant": "ref", "edit_type": "remove", "others": []}
+```
+
+**评测项的格式**：预留集项带 `span`；benchmark 项带 `gt_mask`（用户 mask，评测时现场编码成 token）；反事实对的项带 `span` 和 `other`（同图的另一个 token）。
+
+### 3.7 评测、报告与对比页
+
+**评测**（`src/samtok_edit21/evaluation/grounding.py`，命令 `samtok-edit ground-eval`，在 `torchrun` 下运行）。三种探针喂给模型的都只有源图和带 token 的指令，mask 只在事后打分时用：
+
+| 探针 | 做法 | 指标 |
+|---|---|---|
+| 指认 | 生成指认图，读回区域 | 与 token 区域的 IoU（benchmark 项对用户 mask 算）；反事实对上看读回的区域更像自己的实例还是另一个 |
+| remove 探针 | 同一张图、同一句 "Remove the object in this region ⟨M⟩."，只换 token | 改动落在自己实例上是否多于另一个实例；两个 token 都对才算这一对"跟随" |
+| 编辑的区域内外改动 | benchmark 的真实指令 | 区域内、远离区域处的平均像素改动 |
+
+给了 `--adapter` 时，remove 探针和编辑探针会在"训练后"和"原版"（用 `trained_weights` 关掉 LoRA 和注入）下各跑一次；不给 `--adapter` 就是评测原版模型，得到所有配对比较的基线。
+
+**报告**（`grounding_report.py`，命令 `samtok-edit ground-report`）。所有比较都是配对的：只用本次运行和所有参考运行都有的评测项，差值给出 bootstrap 95% 区间；预留集另报"无泄漏子集"；最后逐条给出放行线是否通过。用 `--reference 名字=路径` 指定参考评测，第一个是原版。
+
+**对比页**（`gallery.py`，命令 `samtok-edit ground-gallery generate` 和 `html`）。对 benchmark 的真实指令和各编辑类型的预留样本，各用原版和训练后模型生成一次，生成一个可筛选的页面和一个图片内嵌的单文件。
+
+### 3.8 用 v3 权重做推理
+
+Python：
+
+```python
+from PIL import Image
+from samtok_edit21 import edit, load_codec, load_grounding_adapter, load_pipeline
+from samtok_edit21.models.binding import BindingConfig
+
+pipe = load_pipeline(device="cuda")                      # Qwen-Image-2.1 DiT/VAE + SAMTok 文本编码器
+codec = load_codec("/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok", "cuda")
+load_grounding_adapter(pipe, codec, "<权重目录>")         # DiT LoRA + 码本向量注入
+pipe.eval()
+
+source = Image.open("source.png").convert("RGBA")
+span = codec.encode(source, [mask])[0][0]                # 用户给的布尔 mask -> token 片段
+image, _ = edit(pipe, f"Remove the object in this region {span}.", [source], mode="inline",
+                height=1024, width=1024, num_inference_steps=40, cfg_scale=1.0, seed=0,
+                pass2_te="raw", binding=BindingConfig("none"), codec=codec, blend_region=None)
+```
+
+命令行（`--mask` 给一张 mask 图，程序把它编码成 token 写进指令）：
+
+```bash
+samtok-edit infer --mode interactive --image source.png --mask mask.png \
+  --prompt "Remove the object in this region." --dit-adapter <权重目录> --output out.png
+```
+
+`samtok-edit infer` 看到权重目录里有码本向量注入的权重时，会自动走 `load_grounding_adapter`。
+
+---
+
+## 4. 命令一览
+
+所有命令既可以写成 `samtok-edit <命令>`，也可以写成 `python -m samtok_edit21 <命令>`；需要多卡的命令放在 `python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 <命令>` 里。
+
+| 命令 | 作用 | 是否多卡 |
+|---|---|---|
+| `ground-data eval-set` | 建评测集 | 否 |
+| `ground-data train` | 建训练数据目录 | 否（多进程算图像哈希） |
+| `ground-train` | 训练 | 是 |
+| `ground-eval` | 评测一个权重目录，或不给权重时评测原版 | 是 |
+| `ground-report` | 出配对分析报告 | 否 |
+| `ground-gallery generate` / `html` | 生成对比图 / 建对比页 | 是 / 否 |
+| `infer` | 单张推理（v2 就有，已支持 v3 权重） | 否 |
+
+单机 8 卡从数据到报告的完整例子：
+
+```bash
+V3=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
+RUN=$V3/runs/<新的 run id>
+python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 ground-train \
+  --data $V3/data/stageA_ea2_20261012 --output $RUN/train
+python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 ground-eval \
+  --data $V3/data/stageA_ea2_20261012 --adapter $RUN/train/adapter_1300 --output $RUN/eval
+samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 --train $RUN/train \
+  --name <名字> --reference stock=$V3/baselines/stock_highlight_eval --output $RUN/analysis.txt
+```
+
+四机入口是 `scripts/grounding/bootstrap_arnold.sh`（粘贴到 ARNOLD 的启动命令）和它调用的 `scripts/grounding/run_arnold.sh`，用法见 [05_SAMTokEdit_Qwen21_四机实验运行指南.md](05_SAMTokEdit_Qwen21_四机实验运行指南.md)。
+
+---
+
+## 5. 默认超参数（E-A2 的配方）
+
+| 项 | 值 |
+|---|---|
+| 基座 | 原版 Qwen-Image-2.1 DiT，SAMTok 文本编码器，不加绑定、不融合 |
+| 可训练参数 | 87.04M：LoRA 83.89M（rank 32，alpha 32）+ 注入 3.16M + 路由仿射 12 |
+| 优化 | AdamW，lr 1e-4，预热 33 步后不变；LoRA 权重衰减 0.01，其余 0 |
+| 规模 | 1300 次更新，有效 batch 32 |
+| 损失系数 | λ_region 1，λ_distractor 1，λ_route 0.05 |
+| 路由 | 第 6/10/14/18/22/26 层；logit 乘 4；其他实例上的反例权重 3 |
+| 分辨率 | 画布约 1MP；一个目标 token 对应 16×16 像素 |
+| 训练时间步 | 官方训练调度的 1000 个时间步，均匀采样 |
+| 评测生成 | 20 步，CFG 1，seed 0；对比页 40 步 |
+| 实测开销 | 约 6 秒/样本/卡；8 卡 batch 32 约 25 秒/更新；训练显存约 40–50 GB/卡 |
+
+---
+
+## 6. 测试与正确性验证
+
+- `tests/test_grounding.py`（16 项，全部在 CPU 上跑）：指认任务的读回精度、注入模块各位置的行为与保存加载、路由 logit 与 block 真实注意力 logit 的一致性、检查点下的梯度、损失各项的合成、片段位置（用真实分词器）、数据构建的泄漏防护与确定性、报告的配对与放行逻辑。路由相关的测试用的是真实 DiT 类的一个小号实例，走的是真实的 block 代码。
+- `tests/test_docs.py`：文档代码块与源码一致。
+- 运行：`pytest tests`（当前共 104 项）。
+- 与 E-A2 当时脚本的等价性核对（逐位一致的数值与梯度、逐字节相同的数据文件、逐数字相同的报告）和 GPU 端到端回归的状态，记在文档 03 的 5.4 节。
+
+---
+
+## 7. v2 保留的部分
+
+下面这些 v3 没有改，也不在 v3 的训练和推理路径上（除了标注"v3 复用"的），留着是为了复现 v2 的结果和做基线。实现细节见 [archive/v2/01_SAMTokEdit_Qwen21_代码实现说明.md](archive/v2/01_SAMTokEdit_Qwen21_代码实现说明.md)。
+
+| 路径 | 内容 |
+|---|---|
+| `models/binding.py` | v2 的结构性区域绑定（注意力偏置、region-RoPE、区域嵌入）和 latent 融合用的区域。其中 `token_layout`（在编码后的 token 序列里定位区域片段）**v3 复用** |
+| `models/pipeline.py` 的 `localize`、`ntp_loss`、`te_adapters` | v2 的两遍推理：文本编码器带定位 LoRA 先生成区域 |
+| `training/engine.py`、`training/objectives.py` 的 `prepare_fm` / `flow_loss` | v2 的两阶段训练引擎（Stage 1 NTP、条件缓存、Stage 2 FM），建在 DiffSynth 的 runner 和 accelerate 上。`objectives.py` 里的 LoRA 注入、保存、加载和 `validate_conditioning` **v3 复用** |
+| `training/tracking.py`、`training/gradient_audit.py` | W&B 记录、梯度审计（v2 引擎用） |
+| `distributed/training.py` 与 `scripts/training/` | v2 的四机编排。其中 `scripts/training/setup_env.sh`（装环境、检查 CUDA）**v3 复用** |
+| `evaluation/cases.py`、`compile.py`、`localize.py`、`manifest.py`、`run.py`、`score.py` | 评测协议 v2（benchmark 的 case 编译、生成、judge 清单与打分） |
+| `preparation/`（除 `grounding_data.py`）、`scripts/data_cleaning/`、`scripts/edit_check/`、`scripts/annotation/` | 数据侧：来源转换、v1→v2 转换、清洗、MLLM 编辑核验、指令协议 1.0 适配。见文档 04 |
+| `regions/selection.py` | 用 SAM2 从点或框得到候选 mask |
+
+---
+
+## 8. 重要路径
+
+| 内容 | 路径 |
+|---|---|
+| 代码 | `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3`（分支 `qwen-image-2.1-v3`） |
+| Qwen-Image-2.1 权重 | `/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1` |
+| SAMTok 文本编码器与 codec 权重 | `/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok` |
+| v3 实验产物 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/`（索引见文档 03 第 7 节） |
+| 当前可用的 v3 权重 | `…/qwen21_v3/runs/ea2_local8_001/train/adapter_1300/` |
+| v2 实验产物 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/` |
+
+---
+
+## 9. 更新记录
+
+| 日期 | 内容 |
+|---|---|
+| 2026-10-13 | v3 首版。把 E-A2 的方法（码本向量注入、注意力路由损失、干扰实例项、指认任务、数据构建与泄漏防护、三种评测探针、报告、对比页）写进仓库；训练循环加入各卡权重同步；新增四机入口和文档代码块同步工具 |

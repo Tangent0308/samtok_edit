@@ -1,6 +1,6 @@
 # SAMTokEdit（Qwen-Image-2.1）v2 四机实验运行指南
 
-本页是 v2 的四机启动入口。ARNOLD 作业配置为 4 workers × 8 GPUs，四个 worker 运行同一段脚本；代码由各节点从 GitHub clone 到 `/tmp`，共享盘只存数据、日志和产物。启动脚本与 v1 调通的入口相同（节点 claim、失败记录、环境安装、CUDA/NCCL 检查），只更新了分支、数据和阶段参数；另外把所有报错并入 stdout，并在写共享盘之前做一次写探针。v1 的入口和排错记录见 [archive/v1](archive/v1/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。第 6 节是清洗后训练数据的 MLLM 编辑核验（方案 2）的四机入口。
+本页是 v2 的四机启动入口。ARNOLD 作业配置为 4 workers × 8 GPUs，四个 worker 运行同一段脚本；代码由各节点从 GitHub clone 到 `/tmp`，共享盘只存数据、日志和产物。启动脚本与 v1 调通的入口相同（节点 claim、失败记录、环境安装、CUDA/NCCL 检查），只更新了分支、数据和阶段参数；另外把所有报错并入 stdout，并在写共享盘之前做一次写探针。v1 的入口和排错记录见 [archive/v1](../v1/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。第 6 节是清洗后训练数据的 MLLM 编辑核验（方案 2）的四机入口。
 
 ## 1. 约定
 

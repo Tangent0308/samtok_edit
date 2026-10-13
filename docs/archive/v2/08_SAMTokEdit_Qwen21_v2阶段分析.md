@@ -87,7 +87,7 @@
 
 **图 1**　从「stock 失败、E5 原指令 + 融合成功」的 31 个 remove case 中随机抽 5 个
 
-![图 1](assets/v2_analysis_20261008/fig01_remove_e5_only.jpg)
+![图 1](../../assets/v2_analysis_20261008/fig01_remove_e5_only.jpg)
 
 列：原图（粉框为区域）、stock、B0 原指令 + 融合、E5 原指令 + 融合、E5 原指令、E5 noref。
 
@@ -101,7 +101,7 @@
 
 **图 2**　「只有 E5 成功」的 attribute case：11 个中随机抽取，这里是看过的 3 个。列同图 1
 
-![图 2](assets/v2_analysis_20261008/fig02_attr_stock_leak.jpg)
+![图 2](../../assets/v2_analysis_20261008/fig02_attr_stock_leak.jpg)
 
 | 行 | case | 指令 | 我看到的 | judge 判得对吗 |
 |---|---|---|---|---|
@@ -111,7 +111,7 @@
 
 **图 3**　从「stock 成功、E5 原指令 + 融合失败」的 12 个 add case 中随机抽 5 个。列同图 1
 
-![图 3](assets/v2_analysis_20261008/fig03_add_stock_only.jpg)
+![图 3](../../assets/v2_analysis_20261008/fig03_add_stock_only.jpg)
 
 | 行 | case | 指令 | 我看到的 | judge 判得对吗 |
 |---|---|---|---|---|
@@ -167,7 +167,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 4**　图 1 第 3、5、4 行（`_0388`、`_0373`、`_0319`）的区域放大，原分辨率裁剪。列同图 1
 
-![图 4](assets/v2_analysis_20261008/fig04_remove_zoom.jpg)
+![图 4](../../assets/v2_analysis_20261008/fig04_remove_zoom.jpg)
 
 - `_0388`：E5 原指令 + 融合的填补是一块模糊的平涂，judge 给 Q4。E5 原指令、noref 中左边的猴子不见了，judge 给 E5 原指令 P4。
 - `_0373`：两个融合版本都能清楚看到被删斑马的残影，judge 都给了 E4。
@@ -175,7 +175,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 5**　从 E5 原指令 + 融合的 138 个严格成功中随机抽 8 个：remove 4 个、add 3 个、attribute 1 个
 
-![图 5](assets/v2_analysis_20261008/fig05_audit_e5_success.jpg)
+![图 5](../../assets/v2_analysis_20261008/fig05_audit_e5_success.jpg)
 
 列：原图（粉框为区域）、stock、E5 原指令 + 融合。
 
@@ -206,7 +206,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 6**　区域绑定：对比页里三个「同类全删」的 case，B0 与 E5 对照
 
-![图 6](assets/v2_analysis_20261008/fig06_binding_b0_vs_e5.jpg)
+![图 6](../../assets/v2_analysis_20261008/fig06_binding_b0_vs_e5.jpg)
 
 列：原图、B0 noref、E5 noref、E5 原指令、E5 原指令 + 融合。
 
@@ -218,7 +218,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 7**　`_0204`：B0 的区域外改动（差异热图）
 
-![图 7](assets/v2_analysis_20261008/fig07_diff_0204.jpg)
+![图 7](../../assets/v2_analysis_20261008/fig07_diff_0204.jpg)
 
 列：原图（粉色高亮为区域）、stock、stock 的差异热图、B0 noref、B0 的差异热图（|输出 − 原图|，黑 → 黄）。
 - stock 只删了区域里那只兔子，差异集中在区域内。
@@ -226,7 +226,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 8**　`_0204` 放大复核
 
-![图 8](assets/v2_analysis_20261008/fig08_zoom_0204.jpg)
+![图 8](../../assets/v2_analysis_20261008/fig08_zoom_0204.jpg)
 
 列：原图（只描区域边）、stock、B0 noref、E5 noref、E5 原指令 + 融合。
 - 区域里是最上面那只黑白兔子，stock 和 E5 原指令 + 融合都只删了它。
@@ -236,7 +236,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 9**　E6、E7 和推理期 clause bias：对比页 v1 的 4 个 case
 
-![图 9](assets/v2_analysis_20261008/fig09_gallery_v1_rows.jpg)
+![图 9](../../assets/v2_analysis_20261008/fig09_gallery_v1_rows.jpg)
 
 列：原图、stock、B0、E6、E7、B0 + 推理期 clause bias（都是 noref、不融合）。
 
@@ -249,7 +249,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 10**　融合和原指令：同一批 case 在对比页 v2 中
 
-![图 10](assets/v2_analysis_20261008/fig10_gallery_v2_rows.jpg)
+![图 10](../../assets/v2_analysis_20261008/fig10_gallery_v2_rows.jpg)
 
 列：原图、stock、B0、B0 + 融合、B0 原指令、B0 原指令 + 融合、E6、E7、B0 + clause bias。
 
@@ -283,7 +283,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 11**　Stage 2 的 add 训练样本，随机抽取：scaleedit 3 个、crispedit 2 个、refedit 1 个
 
-![图 11](assets/v2_analysis_20261008/fig11_train_add_boxes.jpg)
+![图 11](../../assets/v2_analysis_20261008/fig11_train_add_boxes.jpg)
 
 列：原图（粉框为 add 框）、目标图、差异图（|目标 − 原图|，蓝 → 橙）。每行上方给出来源、框内改动比例（inside）和全图改动比例（changed）。
 
@@ -298,7 +298,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 12**　全图改动超过 20% 的 remove 训练样本：crispedit 2 个、scaleedit 2 个，在非编辑区域按原分辨率裁剪 256×256
 
-![图 12](assets/v2_analysis_20261008/fig12_train_align_zoom.jpg)
+![图 12](../../assets/v2_analysis_20261008/fig12_train_align_zoom.jpg)
 
 列：原图、目标图、差异。
 - crispedit 两例：非编辑区域被重绘，女人的头发和头部姿态、树枝和叶子的形状都变了。
@@ -313,14 +313,14 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 13**　图 3 第 1、2、5 行的框区域放大。列同图 1
 
-![图 13](assets/v2_analysis_20261008/fig13_add_zoom.jpg)
+![图 13](../../assets/v2_analysis_20261008/fig13_add_zoom.jpg)
 
 - `_0072`：原图框内只有树和栏杆，没有大象，所以 judge 给 E5 的 E1 是判错；E5 加的大象也比 stock 的小。
 - `_0148`、`_0352`：E5 不融合时物体加在框外，融合后就被抹掉了。
 
 **图 14**　judge 判 E4、但框内改动很小的 E5 原指令 + 融合 add case：8 个中随机抽取，这里是看过的 2 个。列同图 1
 
-![图 14](assets/v2_analysis_20261008/fig14_tiny_adds.jpg)
+![图 14](../../assets/v2_analysis_20261008/fig14_tiny_adds.jpg)
 
 | 行 | case | 指令 | 我看到的 | judge 判得对吗 |
 |---|---|---|---|---|
@@ -337,7 +337,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 15**　remove 的失败。前 2 行：E5 原指令 + 融合 P≤2 的 case（8 个中随机抽取，看过其中 2 个）；第 3 行：两边都失败的 case（14 个中随机抽取，看过其中 1 个）。列同图 1
 
-![图 15](assets/v2_analysis_20261008/fig15_remove_silhouette_partial.jpg)
+![图 15](../../assets/v2_analysis_20261008/fig15_remove_silhouette_partial.jpg)
 
 | 行 | case | 指令 | 我看到的 | judge 判得对吗 |
 |---|---|---|---|---|
@@ -347,7 +347,7 @@ judge 是 Qwen3.8-27B pair_v2。我看图发现的偏差如下：
 
 **图 16**　E5 原指令 + 融合 Q<3 的 remove case：10 个中随机抽取，看过其中 2 个。列同图 1
 
-![图 16](assets/v2_analysis_20261008/fig16_remove_legs_patch.jpg)
+![图 16](../../assets/v2_analysis_20261008/fig16_remove_legs_patch.jpg)
 
 | 行 | case | 指令 | 我看到的 | judge 判得对吗 |
 |---|---|---|---|---|
@@ -378,7 +378,7 @@ E5 原指令 + 融合 Q 3.46，stock 3.76。按 judge 的扣分理由归类（Q�
 
 **图 17**　E5 原指令 + 融合在 attribute 上失败的 case，按 case ID 取前 4 个，区域放大
 
-![图 17](assets/v2_analysis_20261008/fig17_attr_fail_zoom.jpg)
+![图 17](../../assets/v2_analysis_20261008/fig17_attr_fail_zoom.jpg)
 
 列：原图、stock、E5 原指令 + 融合。
 
