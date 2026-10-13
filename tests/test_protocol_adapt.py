@@ -31,6 +31,9 @@ def row(kind, instances, instruction="x", dataset="crispedit"):
             "instances": instances, "region": region}
 
 
+SHARED_DOC_SHA256 = "f350b4d2af57279e73099ff8c19ed7d7cf79a2a46d7a315a9bc7e8d5b48b9e1b"
+
+
 def slots(**values):
     base = {"decision": "accept", "operation": "remove", "ref": "the red jar", "scope": "jar", "target_part": "",
             "payload": "", "remove_mode": "whole", "attributes": [], "placement": {}, "qualifier": "",
@@ -40,6 +43,10 @@ def slots(**values):
 
 def test_vendored_protocol_is_the_benchmark_module():
     assert hashlib.sha256(Path(ip.__file__).read_bytes()).hexdigest() == pa.PROTOCOL_SHA256
+    assert hashlib.sha256(Path(pa.style.__file__).read_bytes()).hexdigest() == pa.STYLE_SHA256
+    doc = Path(__file__).resolve().parents[1] / "docs/INSTRUCTION_PROTOCOL_ZH.md"
+    assert hashlib.sha256(doc.read_bytes()).hexdigest() == SHARED_DOC_SHA256
+    assert "ADD ANCHOR PRIORITY" not in pa.WRITING_RULES and "REFERENCE:" in pa.WRITING_RULES
 
 
 def test_add_slots_render_like_the_benchmark():
@@ -57,7 +64,8 @@ def test_relation_repairs_and_reference_mode():
                                         placement={"relation": "to the left of", "anchor_mode": "support"}))
     assert s["placement"] == {"relation": "beside", "site": "left side", "anchor_mode": "reference"}
     assert ip.render(pa.to_spec(s), False) == "Add a black dog beside the left side of the selected bench."
-    assert fixes == ["side_relation", "anchor_mode"]
+    assert fixes == ["side_relation", "anchor_mode", "reference_object"]
+    assert any("not used" in x for x in pa.slot_problems(s))  # the dog stands on the ground: that is S
     s, fixes = pa.normalize_slots(slots(operation="add", ref="the desk", scope="desk", payload="a cup",
                                         placement={"relation": "to", "site": "top"}))
     assert s["placement"]["relation"] == "on" and "to_with_site" in fixes
@@ -83,10 +91,11 @@ def test_selection_plan_reuses_labels_only_when_they_mark_s():
     added = row("add", [instance(item, "a cup", "target")])
     spec = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="a cup", instances=[{"n": 1, "role": "anchor"}],
                                                placement={"relation": "on"}))[0])
-    assert pa.selection_plan(added, slots(instances=[{"n": 1, "role": "anchor"}]), spec) == {"source": "sam3"}
+    assert pa.selection_plan(added, slots(instances=[{"n": 1, "role": "anchor"}]), spec) == {
+        "source": "sam3", "granularity": "", "part": False}
     hosted = row("add", [instance(jar, "red jar")], dataset="derived")
-    assert pa.selection_plan(hosted, slots(instances=[{"n": 1, "role": "anchor"}]), spec) == {"source": "reused",
-                                                                                              "instances": [1]}
+    assert pa.selection_plan(hosted, slots(instances=[{"n": 1, "role": "anchor"}], granularity="part"), spec) == {
+        "source": "reused", "instances": [1], "granularity": "part", "part": True}
     removed = row("remove", [instance(jar, "jar", number=0), instance(lid, "lid", number=1)])
     plan_slots = slots(instances=[{"n": 1, "role": "main"}, {"n": 2, "role": "attached"}])
     remove_spec = pa.to_spec(pa.normalize_slots(plan_slots)[0])
@@ -149,7 +158,7 @@ def test_pilot_sample_is_stratified_and_deterministic():
 
 def test_scope_naming_the_site_is_sent_back():
     s, _ = pa.normalize_slots(slots(operation="add", ref="the middle man", scope="head", payload="a beanie",
-                                    placement={"relation": "on", "site": "head"}))
+                                    placement={"relation": "on", "site": "head"}, granularity="object"))
     assert pa.slot_problems(s) and not pa.slot_problems({**s, "scope": "man"})
 
 
@@ -337,14 +346,18 @@ def test_build_cuts_a_remasked_anchor_and_keeps_the_full_mask():
     road, dog = square(100, 200, 0, 300, shape=(200, 300)), square(120, 150, 140, 160, shape=(200, 300))
     r = row("add", [instance(dog, "white dog", side="target")])
     s, _ = pa.normalize_slots(slots(operation="add", payload="a small white dog", ref="the road in the foreground",
-                                    scope="road", placement={"relation": "on"}, instances=[{"n": 1, "role": "new_item"}]))
-    extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s), "plan": {"source": "sam3"},
+                                    scope="road", placement={"relation": "on"}, instances=[{"n": 1, "role": "new_item"}],
+                                    granularity="surface", host_ref="the road", host_scope="road"))
+    extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s),
+                 "plan": {"source": "sam3", "granularity": "surface", "part": False},
                  "blind": {"bbox_2d": pa.box_1000(road)}, "hinted": {"bbox_2d": pa.box_1000(road)}}
     record = pa.build(r, extracted, {"mask": pa.encode(road)})
     assert record["status"] == "accepted" and record["instruction_noref"] == "Add a small white dog on the selected road."
-    local, full = pa.decode(record["selection"]), pa.decode(record["selection"]["localized"]["full"])
+    local, full = pa.decode(record["selection"]), pa.decode(record["selection"]["host"])
     assert (full == road).all() and local.sum() < 0.2 * road.sum() and local[dog].all()
-    assert record["selection"]["localized"]["footprint"] == "execution_region"
+    assert record["selection"]["granularity"] == "surface" and record["selection"]["anchor"]["cut"]
+    assert record["selection"]["anchor"]["footprint"] == "execution_region" and record["host_view"] is None
+    assert record["mask_semantics"] == ip.mask_contract(record["instruction_spec"])
 
 
 def test_a_derived_add_finds_the_new_item_in_the_pixels():
@@ -355,25 +368,34 @@ def test_a_derived_add_finds_the_new_item_in_the_pixels():
     after[saddle] = (150, 60, 20)
     r = row("add", [instance(zebra, "zebra")], dataset="derived")
     s, _ = pa.normalize_slots(slots(operation="add", payload="a brown saddle", ref="the back of the zebra",
-                                    scope="zebra back", placement={"relation": "on"}, instances=[{"n": 1, "role": "anchor"}]))
+                                    scope="zebra back", placement={"relation": "on"}, instances=[{"n": 1, "role": "anchor"}],
+                                    granularity="part", part="back", host_ref="the zebra", host_scope="zebra"))
     extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s),
-                 "plan": {"source": "reused", "instances": [1]}, "blind": {"bbox_2d": pa.box_1000(zebra)}}
+                 "plan": {"source": "reused", "instances": [1], "granularity": "part", "part": True},
+                 "blind": {"bbox_2d": pa.box_1000(zebra)}}
     images = (Image.fromarray(before), Image.fromarray(after))
     record = pa.build(r, extracted, None, images=images)
     assert record["status"] == "accepted" and record["execution_region"] is None
     local = pa.decode(record["selection"])
-    assert record["selection"]["localized"]["footprint"] == "edited_region" and local[saddle].all()
-    assert local.sum() < 0.5 * zebra.sum()
+    assert record["selection"]["anchor"]["footprint"] == "edited_region" and local[saddle].all()
+    assert local.sum() < 0.5 * zebra.sum() and "part_not_found" in record["flags"]  # no SAM candidates: cut instead
+    host = record["host_view"]
+    assert host["instruction_noref"] == "Add a brown saddle on the back of the selected zebra."
+    assert host["instruction_ref"] == record["instruction_ref"] == "Add a brown saddle on the back of the zebra."
+    assert host["selection"]["rle_counts"] == r["instances"][0]["rle_counts"]  # the label, byte for byte
     assert "anchor_not_localized" in pa.build(r, extracted, None)["flags"]
 
 
 def test_an_add_anchor_is_segmented_whole_and_its_ref_may_name_the_spot():
-    s, _ = pa.normalize_slots(slots(operation="add", payload="the text 'rockstar'", ref="the knuckles of the central fist",
-                                    scope="knuckles", placement={"relation": "across"}, s_object="central raised fist"))
-    assert s["s_object"] == "the central raised fist"
-    assert pa.sam_prompt(pa.to_spec(s), s["s_object"]) == "central raised fist"
-    assert pa.normalize_slots(slots(operation="add", payload="a cup", ref="the table", scope="table"))[0]["s_object"] == "the table"
-    assert pa.normalize_slots(slots())[0]["s_object"] == ""
+    s, fixes = pa.normalize_slots(slots(operation="add", payload="the text 'rockstar'", ref="the knuckles of the fist",
+                                        scope="knuckles", placement={"relation": "across"}, granularity="part",
+                                        part="knuckles", host_ref="central raised fist", host_scope="fist"))
+    assert s["host_ref"] == "the central raised fist" and s["ref"] == "the knuckles of the central raised fist"
+    assert "part_ref" in fixes and pa.sam_prompt(pa.to_spec(s), s["host_ref"]) == "central raised fist"
+    cup = pa.normalize_slots(slots(operation="add", payload="a cup", ref="the table", scope="table",
+                                   granularity="object", host_ref="the room"))[0]
+    assert cup["host_ref"] == "the table" and cup["host_scope"] == "table"
+    assert pa.normalize_slots(slots())[0]["host_ref"] == "" and pa.normalize_slots(slots())[0]["granularity"] == ""
     assert pa.sam_prompt(pa.to_spec(pa.normalize_slots(slots())[0])) == "red jar"
     assert pa.box_holds_center([100, 100, 500, 500], [280, 300, 320, 340])
     assert not pa.box_holds_center([100, 100, 500, 500], [600, 600, 700, 700]) and not pa.box_holds_center(None, [1, 1, 2, 2])
@@ -400,3 +422,99 @@ def test_a_cut_anchor_keeps_one_compact_spot():
     floor[100:103, 104:110] = False
     local, info = pa.localize_anchor(floor, robot)
     assert info["cut"] and np.nonzero(local)[1].min() >= 104
+
+
+def add_slots(**values):
+    base = dict(operation="add", payload="a golden horn", ref="the top of the cake", scope="cake top",
+                placement={"relation": "on"}, granularity="part", part="top", host_ref="the unicorn cake",
+                host_scope="cake", instances=[{"n": 1, "role": "new_item"}])
+    return pa.normalize_slots(slots(**{**base, **values}))
+
+
+def test_a_part_ref_follows_its_host_and_the_host_view_writes_the_part_as_a_site():
+    s, _ = add_slots()
+    spec = pa.to_spec(s)
+    host = pa.host_spec(s, spec)
+    assert ip.render(spec, False) == "Add a golden horn on the selected cake top."
+    assert ip.render(host, False) == "Add a golden horn on the top of the selected cake."
+    assert ip.render(spec, True) == ip.render(host, True) == "Add a golden horn on the top of the unicorn cake."
+    assert ip.mask_contract(host)["anchor_mode"] == "support" and not ip.mask_contract(host)["execution_region_required"]
+    assert pa.slot_problems(s) == []
+    assert pa.slot_problems(add_slots(part="")[0]) and pa.slot_problems(add_slots(granularity="huge")[0])
+
+
+def test_only_the_holding_up_exception_is_a_reference_and_the_sky_takes_in():
+    for relation in ("near", "above", "below", "beside"):
+        s, _ = add_slots(placement={"relation": relation, "site": "left side" if relation == "beside" else ""})
+        assert any("not used" in x for x in pa.slot_problems(s)), relation
+    s, fixes = add_slots(ref="the seated man", scope="man", placement={"relation": "under"})
+    assert s["granularity"] == "object" and s["placement"]["anchor_mode"] == "reference" and "reference_object" in fixes
+    assert pa.slot_problems(s) == []
+    sky = dict(granularity="surface", ref="the sky above the bridge", scope="sky", host_ref="the sky", host_scope="sky")
+    assert pa.slot_problems(add_slots(**sky, placement={"relation": "on"})[0])
+    assert pa.slot_problems(add_slots(**sky, placement={"relation": "in"})[0]) == []
+    assert pa.slot_problems(add_slots(payload="a patch on its sleeve")[0])
+    assert pa.slot_problems(add_slots(payload="a bird with its wings spread")[0]) == []
+
+
+def test_the_part_is_the_sam_candidate_in_the_host_at_the_item():
+    cake, top = square(60, 200, 50, 250, shape=(200, 300)), square(60, 90, 50, 250, shape=(200, 300))
+    ear = square(30, 60, 156, 190, shape=(200, 300))  # partly behind the horn's side, part of the cake mask
+    horn = square(20, 70, 140, 160, shape=(200, 300))
+    point = pa.contact_point(cake | ear, horn, "on")
+    assert cake[point[1], point[0]] and 60 <= point[1] < 70 and 140 <= point[0] < 160  # under the horn, not the ear
+    assert pa.choose_part([{**pa.encode(ear), "k": 0}], cake | ear, horn, None, point)[1]["dropped"] == {
+        0: "not_at_contact"}
+    lantern, beam = square(62, 140, 100, 140, shape=(200, 300)), square(40, 60, 0, 300, shape=(200, 300))
+    point = pa.contact_point(beam, lantern, "hanging from")
+    assert beam[point[1], point[0]] and 100 <= point[0] < 140
+    speck, away = square(60, 62, 145, 147, shape=(200, 300)), square(170, 200, 50, 120, shape=(200, 300))
+    candidates = [{**pa.encode(m), "prompt": "point", "k": k, "score": 0.9}
+                  for k, m in enumerate([cake, top, speck, away])]
+    part, info = pa.choose_part(candidates, cake, horn, pa.box_1000(top))
+    assert (part == top).all() and info["chosen"]["k"] == 1 and info["shortlist"] == [1]
+    assert info["dropped"] == {0: "whole_host", 2: "speck", 3: "away_from_item"}
+    assert pa.choose_part(candidates[2:], cake, horn)[0] is None
+    picked, info = pa.choose_part(candidates, cake, horn, pick={"choice": 1, "shortlist": [1]})
+    assert (picked == top).all() and info["source"] == "model_pick"
+    assert pa.choose_part(candidates, cake, horn, pick={"choice": 0, "shortlist": [1]})[0] is None
+    assert pa.choose_part(candidates, cake, horn, pick={"choice": 1, "shortlist": [0]})[0] is None  # stale pick
+    twin = {**pa.encode(top), "k": 4}
+    assert pa.part_shortlist(candidates + [twin], cake, horn)[1][4] == "duplicate"
+
+
+def test_a_part_level_add_takes_the_sam_part_and_keeps_the_host_view():
+    cake, top = square(60, 200, 50, 250, shape=(200, 300)), square(60, 90, 50, 250, shape=(200, 300))
+    horn = square(20, 70, 140, 160, shape=(200, 300))
+    r = row("add", [instance(horn, "golden horn", side="target")])
+    s, _ = add_slots()
+    extracted = {"slots": {**s, "decision": "accept", "fixes": []}, "spec": pa.to_spec(s),
+                 "plan": {"source": "sam3", "granularity": "part", "part": True},
+                 "blind": {"bbox_2d": pa.box_1000(top)}, "hinted": {"bbox_2d": pa.box_1000(cake)},
+                 "part": {"bbox_2d": pa.box_1000(top)}}
+    candidates = [{**pa.encode(m), "prompt": "box", "k": k, "score": 0.9} for k, m in enumerate([cake, top])]
+    record = pa.build(r, extracted, {"mask": pa.encode(cake), "part": {"candidates": candidates}})
+    assert record["status"] == "accepted" and record["selection"]["source"] == "sam3_part"
+    local = pa.decode(record["selection"])
+    assert (local <= top).all() and local.sum() > 0 and (pa.decode(record["selection"]["host"]) == cake).all()
+    assert record["instruction_noref"] == "Add a golden horn on the selected cake top."
+    assert record["host_view"]["instruction_noref"] == "Add a golden horn on the top of the selected cake."
+    assert (pa.decode(record["host_view"]["selection"]) == cake).all()
+    view = pa.audit_view(record, "host")
+    assert view["id"].endswith(pa.HOST_SUFFIX) and "whole object" in pa.audit_prompt(view)
+    assert "large whole object" in pa.audit_prompt(record)
+
+
+def test_a_support_must_be_under_the_item_it_carries():
+    shape = (200, 300)
+    left, right = square(120, 160, 20, 140, shape=shape), square(120, 160, 145, 280, shape=shape)
+    person = square(60, 170, 60, 130, shape=shape) | square(112, 122, 130, 170, shape=shape)  # arm on the right bench
+    on = add_spec("on", ref="the bench", scope="bench")
+    assert pa.geometry(on, left, person)["s_in_probe"] is True
+    geo = pa.geometry(on, right, person)
+    assert geo["s_in_probe"] is False and geo["gap_frac"] <= pa.ANCHOR_PARAMS["adjacent_frac"]
+    assert pa.geometry_flags(on, geo, "cleaned_region")[1] == ["support_not_under_item"]
+    sky = pa.to_spec(pa.normalize_slots(slots(operation="add", payload="a balloon", ref="the sky", scope="sky",
+                                              placement={"relation": "in"}, granularity="surface", host_ref="the sky",
+                                              host_scope="sky"))[0])
+    assert "s_in_probe" not in pa.geometry(sky, left, person, "sky")

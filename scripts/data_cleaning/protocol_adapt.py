@@ -2,6 +2,7 @@
 
   pilot   stratified rows from the cleaned manifests;
   slots   Qwen3.8-27B slots and grounding boxes from an OpenAI-compatible server (resumable);
+  parts   after protocol_remask.py: the model picks each part-level add's part among SAM's candidates;
   build   records, summary, review sheets and an HTML index, after protocol_remask.py;
   audit   an independent Qwen3.8-27B pass/fail check of every accepted record (resumable);
   report  records + audit: rates per source and type, and the rows to look at;
@@ -113,8 +114,11 @@ async def run_audit(args):
     if args.ids:
         wanted = {line.split()[0] for line in open(args.ids) if line.strip()}
         records = [r for r in records if r["id"] in wanted]
+    # Every view is audited: the record itself and, for a part-level add, its host view (id + "#host").
+    views = [pa.audit_view(r, v) for r in records
+             for v in (("canonical", "host") if r.get("host_view") else ("canonical",))]
     done = ec.completed_records(args.output)
-    todo = [r for r in records if r["id"] not in done]
+    todo = [r for r in views if r["id"] not in done]
     loop = asyncio.get_running_loop()
     slots = asyncio.Semaphore(args.in_flight)
     pool = ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn"))
@@ -125,11 +129,48 @@ async def run_audit(args):
 
             async def one(record):
                 async with slots:
-                    parts = await loop.run_in_executor(pool, pa.audit_parts, rows[record["id"]], record, args.root)
+                    row = rows[record["id"].removesuffix(pa.HOST_SUFFIX)]
+                    parts = await loop.run_in_executor(pool, pa.audit_parts, row, record, args.root)
                     result = await pa.audit(client, record, parts, args.votes)
                     stream.write(json.dumps(result, ensure_ascii=False) + "\n")
                     stream.flush()
                     print(f"{record['id']}: passed={result['passed']} {result.get('problems', '')}", flush=True)
+
+            await asyncio.gather(*(one(r) for r in todo))
+
+
+async def run_parts(args):
+    """The model picks each part-level add's part among SAM's shortlisted candidates; the re-mask records are
+    written again with the pick, for build."""
+    import aiohttp
+
+    if not Path(args.remask).exists():  # nothing was re-masked
+        Path(args.output).touch()
+        return
+    rows = {r["id"]: r for r in pa.read_jsonl(args.rows)}
+    extracted = ec.completed_records(args.slots)
+    done = ec.completed_records(args.output)
+    todo = [r for r in pa.read_jsonl(args.remask) if r["id"] not in done]
+    loop = asyncio.get_running_loop()
+    gate = asyncio.Semaphore(args.in_flight)
+    pool = ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn"))
+    with pool, open(args.output, "a") as stream:
+        async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit=0),
+                                         timeout=aiohttp.ClientTimeout(total=3600)) as session:
+            client = pa.Client(session, args.url, args.model, args.effort)
+
+            async def one(record):
+                async with gate:
+                    part, e = record.get("part") or {}, extracted.get(record["id"]) or {}
+                    if part.get("candidates") and e.get("spec"):
+                        shortlist, parts = await loop.run_in_executor(pool, pa.part_pick_inputs, rows[record["id"]],
+                                                                      e, record, args.root)
+                        pick = await pa.pick_part(client, e, parts, len(shortlist)) if shortlist else {"choice": 0}
+                        record = {**record, "part": {**part, "pick": {**pick, "shortlist": shortlist}}}
+                        print(f"{record['id']}: {len(shortlist)} candidates, choice {pick.get('choice')} "
+                              f"{pick.get('reason', '')}", flush=True)
+                    stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    stream.flush()
 
             await asyncio.gather(*(one(r) for r in todo))
 
@@ -147,6 +188,8 @@ def repair(args):
     out = []
     geometry = {"reference_anchor_not_adjacent": "S is across open space from the new item",
                 "support_not_touching_item": "the new item does not touch S",
+                "support_not_under_item": "S is not under the new item it is said to carry (or above the item hanging "
+                                          "from it); it is only next to it",
                 "anchor_not_at_item": "S is nowhere near where the new item appears",
                 "reference_side": "the new item is not on the stated side of S",
                 "reference_direction": "the new item is not above/below S as stated",
@@ -158,8 +201,9 @@ def repair(args):
             out.append({"id": r["id"], "failed": ["relation"], "remask": True,
                         "problems": "relation failed: " + "; ".join(geometry[x] for x in reasons)
                                     + ". Choose as S what the new item directly stands, rests or hangs on or is "
-                                      "attached to (an object, a part of it, or a surface such as the road, sand, "
-                                      "water or sky), or else an object it touches"})
+                                      "attached to: an object, a part of one, or a stretch of a surface such as the "
+                                      "road, floor, sand or water (the sky only for things that fly); \"under\" only "
+                                      "when the new item holds S up"})
             continue
         a = audits.get(r["id"])
         if r["status"] != "accepted" or not a or a.get("passed") is not False:
@@ -172,7 +216,8 @@ def repair(args):
 
 
 def final(args):
-    """Accepted records keep their status only with a passing audit; the rest are rejected with the reason."""
+    """Accepted records keep their status only with a passing audit; the rest are rejected with the reason.
+    A host view is kept only when its own audit passed."""
     from collections import Counter
 
     audits = read_audits(args.audit)
@@ -188,11 +233,21 @@ def final(args):
                      "audit": a}
             else:
                 r = {**r, "audit": a}
+        if r.get("host_view"):
+            a = audits.get(r["id"] + pa.HOST_SUFFIX)
+            if r["status"] == "accepted" and a and a.get("passed"):
+                r = {**r, "host_view": {**r["host_view"], "audit": a}}
+            else:
+                failed = [k for k in pa.AUDIT_KEYS if (a or {}).get(k) == "fail"]
+                r = {**r, "host_view": None, "host_view_dropped": {"reason": "audit:" + (",".join(failed) or "missing"),
+                                                                    "audit": a}}
         count[(r["type_before"], r["status"])] += 1
         out.append(r)
     write_jsonl(args.output, out)
     summary = {"rows": len(out), "status": dict(Counter(r["status"] for r in out)),
-               "by_type": {f"{t}:{s}": n for (t, s), n in sorted(count.items())}}
+               "by_type": {f"{t}:{s}": n for (t, s), n in sorted(count.items())},
+               "host_views": sum(1 for r in out if r["status"] == "accepted" and r.get("host_view")),
+               "host_views_dropped": sum(1 for r in out if r.get("host_view_dropped"))}
     Path(args.output).with_suffix(".summary.json").write_text(json.dumps(summary, indent=1) + "\n")
     print(json.dumps(summary, indent=1))
 
@@ -256,7 +311,8 @@ def build(args):
     items = list(zip(records, names))
     write_jsonl(out / "records.jsonl", records)
     summary = {**pa.summarize(records), "edited_region": {"method": pa.EDITED_METHOD, "params": pa.EDITED_PARAMS},
-               "add_anchor": {"method": pa.ANCHOR_METHOD, "params": pa.ANCHOR_PARAMS},
+               "add_anchor": {"method": pa.ANCHOR_METHOD, "params": pa.ANCHOR_PARAMS, "part_params": pa.PART_PARAMS},
+               "style_sha256": file_hash(Path(pa.style.__file__)),
                "adapter_version": pa.ADAPTER_VERSION, "protocol_source": pa.PROTOCOL_SOURCE,
                "protocol_sha256": file_hash(Path(pa.ip.__file__)), "code_commit": code_commit(),
                "time_utc": datetime.datetime.utcnow().isoformat(timespec="seconds")}
@@ -299,6 +355,17 @@ def main():
     s.add_argument("--workers", type=int, default=8)
     s.add_argument("--feedback", help="repair lines: only these rows are asked again, with the reviewer's words")
     s.add_argument("--output", required=True)
+    s = sub.add_parser("parts")
+    s.add_argument("--rows", required=True)
+    s.add_argument("--root", required=True)
+    s.add_argument("--slots", required=True)
+    s.add_argument("--remask", required=True, help="protocol_remask.py output with part candidates")
+    s.add_argument("--url", default="http://127.0.0.1:8000/v1/chat/completions")
+    s.add_argument("--model", default="qwen38-27b")
+    s.add_argument("--effort", default="low")
+    s.add_argument("--in-flight", type=int, default=32)
+    s.add_argument("--workers", type=int, default=8)
+    s.add_argument("--output", required=True, help="the re-mask records with the model's part pick")
     s = sub.add_parser("build")
     s.add_argument("--rows", required=True)
     s.add_argument("--root", required=True)
@@ -331,6 +398,8 @@ def main():
         asyncio.run(run_slots(args))
     elif args.command == "audit":
         asyncio.run(run_audit(args))
+    elif args.command == "parts":
+        asyncio.run(run_parts(args))
     elif args.command == "report":
         report(args)
     elif args.command == "repair":

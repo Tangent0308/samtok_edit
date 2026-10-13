@@ -10,6 +10,7 @@ import json
 import re
 
 VERSION = "1.0"
+MASK_SEMANTICS_VERSION = "1.1"
 OPERATIONS = {"add", "replace", "remove", "attribute"}
 PROPERTIES = {"color", "material", "finish", "pattern", "texture", "text", "tint", "opacity"}
 REMOVE_MODES = {"whole", "part", "contents", "contents_only", "lowerlegs", "hem"}
@@ -35,6 +36,9 @@ RELATIONS = {
     "mounted on",
     "sewn onto",
     "tied around",
+    "pinned to",
+    "hooked over",
+    "strapped over",
 }
 REFERENCE_RELATIONS = {"under", "above", "below", "beside", "near"}
 
@@ -45,7 +49,7 @@ def clean(value):
 
 def noun(value):
     value = clean(value)
-    return value if re.match(r"^(the|a|an|its)\b", value, re.I) else "the " + value
+    return value if re.match(r"^(the|a|an|its|each|every|both)\b", value, re.I) else "the " + value
 
 
 def make_spec(
@@ -223,4 +227,32 @@ def needs_local_execution(spec):
         "contents_only",
         "lowerlegs",
         "hem",
+    }
+
+
+def mask_contract(spec):
+    """One semantic contract for benchmark locators and training source masks.
+
+    Does not manufacture an execution region or claim visual correctness.
+    """
+    validate_spec(spec)
+    add = spec["operation"] == "add"
+    reference = add and spec["placement"].get("anchor_mode") == "reference"
+    return {
+        "version": MASK_SEMANTICS_VERSION,
+        "source_role": "anchor" if add else "target",
+        "selector": "existing visible source instance or part; holes and occluders excluded",
+        "locator_equivalence": "ref/point/box/mask identify the same source selector",
+        "output_difference_ground_truth": False,
+        "anchor_mode": spec["placement"].get("anchor_mode", "support") if add else None,
+        "direct_support_first": add,
+        "reference_exception": (
+            "direct additions must be unnatural; adjacent unique site with visible support; "
+            "no remote landmark; both Ref and No-ref retain placement"
+        )
+        if reference
+        else None,
+        "execution_region_required": needs_local_execution(spec) or reference,
+        "unrequested_source_content_preserved": True,
+        "allowed_effects": "only requested edit and physically necessary local contact, occlusion, revealed background, edges, lighting or shadows",
     }
