@@ -452,11 +452,14 @@ bash scripts/edit_check/run_arnold.sh "${ARGS[@]}"
   4. 对本节点的行（输入的第 i、i+4、i+8……行）依次执行：槽位提取 → SAM3 重打（8 张卡各一个进程，与服务并存）→ 部件挑选 → 生成记录 → 两票审核 → 修复一遍（重问、重打、重审）→ 终审；
   5. 停服务，等四个节点都完成；
   6. 节点 0 合并，写输出目录，最后写 `SUCCESS.json`。
-- **耗时**：每节点 11,850 行，估计 4–5.5 小时（依据见[文档 10 第 8.5 节](10_SAMTokEdit_Qwen21_训练数据协议适配.md)）。四机尚未实际运行过，这个数字是按本机吞吐推算的。
+- **耗时**：每节点 11,850 行。2026-10-14 的全量运行 `protocol_adapt_27b_4n_001` 每节点用 2.5 小时，从提交到完成共 2 小时 40 分钟（本机预演曾推算 4–5.5 小时，见[文档 10 第 8.5 节](10_SAMTokEdit_Qwen21_训练数据协议适配.md)）。
 - **本机预演**（2026-10-13，GPU 同时被保活进程占用约 40%）：
   - 单节点 8 卡，用全新搭建的节点环境跑通全流程：240 行两次（接受 201、多目标 25、拒收 14），1,200 行一次（1,014 / 137 / 49），后者在审核中途强行中断后续跑；
   - 模拟四个 worker：把 7.2 节的入口脚本原样执行四份（只改 run ID、输出目录、仓库地址和样本量，四份共用一个服务），96 行，四个节点的一致性核对、分片、等待与合并都通过；重复提交同一 run ID、或写入已完成的输出目录，都以退出码 2 拒绝。
-- **代码已推送**：入口脚本固定的提交 `fff8ca5` 在 GitHub 的 `qwen-image-2.1-v2` 分支上；2026-10-14 在开发机上按入口脚本的方式匿名克隆并检出，内容与本地一致。以后改动代码，要重新推送并更新 `SAMTOK_EDIT_COMMIT`，各节点从 GitHub 克隆代码。
+- **固定的代码**：
+  - 全量运行 `protocol_adapt_27b_4n_001` 用的是 `fff8ca5`；
+  - 之后加了像素把关（`f90d54d`，[文档 10 第 9 节](10_SAMTokEdit_Qwen21_训练数据协议适配.md)），并已用 `regate` 原地修过该次输出，7.2 节入口改为固定 `f90d54d`；
+  - 各节点从 GitHub 克隆代码，固定的提交必须先推送；以后改动代码，要重新推送并更新 `SAMTOK_EDIT_COMMIT`。
 
 ### 7.1 存放位置
 
@@ -505,7 +508,7 @@ ARGS=(--rows-in-flight 384 --gpu-memory-utilization 0.85)
 # ===== 固定设置 =====
 export SAMTOK_EDIT_REPO_URL=https://github.com/Tangent0308/samtok_edit.git
 export SAMTOK_EDIT_BRANCH=qwen-image-2.1-v2
-export SAMTOK_EDIT_COMMIT=fff8ca5f643f4756329d248f8ce484ae6c5a4f39
+export SAMTOK_EDIT_COMMIT=f90d54dfc782939d15ad17d216f89afb41c7e05b
 export SAMTOK_LABELING_REPO_URL=https://github.com/Tangent0308/sam3-crispedit.git
 export SAMTOK_LABELING_BRANCH=crispedit-labeling
 export SAMTOK_LABELING_COMMIT=407e9137b58c400628f7a33723f8b6f975a140e9
@@ -610,3 +613,4 @@ bash scripts/data_cleaning/protocol_arnold.sh "${ARGS[@]}"
 - **速度**：`--rows-in-flight` 只影响速度。服务端会排队，不会因并发过高而出错。
 - **ARNOLD 报错退出、共享盘上却没有 run 目录**：同第 5 节，退出码 3 表示共享盘写探针失败。
 - **结束后**：节点 0 在日志里打印接受、多目标、拒收的数量；`protocol_adapt_qwen38_27b_v1/README.md` 有完整统计；各节点 `/tmp` 里的模型副本和环境随作业结束清除。
+- **事后修复**：规则更新后，不必重跑四机，可用 `scripts/data_cleaning/protocol_adapt.py regate` 只用 CPU 原地修已有输出；被替换的文件移到输出目录的 `_trash_<日期>/`（[文档 10 第 9.3 节](10_SAMTokEdit_Qwen21_训练数据协议适配.md)）。
