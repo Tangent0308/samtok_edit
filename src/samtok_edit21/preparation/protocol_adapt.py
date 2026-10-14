@@ -42,7 +42,7 @@ from samtok_edit21.preparation import instruction_style as style
 
 PROTOCOL_SHA256 = "ed8c5d7b932e9d2e3092ad907435a0e4ac3f7203b3503178165202173dac5fb5"
 PROTOCOL_SOURCE = "Tangent0308/samtok_edit_benchmark@fef0c51:src/samtok_benchmark/v2/instruction_protocol.py"
-ADAPTER_VERSION = "protocol-adapt-3"  # 3: add S at three granularities, host views, shared style
+ADAPTER_VERSION = "protocol-adapt-4"  # 3: add S at three granularities, host views, shared style; 4: edit gates
 STYLE_SHA256 = "6546b3958e94372bfdefa9e2d4290500349dc801253ab7930697ebc2757e95e5"
 # The shared writing rules without the benchmark's add authoring policy: that policy chooses a natural item for a
 # host, while a training pair already shows its item; the cleaning-side add rules are in the slot prompt.
@@ -616,8 +616,9 @@ def sam_prompt(spec, host_ref="", part=False):
 async def extract(client, row, parts, ground, feedback=None, ground_after=None):
     """Slots (re-asked with the problem stated until they form a valid spec), then the grounding calls.
 
-    feedback: {"problems": reviewer text, "remask": bool} from a failed audit; the slots are asked
-    again with the reviewer's words, and a remask forces a new SAM3 mask for S.
+    feedback: {"problems": reviewer text, "remask": bool, "on_label": bool} from a failed audit or edit gate; the
+    slots are asked again with the reviewer's words, a remask forces a new SAM3 mask for S, and on_label points its
+    grounding at the labeled source object.
     ground_after: AFTER for the grounding call; for a Derived add (its label marks the host, not the new item)
     the new item is boxed there, so that the pixels the generator also changed elsewhere do not count as the item.
     """
@@ -675,8 +676,14 @@ async def extract(client, row, parts, ground, feedback=None, ground_after=None):
         calls.append(("item", ground_prompt(f"the {item}", f"{spec['placement'].get('relation', 'to')} {spec['ref']}"),
                       ground_after))
     if plan["source"] == "sam3":
+        # A part that became S, or an S re-masked because it missed the edit, belongs to the labeled source object:
+        # its box tells the grounding which instance (the part noun alone took a neighbor's shirt or face).
+        on_label = not add and row.get("instances") and (part_ref or (feedback or {}).get("on_label"))
+        host_hint = ("it is on the object at about [{}, {}, {}, {}] (0-1000 coordinates)".format(
+            *union(row["instances"])["box_1000"]) if on_label else "")
         hint = "; ".join(x for x in (slots.get("s_location"),
-                                     item_hint and item_hint + ", so the box must include the part of it there") if x)
+                                     item_hint and item_hint + ", so the box must include the part of it there",
+                                     host_hint) if x)
         if (feedback or {}).get("remask"):
             hint += f"; a previous selection was wrong: {feedback['problems']}"
         # An add anchor is segmented whole (object or surface): its part is found inside it, a large one cut later.
@@ -1424,13 +1431,22 @@ def summarize(records):
 
 # ---------------------------------------------------------------- edited region
 
-EDITED_METHOD = "lab-diff-hysteresis-1"
+EDITED_METHOD = "lab-diff-hysteresis-2"  # 2: noise measured outside S, not over the edit, when S fills the image
 # Calibrated on round 7: backgrounds of pasted and most linked pairs are identical (Delta E 0); resized pairs carry
 # noise with a median of about 2 and a 99th percentile of about 6; real edits sit at 10 to 40 and more. The noise
 # level is 3x the median far from S, which matches that 99th percentile but ignores real changes elsewhere.
 EDITED_PARAMS = {"blur_sigma": 1.0, "t_low": 6.0, "t_high": 12.0, "low_k": 1.5, "high_k": 2.5,
                  "noise_far_frac": 0.08, "zone_frac": 0.06, "close_frac": 0.004, "hole_frac": 0.005,
-                 "min_component_frac": 0.0002, "keep_in_zone": 0.3}
+                 "min_component_frac": 0.0002, "keep_in_zone": 0.3, "noise_min_frac": 0.05}
+# Hard gates of a non-add record on the pixels that really changed (full run 2026-10-14, every hit looked at):
+# - S unchanged: under a tenth of S changed (33 rows: 32 S on another instance or part, 1 S beside the change).
+#   Recolors that change only part of S stay: vehicles repainted on the body panels only reach 0.17 to 0.19.
+# - S off the edit: a SAM3 re-mask left the labeled source while the change lies in that label and not in S
+#   (the model or SAM3 took another instance or part); for replace, whose new item may be much larger than S,
+#   the old object must be largely unchanged instead.
+# Both need a trustworthy noise level: above max_noise subtle edits can drop out of the region, so it is flagged only.
+EDIT_GATES = {"s_unchanged": 0.1, "max_noise": 15.0, "off_label": 0.5, "change_in_label": 0.9, "change_in_s": 0.1,
+              "replace_s_changed": 0.3}
 
 
 def grow(mask, radius):
@@ -1466,8 +1482,17 @@ def edited_region(source, target, s_mask, exec_mask=None, params=EDITED_PARAMS):
     h, w = d.shape
     diag = (h * h + w * w) ** 0.5
     anchor = s_mask | exec_mask if exec_mask is not None else s_mask
-    far = ~grow(anchor, p["noise_far_frac"] * diag)
-    noise = 3 * float(np.median(d[far] if far.sum() > 0.05 * h * w else d))
+    # Noise is measured where nothing was edited: far from S and the execution region; when they fill the image,
+    # outside them; when even that is too small, the calibrated floor. The median over the whole image used before
+    # measured the edit itself when S covered most of it (a replaced pizza at 82%: 24, leaving one speck).
+    enough = p["noise_min_frac"] * h * w
+    noise_from = "far"
+    pixels = ~grow(anchor, p["noise_far_frac"] * diag)
+    if pixels.sum() < enough:
+        noise_from, pixels = "outside", ~anchor
+    if pixels.sum() < enough:
+        noise_from, pixels = "floor", None
+    noise = 3 * float(np.median(d[pixels])) if pixels is not None else 0.0
     t_low, t_high = max(p["t_low"], p["low_k"] * noise), max(p["t_high"], p["high_k"] * noise)
     low = d > t_low
     count, labels = cv2.connectedComponents(low.astype(np.uint8), connectivity=8)
@@ -1497,7 +1522,7 @@ def edited_region(source, target, s_mask, exec_mask=None, params=EDITED_PARAMS):
     keep[0] = False
     region = keep[labels]
     total = float(h * w)
-    stats_out = {"noise": round(noise, 2), "t_low": round(t_low, 2), "t_high": round(t_high, 2),
+    stats_out = {"noise": round(noise, 2), "noise_from": noise_from, "t_low": round(t_low, 2), "t_high": round(t_high, 2),
                  "area_frac": round(region.sum() / total, 5), "components": int(keep.sum()),
                  "dropped_far_frac": round(float(area[1:][big[1:] & ~near[1:]].sum()) / total, 5),
                  "dropped_small_frac": round(float(area[1:][~big[1:]].sum()) / total, 5),
@@ -1506,8 +1531,36 @@ def edited_region(source, target, s_mask, exec_mask=None, params=EDITED_PARAMS):
     return (region if region.any() else None), stats_out
 
 
-def attach_edited_region(record, region, stats):
-    """Store the edited region on an accepted record; a record without one cannot stay accepted."""
+def edit_gates(record, region, stats, s_mask, label_mask=None, params=EDIT_GATES):
+    """Hard reasons a non-add record cannot stay accepted although its edited region exists: S did not change, or a
+    re-masked S lies off the labeled source that holds the change. Returns (reasons, label statistics)."""
+    op = record["instruction_spec"]["operation"]
+    if op == "add":
+        return [], {}
+    p = params
+    region_px = max(int(region.sum()), 1)
+    change_in_s = float((region & s_mask).sum()) / region_px
+    label = {}
+    reasons = []
+    reliable = stats["noise"] <= p["max_noise"]
+    if reliable and stats["s_covered"] < p["s_unchanged"]:
+        reasons.append("edited_region_misses_s")
+    if label_mask is not None and label_mask.any():
+        label = {"s_in_label": round(float((s_mask & label_mask).sum()) / max(int(s_mask.sum()), 1), 3),
+                 "change_in_label": round(float((region & label_mask).sum()) / region_px, 3),
+                 "change_in_s": round(change_in_s, 3)}
+        remasked = str((record.get("selection") or {}).get("source", "")).startswith("sam3")
+        missed = (stats["s_covered"] < p["replace_s_changed"] if op == "replace"
+                  else change_in_s < p["change_in_s"])
+        if (reliable and remasked and label["s_in_label"] < p["off_label"]
+                and label["change_in_label"] >= p["change_in_label"] and missed):
+            reasons.append("selection_off_edit")
+    return reasons, label
+
+
+def attach_edited_region(record, region, stats, s_mask=None, label_mask=None):
+    """Store the edited region on an accepted record; a record without one, or whose S the pixels contradict
+    (edit_gates), cannot stay accepted."""
     if record["status"] != "accepted":
         return record
     record = {**record, "flags": list(record["flags"])}
@@ -1523,8 +1576,14 @@ def attach_edited_region(record, region, stats):
         record["flags"].append("edited_region_misses_s")
     if stats["in_anchor"] < 0.3:
         record["flags"].append("edited_region_off_anchor")
+    if stats["noise"] > EDIT_GATES["max_noise"]:
+        record["flags"].append("edited_region_noisy")
+    reasons, label = edit_gates(record, region, stats, decode(record["selection"]) if s_mask is None else s_mask,
+                                label_mask)
     record["edited_region"] = {"method": EDITED_METHOD, **encode(region), "area_frac": stats["area_frac"],
-                               "stats": stats}
+                               "stats": {**stats, **({"label": label} if label else {})}}
+    if reasons:
+        record.update(status="rejected", reason=",".join(reasons))
     return record
 
 # ---------------------------------------------------------------- review sheets

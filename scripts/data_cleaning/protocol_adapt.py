@@ -8,7 +8,8 @@
   report  records + audit: rates per source and type, and the rows to look at;
   repair  feedback for the rows that failed the audit (slots --feedback re-asks them, re-masking S when
           the audit faults the outline);
-  final   the gate: only records that passed the audit stay accepted.
+  final   the gate: only records that passed the audit stay accepted;
+  regate  a finished output through the current edited region and edit gates, in place with --apply.
 """
 from __future__ import annotations
 
@@ -195,6 +196,8 @@ def repair(args):
                 "reference_side": "the new item is not on the stated side of S",
                 "reference_direction": "the new item is not above/below S as stated",
                 "reference_item_inside_anchor": "the new item overlaps S, so beside/under/above/below is false"}
+    edit = {"edited_region_misses_s": "the outlined S stays the same in AFTER; another object or part changes",
+            "selection_off_edit": "the outlined S is not where the edit happened; the labeled object changes"}
     for r in pa.read_jsonl(args.records):
         reasons = (r.get("reason") or "").split(",")
         if r["status"] == "rejected" and set(reasons) <= set(geometry):
@@ -205,6 +208,12 @@ def repair(args):
                                       "attached to: an object, a part of one, or a stretch of a surface such as the "
                                       "road, floor, sand or water (the sky only for things that fly); \"under\" only "
                                       "when the new item holds S up"})
+            continue
+        if r["status"] == "rejected" and set(reasons) <= set(edit):
+            # The pixels show S unchanged: ask again for the object or part that changes, on the labeled source.
+            out.append({"id": r["id"], "failed": ["target"], "remask": True, "on_label": True,
+                        "problems": "target failed: " + "; ".join(edit[x] for x in reasons)
+                                    + ". S is the object or part that changes from BEFORE to AFTER"})
             continue
         a = audits.get(r["id"])
         if r["status"] != "accepted" or not a or a.get("passed") is not False:
@@ -284,18 +293,104 @@ def report(args):
 
 
 def finish(job):
-    """Per row, with the pair loaded once: the record, its edited region (accepted records) and the review sheet."""
+    """Per row, with the pair loaded once: the record, its edited region and edit gates (accepted records) and the
+    review sheet."""
     row, extracted, remasked, root, path = job
     images = pa.open_pair(row, root)
     derived_exec = pa.derived_execution_region(row) if row["dataset"] == "derived" and row["type"] == "remove" else None
     record = pa.build(row, extracted, remasked, derived_exec, images)
     if record["status"] == "accepted":
-        exec_mask = pa.decode(record["execution_region"]) if record.get("execution_region") else None
-        region, stats = pa.edited_region(*images, pa.decode(record["selection"]), exec_mask)
-        record = pa.attach_edited_region(record, region, stats)
+        record = gate(row, record, images)
     if path:
         pa.review_sheet(row, record, root, images).save(path, quality=88)
     return record
+
+
+EDITED_FLAGS = ("edited_region_tiny", "edited_region_far_changes", "edited_region_misses_s", "edited_region_off_anchor",
+                "edited_region_noisy")
+
+
+def gate(row, record, images):
+    """The edited region of an accepted record and the gates on it; flags of an earlier pass are replaced."""
+    record = {**record, "flags": [f for f in record["flags"] if f not in EDITED_FLAGS]}
+    s_mask = pa.decode(record["selection"])
+    exec_mask = pa.decode(record["execution_region"]) if record.get("execution_region") else None
+    label = pa.decode(pa.union(row["instances"])) if row.get("instances") else None
+    region, stats = pa.edited_region(*images, s_mask, exec_mask)
+    return pa.attach_edited_region(record, region, stats, s_mask, label)
+
+
+def regate_one(job):
+    """One record of a finished output through the current edited region and gates (accepted records only)."""
+    row, record, root = job
+    if record["status"] != "accepted":
+        return record
+    return gate(row, record, pa.open_pair(row, root))
+
+
+def regate(args):
+    """Every accepted record of a finished output through the current edited region and edit gates (CPU only).
+
+    Records the gates reject leave the manifest; a record whose region changes keeps its status. Without --apply
+    only the report is written; with it the output is rewritten in place and the replaced files are kept."""
+    from collections import Counter
+
+    from samtok_edit21.distributed import protocol_adapt as dist
+
+    output = Path(args.output)
+    rows = pa.load_rows(args.no_text_action, args.kept)
+    records = pa.read_jsonl(output / "records.jsonl")
+    if [r["id"] for r in records] != [r["id"] for r in rows]:
+        raise SystemExit("records.jsonl does not follow the input rows")
+    with ProcessPoolExecutor(args.workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        new = list(pool.map(regate_one, [(row, record, args.root) for row, record in zip(rows, records)], chunksize=8))
+    # Records a reviewer found wrong where no gate can tell (an unmentioned extra change, an S much larger than the
+    # change): rejected by id, with the reviewer's note.
+    exclude = {}
+    for line in open(args.exclude) if args.exclude else []:
+        if line.strip() and not line.startswith("#"):
+            key, note = line.rstrip("\n").split("\t", 1)
+            exclude[key] = note
+    unknown = set(exclude) - {r["id"] for r in records if r["status"] == "accepted"}
+    if unknown:
+        raise SystemExit(f"--exclude names records that are not accepted: {sorted(unknown)}")
+    new = [{**r, "status": "rejected", "reason": "manual_review", "review_note": exclude[r["id"]]}
+           if r["id"] in exclude and r["status"] == "accepted" else r for r in new]
+    changes, report = Counter(), []
+    for old, rec in zip(records, new):
+        if old["status"] != "accepted":
+            continue
+        region_changed = (old.get("edited_region") or {}).get("rle_counts") != (rec.get("edited_region") or {}).get("rle_counts")
+        if rec["status"] != old["status"]:
+            changes[f"rejected:{rec['reason']}"] += 1
+        elif region_changed:
+            changes["edited_region_recomputed"] += 1
+        else:
+            continue
+        stats = (rec.get("edited_region") or {}).get("stats") or rec.get("edited_region_stats") or {}
+        report.append({"id": rec["id"], "dataset": rec["dataset"], "operation": rec["instruction_spec"]["operation"],
+                       "status": rec["status"], "reason": rec.get("reason"), "region_changed": region_changed,
+                       "s_covered_before": ((old.get("edited_region") or {}).get("stats") or {}).get("s_covered"),
+                       "stats": stats, "instruction_ref": rec["instruction_ref"]})
+    write_jsonl(args.report, report)
+    accepted = sum(r["status"] == "accepted" for r in records), sum(r["status"] == "accepted" for r in new)
+    print(json.dumps({"accepted_before": accepted[0], "accepted_after": accepted[1], "changes": dict(changes),
+                      "report": args.report}, indent=1))
+    if not args.apply:
+        return
+    today = datetime.datetime.utcnow().strftime("%Y%m%d")
+    note = {"version": "edit-gates-1", "code_commit": code_commit(),
+            "time_utc": datetime.datetime.utcnow().isoformat(timespec="seconds"),
+            "description": "edited regions recomputed (noise measured outside S when S fills the image) and non-add "
+                           "records whose S the pixels contradict rejected (edited_region_misses_s, "
+                           "selection_off_edit)" + (f"; {len(exclude)} records a reviewer found wrong rejected "
+                                                    "(manual_review)" if exclude else "") + "; see docs/10.",
+            "edited_region_method": pa.EDITED_METHOD, "edit_gates": pa.EDIT_GATES,
+            "manual_review": exclude,
+            "accepted_before": accepted[0], "accepted_after": accepted[1], "changes": dict(changes),
+            "previous_files": f"_trash_{today}/"}
+    summary = dist.regate(output, rows, new, output / f"_trash_{today}", note)
+    print(json.dumps({k: summary[k] for k in ("rows", "status", "accepted_by_operation")}, indent=1))
 
 
 def build(args):
@@ -392,6 +487,16 @@ def main():
         s.add_argument("--records", required=True)
         s.add_argument("--audit", action="append", default=[], help="audit files; later ones win")
         s.add_argument("--output", required=True)
+    s = sub.add_parser("regate", help="a finished output through the current edited region and edit gates")
+    s.add_argument("--output", required=True, help="the adaptation folder (records.jsonl, manifest_protocol.jsonl)")
+    s.add_argument("--no-text-action", required=True)
+    s.add_argument("--kept", required=True)
+    s.add_argument("--root", required=True)
+    s.add_argument("--workers", type=int, default=64)
+    s.add_argument("--report", required=True, help="JSONL of every record whose status or edited region changes")
+    s.add_argument("--exclude", help="TSV of accepted records a reviewer rejects: id<TAB>note")
+    s.add_argument("--apply", action="store_true",
+                   help="rewrite the output in place; the replaced files move to <output>/_trash_<date>/")
     args = p.parse_args()
     if args.command == "pilot":
         pilot(args)
@@ -407,6 +512,8 @@ def main():
         repair(args)
     elif args.command == "final":
         final(args)
+    elif args.command == "regate":
+        regate(args)
     else:
         build(args)
 

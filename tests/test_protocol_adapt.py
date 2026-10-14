@@ -293,11 +293,59 @@ def test_edited_region_keeps_faint_shadows_joined_to_the_edit_and_drops_far_chan
 def test_records_without_an_edited_region_are_not_accepted():
     s, _ = pa.normalize_slots(slots(operation="attribute", attributes=[{"property": "color", "value": "red"}]))
     record = {"status": "accepted", "flags": [], "instruction_spec": pa.to_spec(s)}
-    stats = {"area_frac": 0.1, "dropped_far_frac": 0.0, "s_covered": 0.05, "in_anchor": 0.9}
-    assert pa.attach_edited_region(record, None, stats)["status"] == "rejected"
-    kept = pa.attach_edited_region(record, square(1, 9, 1, 9, shape=(10, 10)), stats)
+    stats = {"area_frac": 0.1, "dropped_far_frac": 0.0, "s_covered": 0.15, "in_anchor": 0.9, "noise": 0.0}
+    s_mask = square(1, 9, 1, 9, shape=(10, 10))
+    assert pa.attach_edited_region(record, None, stats, s_mask)["status"] == "rejected"
+    kept = pa.attach_edited_region(record, square(1, 9, 1, 9, shape=(10, 10)), stats, s_mask)
     assert kept["status"] == "accepted" and "edited_region_misses_s" in kept["flags"]
     assert kept["edited_region"]["method"] == pa.EDITED_METHOD and kept["edited_region"]["rle_counts"]
+
+
+def _attribute_record(source="reused"):
+    s, _ = pa.normalize_slots(slots(operation="attribute", attributes=[{"property": "color", "value": "red"}]))
+    return {"status": "accepted", "flags": [], "instruction_spec": pa.to_spec(s), "selection": {"source": source}}
+
+
+def test_edit_gates_reject_an_s_that_did_not_change():
+    shape = (60, 80)
+    s_mask, label = square(10, 30, 5, 25, shape=shape), square(10, 30, 40, 60, shape=shape)
+    change = square(12, 28, 42, 58, shape=shape)  # the neighbor changed, S did not
+    stats = {"area_frac": 0.05, "dropped_far_frac": 0.0, "s_covered": 0.0, "in_anchor": 0.0, "noise": 0.0}
+    out = pa.attach_edited_region(_attribute_record("sam3"), change, stats, s_mask, label)
+    assert out["status"] == "rejected" and out["reason"] == "edited_region_misses_s,selection_off_edit"
+    assert out["edited_region"]["stats"]["label"] == {"s_in_label": 0.0, "change_in_label": 1.0, "change_in_s": 0.0}
+    # The same pixels with a reused (labeled) S: only the first gate applies.
+    out = pa.attach_edited_region(_attribute_record("reused"), change, stats, s_mask, label)
+    assert out["status"] == "rejected" and out["reason"] == "edited_region_misses_s"
+
+
+def test_edit_gates_keep_partial_recolors_large_replacements_and_noisy_pairs():
+    shape = (60, 80)
+    s_mask, label = square(10, 50, 5, 45, shape=shape), square(10, 50, 50, 75, shape=shape)
+    body = square(10, 20, 5, 45, shape=shape)  # a quarter of S repainted, like a car's body panels
+    stats = {"area_frac": 0.08, "dropped_far_frac": 0.0, "s_covered": 0.25, "in_anchor": 1.0, "noise": 0.0}
+    out = pa.attach_edited_region(_attribute_record("sam3"), body, stats, s_mask, label)
+    assert out["status"] == "accepted" and "edited_region_misses_s" not in out["flags"]
+    s, _ = pa.normalize_slots(slots(operation="replace", payload="a large tent"))
+    replace = {**_attribute_record("sam3"), "instruction_spec": pa.to_spec(s)}
+    tent = square(0, 60, 0, 80, shape=shape)  # far larger than S, mostly over the labeled area too
+    stats = {**stats, "s_covered": 1.0, "area_frac": 1.0}
+    assert pa.attach_edited_region(replace, tent, stats, s_mask, label)["status"] == "accepted"
+    noisy = {**stats, "s_covered": 0.0, "noise": 20.0}
+    out = pa.attach_edited_region(_attribute_record("sam3"), square(12, 28, 52, 70, shape=shape), noisy, s_mask, label)
+    assert out["status"] == "accepted" and {"edited_region_misses_s", "edited_region_noisy"} <= set(out["flags"])
+
+
+def test_edited_region_measures_noise_outside_an_s_that_fills_the_image():
+    source = _scene(5)
+    s_mask = square(0, 150, 0, 190, shape=(160, 200))  # S covers 89% of the image, as a replaced pizza did
+    target = _with(source, (0, 0, 190, 150), (200, 120, 40))  # the whole of S changes
+    region, stats = pa.edited_region(source, target, s_mask)
+    assert stats["noise_from"] == "outside" and stats["noise"] < 1
+    assert region is not None and stats["s_covered"] > 0.9
+    full = square(0, 160, 0, 200, shape=(160, 200))
+    region, stats = pa.edited_region(source, _with(source, (0, 0, 200, 160), (200, 120, 40)), full)
+    assert stats["noise_from"] == "floor" and stats["s_covered"] > 0.9
 
 
 def add_spec(relation="on", **values):

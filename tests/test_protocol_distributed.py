@@ -54,3 +54,49 @@ def test_merged_records_let_later_files_win(tmp_path):
     dist.write_jsonl(second, [{"id": "y", "v": 2}])
     assert dist.merged_records([first, second, tmp_path / "missing.jsonl"]) == {"x": {"id": "x", "v": 1}, "y": {"id": "y", "v": 2}}
     assert dist.count_lines(first) == 2 and dist.count_lines(tmp_path / "missing.jsonl") == 0
+
+
+def test_regate_rewrites_the_output_in_place_and_keeps_the_replaced_files(tmp_path):
+    rows = [{"id": f"r{k}", "source_image": f"images/{k}_a.jpg", "target_image": f"images/{k}_b.jpg"} for k in range(3)]
+    records = [record("r0", "accepted"), record("r1", "accepted"),
+               record("r2", "rejected", reason="Moving a man is not an allowed operation.")]
+    final = tmp_path / "final.jsonl"
+    dist.write_jsonl(final, records)
+    out = tmp_path / "out"
+    dist.merge(rows, [final], out, {"run_id": "run", "git_commit": "abc"}, {"adapt_hours_max": 0.1})
+    assert json.loads((out / "summary.json").read_text())["rejected_by_reason"] == {"slots_reject": 1}
+    gated = [records[0], {**records[1], "status": "rejected", "reason": "edited_region_misses_s"}, records[2]]
+    note = {"version": "edit-gates-1", "time_utc": "t", "code_commit": "def", "description": "S unchanged.",
+            "accepted_before": 2, "accepted_after": 1, "changes": {"rejected:edited_region_misses_s": 1},
+            "previous_files": "_trash_x/"}
+    try:
+        dist.regate(out, rows, list(reversed(gated)), out / "_trash_y", note)
+    except ValueError as error:
+        assert "input order" in str(error)
+    else:
+        raise AssertionError("records out of input order must be refused")
+    summary = dist.regate(out, rows, gated, out / "_trash_x", note)
+    assert summary["status"] == {"accepted": 1, "rejected": 2} and summary["post_fix"] == [note]
+    assert summary["run_id"] == "run" and summary["timing"] == {"adapt_hours_max": 0.1}
+    assert summary["rejected_by_reason"] == {"edited_region_misses_s": 1, "slots_reject": 1}
+    manifest = [json.loads(line) for line in (out / "manifest_protocol.jsonl").read_text().splitlines()]
+    assert [r["id"] for r in manifest] == ["r0"]
+    old = [json.loads(line) for line in (out / "_trash_x" / "manifest_protocol.jsonl").read_text().splitlines()]
+    assert [r["id"] for r in old] == ["r0", "r1"] and (out / "_trash_x" / "README.md").exists()
+    assert json.loads((out / "config.json").read_text())["post_fix"] == [note]
+    assert "Post-run fix `edit-gates-1`" in (out / "README.md").read_text()
+
+
+def test_repair_asks_again_for_records_whose_s_the_pixels_contradict(tmp_path):
+    import sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "data_cleaning"))
+    import protocol_adapt as cli
+    records = tmp_path / "records.jsonl"
+    dist.write_jsonl(records, [record("a", "rejected", reason="edited_region_misses_s,selection_off_edit"),
+                               record("b", "rejected", reason="sam3_failed")])
+    cli.repair(SimpleNamespace(records=str(records), audit=[], output=str(tmp_path / "repair.jsonl")))
+    lines = [json.loads(line) for line in (tmp_path / "repair.jsonl").read_text().splitlines()]
+    assert [x["id"] for x in lines] == ["a"] and lines[0]["remask"] and lines[0]["on_label"]
+    assert lines[0]["failed"] == ["target"] and "labeled object changes" in lines[0]["problems"]

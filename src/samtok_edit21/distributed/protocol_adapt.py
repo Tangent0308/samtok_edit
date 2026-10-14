@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import random
+import re
 import shutil
 import signal
 import subprocess
@@ -331,9 +332,31 @@ def merge(rows, finals, output, common, timing):
     missing = [r["id"] for r in rows if r["id"] not in records_by_id]
     if missing:
         raise RuntimeError(f"{len(missing)} rows have no final record, e.g. {missing[:3]}")
+    summary = {**write_dataset(rows, [records_by_id[r["id"]] for r in rows], output),
+               "timing": timing, "run_id": common["run_id"], "git_commit": common["git_commit"],
+               "time_utc": datetime.datetime.utcnow().isoformat(timespec="seconds")}
+    output = Path(output)
+    atomic_json(output / "summary.json", summary)
+    atomic_json(output / "config.json", {**common,
+                                          "anchor": {"method": pa.ANCHOR_METHOD, "params": pa.ANCHOR_PARAMS,
+                                                     "part_params": pa.PART_PARAMS},
+                                          "edited_region": {"method": pa.EDITED_METHOD, "params": pa.EDITED_PARAMS},
+                                          "edit_gates": pa.EDIT_GATES,
+                                          "prompts_sha256": {name: sha256_bytes(getattr(pa, name).encode())
+                                                             for name in ("SLOT_PROMPT", "AUDIT_PROMPT",
+                                                                          "PART_PICK_PROMPT", "GROUND_PROMPT",
+                                                                          "PART_GROUND_PROMPT")}})
+    (output / "README.md").write_text(readme(summary, common))
+    return summary
+
+
+def write_dataset(rows, records, output):
+    """records.jsonl (every row), manifest_protocol.jsonl (accepted, with image paths) and multi_object.jsonl of
+    `records`, which follow the order of `rows`; returns their counts."""
+    if [r["id"] for r in records] != [r["id"] for r in rows]:
+        raise ValueError("records are not in input order")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    records = [records_by_id[r["id"]] for r in rows]
     write_jsonl(output / "records.jsonl", records)
     images = {r["id"]: {k: r[k] for k in ("source_image", "target_image")} for r in rows}
     accepted = [{**images[r["id"]], **{k: r.get(k) for k in MANIFEST_FIELDS}} for r in records
@@ -344,29 +367,43 @@ def merge(rows, finals, output, common, timing):
     by = Counter((r["type_before"], r["status"], (r.get("instruction_spec") or {}).get("operation", "-"))
                  for r in records)
     adds = [r for r in accepted if r["instruction_spec"]["operation"] == "add"]
-    summary = {
+    return {
         "rows": len(records), "status": dict(status),
         "accepted_by_operation": dict(Counter(r["instruction_spec"]["operation"] for r in accepted)),
         "by_type_status_operation": {f"{t}:{s}:{o}": n for (t, s, o), n in sorted(by.items())},
-        "rejected_by_reason": dict(Counter((r.get("reason") or "-").split(":")[0].split(",")[0]
-                                           for r in records if r["status"] == "rejected").most_common()),
+        "rejected_by_reason": dict(Counter(reason_key(r) for r in records if r["status"] == "rejected").most_common()),
         "add_granularity": dict(Counter(r["selection"].get("granularity") for r in adds)),
         "add_anchor_mode": dict(Counter(r["instruction_spec"]["placement"]["anchor_mode"] for r in adds)),
         "host_views": sum(1 for r in accepted if r.get("host_view")),
         "selection_sources": dict(Counter(r["selection"]["source"] for r in accepted)),
-        "timing": timing, "run_id": common["run_id"], "git_commit": common["git_commit"],
-        "time_utc": datetime.datetime.utcnow().isoformat(timespec="seconds"),
     }
+
+
+def reason_key(record):
+    """A rejection's first reason code; the slot model's own words (its reject decisions) count as slots_reject."""
+    key = (record.get("reason") or "-").split(":")[0].split(",")[0]
+    return key if re.fullmatch(r"[a-z0-9_]+|-", key) else "slots_reject"
+
+
+def regate(output, rows, records, before, apply_note):
+    """A finished output rewritten in place with re-gated records (`records`, in input order): the earlier files go to
+    `before`, the counts are recomputed, and config.json, summary.json and README.md record the pass (apply_note)."""
+    output, before = Path(output), Path(before)
+    if [r["id"] for r in records] != [r["id"] for r in rows]:
+        raise ValueError("records are not in input order")  # checked before any file moves
+    old_summary = json.loads((output / "summary.json").read_text())
+    old_config = json.loads((output / "config.json").read_text())
+    before.mkdir(parents=True, exist_ok=False)
+    for name in ("records.jsonl", "manifest_protocol.jsonl", "multi_object.jsonl", "summary.json", "config.json",
+                 "README.md"):
+        (output / name).rename(before / name)
+    passes = old_summary.get("post_fix", []) + [apply_note]
+    summary = {**write_dataset(rows, records, output),
+               **{k: old_summary[k] for k in ("timing", "run_id", "git_commit")},
+               "time_utc": old_summary["time_utc"], "post_fix": passes}
     atomic_json(output / "summary.json", summary)
-    atomic_json(output / "config.json", {**common,
-                                          "anchor": {"method": pa.ANCHOR_METHOD, "params": pa.ANCHOR_PARAMS,
-                                                     "part_params": pa.PART_PARAMS},
-                                          "edited_region": {"method": pa.EDITED_METHOD, "params": pa.EDITED_PARAMS},
-                                          "prompts_sha256": {name: sha256_bytes(getattr(pa, name).encode())
-                                                             for name in ("SLOT_PROMPT", "AUDIT_PROMPT",
-                                                                          "PART_PICK_PROMPT", "GROUND_PROMPT",
-                                                                          "PART_GROUND_PROMPT")}})
-    (output / "README.md").write_text(readme(summary, common))
+    atomic_json(output / "config.json", {**old_config, "post_fix": old_config.get("post_fix", []) + [apply_note]})
+    (output / "README.md").write_text(readme(summary, old_config))
     return summary
 
 
@@ -399,6 +436,11 @@ def readme(summary, common):
         "Rejected by reason: " + ", ".join(f"{k} {v}" for k, v in summary["rejected_by_reason"].items()) + ".",
         "",
     ]
+    for note in summary.get("post_fix", []):
+        lines += [f"Post-run fix `{note['version']}` ({note['time_utc']}, commit {note['code_commit']}): "
+                  f"{note['description']} Accepted {note['accepted_before']} -> {note['accepted_after']}; "
+                  "changes: " + ", ".join(f"{k} {v}" for k, v in note["changes"].items())
+                  + f". The files it replaced are in `{note['previous_files']}`.", ""]
     return "\n".join(lines)
 
 
