@@ -240,6 +240,17 @@ def write(args):
         raise SystemExit(f"{out} already holds a finished recall; choose a new folder")
     out.mkdir(parents=True, exist_ok=True)
     records = [final_records[r["id"]] for r in pairs]
+    # Pairs a reviewer found wrong where no gate can tell: rejected by id, with the reviewer's note.
+    exclude = {}
+    for line in open(args.exclude) if args.exclude else []:
+        if line.strip() and not line.startswith("#"):
+            key, note = line.rstrip("\n").split("\t", 1)
+            exclude[key] = note
+    unknown = set(exclude) - {r["id"] for r in records if r["status"] == "accepted"}
+    if unknown:
+        raise SystemExit(f"--exclude names pairs that are not accepted: {sorted(unknown)}")
+    records = [{**r, "status": "rejected", "reason": "manual_review", "review_note": exclude[r["id"]]}
+               if r["id"] in exclude else r for r in records]
     images = {r["id"]: {k: r[k] for k in ("source_image", "target_image")} for r in pairs}
     accepted = [{**images[r["id"]], **{k: r.get(k) for k in MANIFEST_FIELDS}} for r in records
                 if r["status"] == "accepted"]
@@ -269,7 +280,7 @@ def write(args):
                                   ("GROUND_PROMPT", pa.GROUND_PROMPT), ("PART_GROUND_PROMPT", pa.PART_GROUND_PROMPT),
                                   ("PART_PICK_PROMPT", pa.PART_PICK_PROMPT))},
               "protocol_sha256": file_hash(Path(ip.__file__)), "code_commit": summary["code_commit"],
-              "model": args.model_note}
+              "model": args.model_note, "manual_review": exclude}
     (out / "config.json").write_text(json.dumps(config, indent=1, ensure_ascii=False) + "\n")
     (out / "README.md").write_text(readme(summary))
     print(json.dumps({k: summary[k] for k in ("pairs", "status", "units", "units_per_pair", "unit_operations")},
@@ -373,6 +384,7 @@ def main():
     s.add_argument("--rows", required=True)
     s.add_argument("--final", required=True)
     s.add_argument("--model-note", default="Qwen3.8-27B (vLLM 0.28, DP 8), SAM3")
+    s.add_argument("--exclude", help="TSV of accepted pairs a reviewer rejects: id<TAB>note")
     s.add_argument("--output", required=True)
     args = p.parse_args()
     if args.command == "rows":
