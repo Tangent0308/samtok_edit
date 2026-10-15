@@ -658,20 +658,33 @@ async def extract(client, row, parts, ground, feedback=None, ground_after=None):
     record["slots"], record["spec"] = slots, spec
     if spec is None:
         return record
+    return await ground_record(client, row, ground, record, feedback, ground_after)
+
+
+def item_footprint_label(row):
+    """The cleaned region where it marks an add's new item: not for a Derived add (its label is the host) nor for a
+    unit of a multi-object pair whose new item has no label of its own (region None)."""
+    return decode(row["region"]) if row["dataset"] != "derived" and row.get("region") else None
+
+
+async def ground_record(client, row, ground, record, feedback=None, ground_after=None):
+    """The grounding calls of a record whose slots and spec are set: S unaided (blind) and with hints, an add's part,
+    and the new item in AFTER when no label marks it. A unit row may carry ground_hint (where its object is)."""
+    slots, spec = record["slots"], record["spec"]
     plan = selection_plan(row, slots, spec)
     if "part_as_s" in slots["fixes"] or (feedback or {}).get("remask"):
         plan = {"source": "sam3", **{k: v for k, v in plan.items() if k in ("granularity", "part")}}
     record["plan"] = plan
     add = spec["operation"] == "add"
     item_hint = ""
-    if add and row["dataset"] != "derived":
+    if add and row["dataset"] != "derived" and row.get("region"):
         # The cleaned region marks the new item: the host box must reach that spot, and the part is the one there.
         item_hint = "the new item will be at about [{}, {}, {}, {}] (0-1000 coordinates)".format(*row["region"]["box_1000"])
     # A part that is S (a part-level add, or a named part of a labeled host) is boxed as a part: the object prompt
     # asks for the complete object, "for a person head and limbs", and returns the wearer for a shirt.
     part_ref = "part_as_s" in slots["fixes"]
     calls = [("blind", ground_prompt(spec["ref"], part=plan.get("part", False) or part_ref), ground)]
-    if add and row["dataset"] == "derived" and ground_after:
+    if add and (row["dataset"] == "derived" or not row.get("region")) and ground_after:
         item = re.sub(r"(?i)^(the|a|an|one)\s+", "", spec["payload"])
         calls.append(("item", ground_prompt(f"the {item}", f"{spec['placement'].get('relation', 'to')} {spec['ref']}"),
                       ground_after))
@@ -683,7 +696,7 @@ async def extract(client, row, parts, ground, feedback=None, ground_after=None):
             *union(row["instances"])["box_1000"]) if on_label else "")
         hint = "; ".join(x for x in (slots.get("s_location"),
                                      item_hint and item_hint + ", so the box must include the part of it there",
-                                     host_hint) if x)
+                                     host_hint, row.get("ground_hint")) if x)
         if (feedback or {}).get("remask"):
             hint += f"; a previous selection was wrong: {feedback['problems']}"
         # An add anchor is segmented whole (object or surface): its part is found inside it, a large one cut later.
@@ -935,20 +948,24 @@ CONTACT_RELATIONS = {"to", "on", "in", "inside", "at", "around", "across", "alon
 OVER_OVERLAP = 0.2  # "over" is draped over or covering S: a fifth of the item on S, or of S under the item
 
 
-def add_footprint(exec_mask, s_mask, images, item_box=None):
+def add_footprint(exec_mask, s_mask, images, item_box=None, around_item=False):
     """Where the new item appears: the cleaned region, else (Derived adds label the host) the pixels that changed,
-    kept to the model's box around the new item in AFTER (grown by 10 %) when there is one."""
+    kept to the model's box around the new item in AFTER (grown by 10 %) when there is one.
+    around_item: look for the changed pixels around that box rather than around S (a unit of a multi-object pair,
+    whose S may be wrong: its new item must still be found where it is)."""
     if exec_mask is not None and exec_mask.any():
         return exec_mask, "execution_region"
     if images is None:
         return None, None
-    region, _ = edited_region(*images, s_mask, None)
+    box = None
     if item_box:
         h, w = s_mask.shape
         mx, my = 0.1 * (item_box[2] - item_box[0]), 0.1 * (item_box[3] - item_box[1])
         box = np.zeros((h, w), bool)
         box[max(0, int((item_box[1] - my) * h / 1000)):int(np.ceil((item_box[3] + my) * h / 1000)),
             max(0, int((item_box[0] - mx) * w / 1000)):int(np.ceil((item_box[2] + mx) * w / 1000))] = True
+    region, _ = edited_region(*images, box if around_item and box is not None else s_mask, None)
+    if box is not None:
         if region is not None and (region & box).sum() >= 0.05 * box.sum():
             return region & box, "edited_region_in_item_box"
         return box, "item_box"
@@ -1156,8 +1173,8 @@ def part_pick_inputs(row, extracted, remasked, root):
     if host is None or not candidates:
         return [], None
     images = open_pair(row, root)
-    exec_mask = decode(row["region"]) if row["dataset"] != "derived" else None
-    footprint, _ = add_footprint(exec_mask, host, images, (extracted.get("item") or {}).get("bbox_2d"))
+    footprint, _ = add_footprint(item_footprint_label(row), host, images, (extracted.get("item") or {}).get("bbox_2d"),
+                                 around_item="unit" in row)
     if footprint is None:
         return [], None
     shortlist, _ = part_shortlist(candidates, host, footprint)
@@ -1363,10 +1380,13 @@ def build(row, extracted, remasked, derived_exec=None, images=None):
     else:
         chosen = [row["instances"][n - 1] for n in plan["instances"]]
         selection = {"source": plan["source"], "instances": [i["instance_id"] for i in chosen], **union(chosen)}
-    if row["dataset"] == "derived" and spec["operation"] == "add":
-        execution = None
+    if spec["operation"] == "add" and (row["dataset"] == "derived" or not row.get("region")):
+        execution = None  # the new item is found in AFTER (add_footprint)
     elif row["dataset"] == "derived" and spec["operation"] == "remove" and derived_exec:
         execution = {"source": "derived_execution_region", **derived_exec}
+    elif not row.get("region"):
+        # A unit of a multi-object pair split out of a shared outline: the edit acts on S itself.
+        execution = {"source": "selection", **{k: selection[k] for k in ("rle_size", "rle_counts", "box_1000")}}
     else:
         execution = {"source": "cleaned_region", **{k: row["region"][k] for k in ("rle_size", "rle_counts", "box_1000")}}
     s_mask = decode(selection)
@@ -1382,7 +1402,8 @@ def build(row, extracted, remasked, derived_exec=None, images=None):
     footprint = kind = host_view = None
     anchor_flags, hard = [], []
     if spec["operation"] == "add":
-        footprint, kind = add_footprint(exec_mask, s_mask, images, (extracted.get("item") or {}).get("bbox_2d"))
+        footprint, kind = add_footprint(exec_mask, s_mask, images, (extracted.get("item") or {}).get("bbox_2d"),
+                                        around_item="unit" in row)
         selection, host_view, spec, anchor_flags, hard = add_anchor(slots, spec, plan, selection, footprint, kind,
                                                                     remasked, extracted)
         s_mask = decode(selection)
@@ -1392,8 +1413,9 @@ def build(row, extracted, remasked, derived_exec=None, images=None):
     ip.validate_pair(spec, ref, noref)
     flags = text_flags(row, spec, ref, noref, original) + anchor_flags
     geo_flags, geo_hard = geometry_flags(spec, geo, "none" if execution is None else execution["source"])
-    if kind == "item_box" and "support_not_under_item" in geo_hard:
-        # The new item is known only from the model's box, too rough for this check: noted, not decided.
+    if kind == "item_box" and "support_not_under_item" in geo_hard and "unit" not in row:
+        # The new item is known only from the model's box, too rough for this check: noted, not decided (a unit of a
+        # multi-object pair is decided: its pair is asked again).
         geo_hard.remove("support_not_under_item")
         geo_flags.append("support_not_under_item")
     hard += geo_hard
@@ -1622,7 +1644,8 @@ def review_sheet(row, record, root, images=None):
     else:
         after = ec.labeled(ec.resized(target, panel), "AFTER")
     boxes = [b for b in ((record.get("selection") or {}).get("box_1000"),
-                         (record.get("execution_region") or {}).get("box_1000"), row["region"]["box_1000"]) if b]
+                         (record.get("execution_region") or {}).get("box_1000"), (row.get("region") or {}).get("box_1000"))
+             if b]
     box = [min(b[0] for b in boxes), min(b[1] for b in boxes), max(b[2] for b in boxes), max(b[3] for b in boxes)]
     edited = [(decode(record["edited_region"]), EDITED_COLOR)] if record.get("edited_region") else None
     if edited:

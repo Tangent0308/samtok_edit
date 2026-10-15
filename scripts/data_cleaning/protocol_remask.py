@@ -141,10 +141,10 @@ def main():
                 else:
                     record["error"] = "empty mask"
             if plan.get("part") and host is not None and host.any():
-                exec_mask = pa.decode(row["region"]) if row["dataset"] != "derived" else None
                 images = pa.open_pair(row, args.root)
                 item_box = (extracted.get("item") or {}).get("bbox_2d")
-                footprint, kind = pa.add_footprint(exec_mask, host, images, item_box)
+                footprint, kind = pa.add_footprint(pa.item_footprint_label(row), host, images, item_box,
+                                                   around_item="unit" in row)
                 record["part"] = ({"error": "new item not found"} if footprint is None else
                                   {"footprint": kind, **part_candidates(processor, image, host, footprint,
                                                                         (extracted.get("part") or {}).get("bbox_2d"),

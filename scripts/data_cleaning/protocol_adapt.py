@@ -297,7 +297,9 @@ def finish(job):
     review sheet."""
     row, extracted, remasked, root, path = job
     images = pa.open_pair(row, root)
-    derived_exec = pa.derived_execution_region(row) if row["dataset"] == "derived" and row["type"] == "remove" else None
+    # A Derived remove records what its edit removed; for a unit of a multi-object pair that is every unit's object.
+    derived_exec = (pa.derived_execution_region(row) if row["dataset"] == "derived" and row["type"] == "remove"
+                    and "unit" not in row else None)
     record = pa.build(row, extracted, remasked, derived_exec, images)
     if record["status"] == "accepted":
         record = gate(row, record, images)
