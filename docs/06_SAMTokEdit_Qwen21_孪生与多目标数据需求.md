@@ -5,6 +5,7 @@
 - **一句话**：在同一张源图上，找两个同类实例，用**同一句 no-ref 指令**分别编辑，得到两张不同的目标图。这样模型只有读懂 prompt 里的 mask token，才能知道该改哪一个。
 - **与现有数据的关系**：是 50k SA-1B 数据（`datasets/sa1b_samtok_edit_50k_20261014/`）的一个补充子集，训练部分 1.5 万组，约 3.2 万张目标图，约为 50k 的三分之二。生成和审核沿用 50k 的流程，主要改动在"选实例"和"规划"两步，另外加几条组级检查。
 - **附加需求**：第 10 节是多目标联合编辑样本（同一张图 2–5 个目标，其中有相邻目标，链式生成），对应 benchmark 每图多条指令一起执行的主评测。第 1–9 节只讲孪生组。
+- **指令写法**（2026-10-15 更新）：no-ref 指令按 [07 指令协议 2.0](07_SAMTokEdit_Qwen21_指令协议2.0_noref改为盲指代.md) 写成盲指代 `the selected region`，源 mask 是实际被编辑的区域（add 是附着部位）。本文的示例已按此更新。同类实例的要求暂时保留：它们外观最相近，是最难的反例。
 - **依据**：方法侧的分析见 [03 v3 优化计划与进度](03_SAMTokEdit_Qwen21_v3优化计划与进度.md)；协议见 benchmark（v2branch）的协议文档，共享盘副本 `datasets/samtok_edit_benchmark_v2/docs/INSTRUCTION_PROTOCOL_ZH.md`（指令协议 1.0、mask 语义 1.1）。
 
 ---
@@ -17,7 +18,7 @@
 
 | 源图 | 样本 1 | 样本 2 |
 |---|---|---|
-| 一张街景 | `Remove the selected umbrella.` | `Change the color of the selected window frame to green.` |
+| 一张街景 | `Remove the selected umbrella.` | `Change the color of the selected window frame to green.`（1.0 写法；2.0 下两句都改成 `the selected region`，但操作和内容不同，仍然可以只靠文字区分） |
 
 模型只看文字（"umbrella" 还是 "window frame"、删还是改色）就能分清要改哪里，并不需要去读 mask token。这条退路正是 v2 失败的原因：只用普通编辑对训练出来的 DiT 基本不看 token。同图同句只换 token 时，它的跟随率只有 0.06（文档 02 §4.2）。
 
@@ -25,7 +26,7 @@
 
 | | 实例 A | 实例 B |
 |---|---|---|
-| no-ref 指令 | `Change the color of the selected T-shirt to red.` | **逐字相同** |
+| no-ref 指令 | `Change the color of the selected region to red.` | **逐字相同** |
 | 模型实际看到的输入 | 源图 + 上句 + ⟨M_A⟩ | 源图 + 上句 + ⟨M_B⟩ |
 | 目标图 | T_A：只有左边男士的 T 恤变红 | T_B：只有右边男士的 T 恤变红 |
 
@@ -103,10 +104,10 @@
 
 | 操作 | 共用的 no-ref 句子（示例） | 各自的 ref 句子（示例） | 要求 |
 |---|---|---|---|
-| attribute | `Change the color of the selected backpack to bright yellow.` | `…of the backpack on the left girl…` / `…of the backpack on the right girl…` | 新值要与两个实例原本的颜色都明显不同；不要选与其中一个原色相同的值 |
-| replace | `Replace the selected stool with a wooden bar chair.` | `Replace the stool nearest the counter with…` / `Replace the stool by the window with…` | 替换物对两个位置的空间、支撑、视角都合适 |
-| remove | `Remove the selected parked bicycle.` | `Remove the parked bicycle in front of the red door.` / `…in front of the shop window.` | 两个实例都适合删除，删除后的背景都能自然补全 |
-| add | `Add a red knit beanie to the selected man.` | `…to the man on image-left.` / `…to the man on image-right.` | 两个宿主都是直接承载物（协议的直接锚点）；附着关系和位置对两者都成立。不使用参照式 add |
+| attribute | `Change the color of the selected region to bright yellow.` | `…of the backpack on the left girl…` / `…of the backpack on the right girl…` | 新值要与两个实例原本的颜色都明显不同；不要选与其中一个原色相同的值 |
+| replace | `Replace the selected region with a wooden bar chair.` | `Replace the stool nearest the counter with…` / `Replace the stool by the window with…` | 替换物对两个位置的空间、支撑、视角都合适 |
+| remove | `Remove the selected region.` | `Remove the parked bicycle in front of the red door.` / `…in front of the shop window.` | 两个实例都适合删除，删除后的背景都能自然补全 |
+| add | `Add a red knit beanie to the selected region.` | `…to the man on image-left.` / `…to the man on image-right.` | 两个宿主都是直接承载物（协议的直接锚点）；附着关系和位置对两者都成立。不使用参照式 add |
 
 ### 4.3 三实例组（可选，约占 15%）
 
