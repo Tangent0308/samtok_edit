@@ -107,8 +107,16 @@ PLURAL_OK = {"pants", "trousers", "jeans", "shorts", "leggings", "tights", "glas
              "tracks", "spokes", "buttons", "laces", "straps", "bristles", "keys", "candies", "sprinkles",
              "seeds", "grapes", "berries", "nuts", "beans", "fries", "noodles", "leaves", "flowers", "lights",
              "decorations", "ornaments", "garlands", "balloons", "bubbles", "sparkles", "fireworks", "clouds"}
-COLLECTIVE = re.compile(r"\b(pile|heap|bunch|stack|cluster|bouquet|pair|set|bowl|basket|plate|tray|box|bag|jar|"
-                        r"bottle|crate|bundle|string|wreath|garland|arrangement|swarm|flock|herd|school)\s+of\b", re.I)
+COLLECTIVE = re.compile(r"\b(pile|heap|bunch|stack|cluster|bouquet|pair|bowl|basket|plate|tray|box|bag|jar|bottle|"
+                        r"crate|bundle|string|wreath|garland|arrangement)\s+of\b", re.I)
+# A ref whose head is one of these, followed by "of", names several separate objects ("the row of trees", "the flock of
+# birds"); a ref that only mentions one ("the leftmost man in the group of three") does not.
+GROUP_HEAD = {"row", "rows", "line", "lines", "group", "groups", "set", "sets", "series", "crowd", "team", "couple",
+              "family", "flock", "herd", "swarm", "school", "fleet", "convoy", "pack", "troop"}
+HEAD_END = re.compile(r"\s+(?:in|on|at|of|near|beside|behind|with|to|from|by|under|above|below|between|along|across|"
+                      r"over|around|inside|next)\b", re.I)
+DRINKWARE = re.compile(r"\b(martini|wine|champagne|shot|beer|drinking|cocktail|water|juice|whiskey|margarita)\s+glasses\b",
+                       re.I)
 SINGULAR_S = re.compile(r"(ss|us|is|ys|ics|lens|canvas|gas|chassis|series|species|news|atlas|bias)$", re.I)
 PERSON = re.compile(r"^(man|woman|person|child|boy|girl|kid|baby|player|rider|soldier|lady|guy|people|figure)$", re.I)
 BODY = re.compile(r"\b(arm|arms|hand|hands|leg|legs|foot|feet|head|heads)\b", re.I)
@@ -118,10 +126,13 @@ GARMENT = re.compile(r"\b(uniform|shirt|t-shirt|jersey|jacket|coat|dress|clothes
 
 def several(spec):
     """Whether S's kind names several separate objects ("lounge chairs", "the monks"), not one object or a pile."""
-    scope = spec["scope"].lower().strip()
-    if not scope or COLLECTIVE.search(scope) or COLLECTIVE.search(spec["ref"]):
+    scope, ref = spec["scope"].lower().strip(), spec["ref"].lower()
+    head = HEAD_END.split(ref, 1)[0]
+    if head.split() and head.split()[-1] in GROUP_HEAD and ref[len(head):].lstrip().startswith("of "):
+        return True
+    if not scope or COLLECTIVE.search(scope) or COLLECTIVE.search(ref):
         return False
-    if GROUP.search(scope):
+    if GROUP.search(scope) or DRINKWARE.search(scope):
         return True
     head = re.split(r"\s+(?:and|with)\s+", scope)[-1].split()[-1]
     if head in PLURAL_OK or SINGULAR_S.search(head) or not head.endswith("s"):

@@ -67,6 +67,11 @@ def test_units_are_one_object_each_with_distinct_refs():
         pm.normalize_units({"decision": "accept", "units": mixed}, 2)
     pile = [unit(ref="the pile of pumpkins on the left", scope="pile of pumpkins"), two[1]]
     assert pm.normalize_units({"decision": "accept", "units": pile}, 2)[0] == "accept"
+    for ref, scope in (("the row of martini glasses", "martini glasses"), ("the flock of birds in the sky", "birds")):
+        with pytest.raises(ValueError, match="names several separate objects"):
+            pm.normalize_units({"decision": "accept", "units": [unit(ref=ref, scope=scope), two[1]]}, 2)
+    one = [unit(ref="the leftmost man in the group of three", scope="man"), two[1]]
+    assert pm.normalize_units({"decision": "accept", "units": one}, 2)[0] == "accept"
     assert pm.normalize_units({"decision": "reject", "reason": "six hats"}, 2) == ("reject", [])
 
 
@@ -163,10 +168,12 @@ def test_repair_and_reason_codes_of_the_cli(tmp_path):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts" / "data_cleaning"))
     import protocol_multi as cli
     assembled = tmp_path / "assembled.jsonl"
+    group = ip.make_spec("remove", "the row of trees on the right", "trees")
     rows = [{"id": "a", "status": "rejected", "reason": "U2:support_not_touching_item"},
             {"id": "b", "status": "rejected", "reason": "slots_reject"},
             {"id": "c", "status": "accepted", "units": []},
-            {"id": "d", "status": "rejected", "reason": "change_not_in_units"}]
+            {"id": "d", "status": "rejected", "reason": "change_not_in_units"},
+            {"id": "e", "status": "accepted", "units": [{"id": "U1", "instruction_spec": group}]}]
     assembled.write_text("".join(json.dumps(r) + "\n" for r in rows))
     audit = tmp_path / "audit.jsonl"
     audit.write_text(json.dumps({"id": "c", "passed": False, "units": {"U1": {"edit": "fail"}}, "complete": "pass",
@@ -174,7 +181,7 @@ def test_repair_and_reason_codes_of_the_cli(tmp_path):
     out = tmp_path / "repair.jsonl"
     cli.repair(SimpleNamespace(assembled=str(assembled), audit=[str(audit)], output=str(out)))
     lines = [json.loads(line) for line in out.read_text().splitlines()]
-    assert [x["id"] for x in lines] == ["a", "c", "d"]
+    assert [x["id"] for x in lines] == ["a", "c", "d", "e"] and "several separate objects" in lines[3]["problems"]
     assert lines[0]["problems"].startswith("U2: the new item does not touch S") and "U1:edit" in lines[1]["problems"]
     assert cli.reason_key({"reason": "U2:edited_region_misses_s,selection_off_edit"}) == "unit:edited_region_misses_s"
     assert cli.reason_key({"reason": "audit:U1:edit"}) == "audit"

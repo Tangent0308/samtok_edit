@@ -197,6 +197,8 @@ def repair(args):
             a = audits.get(r["id"])
             if a and a.get("passed") is False:
                 problems.append("failed " + ", ".join(pm.audit_failures(a)) + ": " + (a.get("problems") or ""))
+            # Units checked again with the current unit rules (a pair asked before a rule was added).
+            problems += [f"{u['id']}: {x}" for u in r["units"] for x in pm.unit_problems(u["instruction_spec"])]
         if problems:
             out.append({"id": r["id"], "problems": "; ".join(problems)})
     single.write_jsonl(args.output, out)
