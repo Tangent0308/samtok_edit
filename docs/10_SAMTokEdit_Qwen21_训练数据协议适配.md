@@ -442,7 +442,7 @@ PYTHONPATH=src python -B scripts/data_cleaning/protocol_adapt.py regate \
 
 - 按单元数：2 个 2,820 对，3 个 782 对，4 个 342 对，5 个 122 对。
 - 单元操作：remove 4,837，attribute 3,927，replace 885，add 315。
-- 一对之内混合不同操作的有 113 对，例如 remove+replace 64 对。
+- 一对之内混合不同操作的有 124 对，例如 remove+replace 64 对。
 - 按来源（接受 / 总数）：
 
   | 来源 | 接受 / 总数 |
