@@ -541,6 +541,7 @@ token 直接写在指令里，和普通文字一起过文本编码器进 DiT。*
 | 汇总 | `runs/ea2_local8_001/analysis.txt`（当时生成）；用仓库代码可逐数字复现 |
 | 图 | `runs/ea2_local8_001/vis/`：`fig_ea2_results.png`、`fig_ea2_training.png`、`fig_ea2_remove_probe.jpg`、`fig_ea2_highlight.jpg`，生成脚本 `make_figures.py` |
 | 指认任务可视化页 | `runs/ea2_local8_001/vis/highlight_report.html`（单文件，图片内嵌）：总览表、按区域大小与失败方式的统计、各子集随机样例（原版 / E-A1 / E-A2 输出与读回对比）、反事实成对、小区域、失败、提升与退步样例；生成脚本 `make_highlight_report.py` |
+| 复盘页（2026-10-15） | `runs/ea2_local8_001/vis/review_20261015/ea2-review.html`（单文件）：数据与方法及其理由、定位与编辑结果、案例图、原因分析和后续改进。新算的两项：训练指认行的区域面积分布（中位 4.7%，小于 0.5% 的只占 15%），remove 填充的纹理与亮度统计（区域内纹理是源图同区的 0.55，32% 明显提亮）。脚本和结果在同一目录 |
 | 对比页 | `runs/ea2_local8_001/gallery/`：`index.html`、`single_file.html`、`records.json`、`img/` |
 | 运行日志 | `runs/ea2_local8_001/bootstrap/`、`logs/`、`nodes/`、`SUCCESS.json` |
 | 当时运行的脚本（留档） | `legacy_code/ea2/` |
