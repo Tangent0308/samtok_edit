@@ -63,6 +63,24 @@ def span_attention_logits(block, hidden_states, modulation, target_token_mask, r
     return logits / (math.sqrt(query.shape[-1]) * query.shape[2] * key.shape[1])
 
 
+def span_read_logits(block, hidden_states, modulation, target_token_mask, rotary_emb, span_positions, source_positions):
+    """Mean attention logit from the span tokens to each source-image token, as this block computes it.
+
+    The read side of a mask token: in the block-causal prefix the instruction (and its span) attends to the source
+    image that precedes it, so this logit is part of the model's own attention at every denoising step and does not
+    depend on the noisy target.  Returns ``[n_source]`` for batch element 0, averaged over heads and span tokens.
+    """
+    attention = block.attn
+    scale_shift = modulation.chunk(2, dim=-1)[0]
+    states, _ = block._modulate(block.img_norm1(hidden_states), scale_shift, target_token_mask)
+    query = attention.norm_q(attention.to_q(states[:, span_positions]).unflatten(-1, (attention.heads, -1))).to(states.dtype)
+    query = apply_rotary_emb_qwen(query, rotary_emb[span_positions], use_real=False)
+    key = attention.norm_k(attention.to_k(states[:, source_positions]).unflatten(-1, (attention.heads, -1))).to(states.dtype)
+    key = apply_rotary_emb_qwen(key, rotary_emb[source_positions], use_real=False)
+    logits = torch.einsum("bshd,bnhd->bn", query.float(), key.float())[0]
+    return logits / (math.sqrt(query.shape[-1]) * query.shape[2] * query.shape[1])
+
+
 class AttentionRouter(nn.Module):
     """Collects the routing loss of selected DiT blocks through forward pre-hooks.
 
@@ -83,7 +101,7 @@ class AttentionRouter(nn.Module):
     attention itself to absolute values.
     """
 
-    def __init__(self, dit, layers=DEFAULT_LAYERS, logit_scale=LOGIT_SCALE):
+    def __init__(self, dit, layers=DEFAULT_LAYERS, logit_scale=LOGIT_SCALE, read=False):
         super().__init__()
         self.layers = tuple(int(layer) for layer in layers)
         if not self.layers or len(set(self.layers)) != len(self.layers):
@@ -92,7 +110,10 @@ class AttentionRouter(nn.Module):
             raise ValueError("Routing layer outside the DiT")
         self.logit_scale = float(logit_scale)
         self.affine = nn.Parameter(torch.tensor([[1.0, 0.0]] * len(self.layers)))
-        self._context, self._recording, self._terms = None, False, []
+        # The read side (span -> source tokens) has its own per-layer calibration, created only when it is used so
+        # that round-1 adapters and their tests are unchanged.
+        self.read_affine = nn.Parameter(torch.tensor([[1.0, 0.0]] * len(self.layers))) if read else None
+        self._context, self._recording, self._terms, self._read_terms = None, False, [], []
         self._handles = [
             dit.transformer_blocks[layer].register_forward_pre_hook(self._hook(index), with_kwargs=True)
             for index, layer in enumerate(self.layers)
@@ -103,21 +124,39 @@ class AttentionRouter(nn.Module):
             context = self._context
             if context is None:
                 return
-            logits = span_attention_logits(
-                block, kwargs["hidden_states"], kwargs["modulation"], kwargs["target_token_mask"],
-                kwargs["rotary_emb"], context["n_target"], context["span"])
-            scale, bias = self.affine[index]
-            calibrated = scale * (logits - logits.mean()) * self.logit_scale + bias
-            term = F.binary_cross_entropy_with_logits(
-                calibrated, context["labels"], weight=context["weights"], reduction="sum")
-            if self._recording:
-                self._terms.append(term)
+            for entry in context["entries"]:
+                if entry.get("labels") is not None:
+                    logits = span_attention_logits(
+                        block, kwargs["hidden_states"], kwargs["modulation"], kwargs["target_token_mask"],
+                        kwargs["rotary_emb"], context["n_target"], entry["span"])
+                    scale, bias = self.affine[index]
+                    calibrated = scale * (logits - logits.mean()) * self.logit_scale + bias
+                    term = F.binary_cross_entropy_with_logits(
+                        calibrated, entry["labels"], weight=entry["weights"], reduction="sum")
+                    if self._recording:
+                        self._terms.append(term)
+                if entry.get("source_labels") is not None and self.read_affine is not None:
+                    logits = span_read_logits(
+                        block, kwargs["hidden_states"], kwargs["modulation"], kwargs["target_token_mask"],
+                        kwargs["rotary_emb"], entry["span"], entry["source_positions"])
+                    scale, bias = self.read_affine[index]
+                    calibrated = scale * (logits - logits.mean()) * self.logit_scale + bias
+                    term = F.binary_cross_entropy_with_logits(
+                        calibrated, entry["source_labels"], weight=entry["source_weights"], reduction="sum")
+                    if self._recording:
+                        self._read_terms.append(term)
 
         return before_block
 
     def arm(self, n_target, span_positions, labels, weights):
-        self._context = {"n_target": int(n_target), "span": list(span_positions), "labels": labels, "weights": weights}
-        self._terms = []
+        """One span, write side only (round 1)."""
+        self.arm_entries(n_target, [{"span": list(span_positions), "labels": labels, "weights": weights}])
+
+    def arm_entries(self, n_target, entries):
+        """Several spans of one prompt.  Each entry: ``span`` (joint positions), optionally ``labels``/``weights`` on
+        the target grid (write side) and ``source_positions``/``source_labels``/``source_weights`` (read side)."""
+        self._context = {"n_target": int(n_target), "entries": [dict(entry, span=list(entry["span"])) for entry in entries]}
+        self._terms, self._read_terms = [], []
 
     @contextmanager
     def recording(self):
@@ -128,12 +167,17 @@ class AttentionRouter(nn.Module):
             self._recording = False
 
     def collect(self):
-        """Mean routing term over the hooked layers of the last recorded forward (``None`` if nothing ran)."""
+        """Mean write-side term over the hooked layers and spans of the last recorded forward (``None`` if none)."""
         terms, self._terms = self._terms, []
         return torch.stack(terms).mean() if terms else None
 
+    def collect_read(self):
+        """Mean read-side term over the hooked layers and spans of the last recorded forward (``None`` if none)."""
+        terms, self._read_terms = self._read_terms, []
+        return torch.stack(terms).mean() if terms else None
+
     def disarm(self):
-        self._context, self._recording, self._terms = None, False, []
+        self._context, self._recording, self._terms, self._read_terms = None, False, [], []
 
     def remove(self):
         for handle in self._handles:

@@ -14,6 +14,9 @@ GROUNDING_COMMANDS = {
     "ground-eval": ("samtok_edit21.evaluation.grounding", "Token-only evaluation (run under torchrun)"),
     "ground-report": ("samtok_edit21.evaluation.grounding_report", "Paired report of an evaluation"),
     "ground-gallery": ("samtok_edit21.evaluation.gallery", "Trained-vs-base gallery: generate / html"),
+    "round2-data": ("samtok_edit21.preparation.round2_data", "Round 2: mask pool, C1 rows, C1 evaluation set"),
+    "round2-train": ("samtok_edit21.training.round2_engine", "Round 2 trainer (run under torchrun)"),
+    "round2-eval": ("samtok_edit21.evaluation.round2_eval", "Round 2 evaluation (run under torchrun)"),
 }
 
 
