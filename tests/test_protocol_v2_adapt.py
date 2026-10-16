@@ -88,3 +88,24 @@ def test_adapt_v1_contents_and_site(tmp_path):
     assert out["instruction_noref"] == "Add a lamp mounted on the selected region."
     new = pa.decode(out["selection"])
     assert out["selection_v1"] and new.sum() < host.sum() and new[10, 10]
+
+
+def test_sa1b_edited_region_is_the_changed_pixels_inside_support(tmp_path):
+    h, w = 120, 160
+    rng = np.random.default_rng(0)
+    src = (rng.integers(90, 110, (h, w, 3))).astype(np.uint8)
+    tgt = src.copy()
+    tgt[40:70, 60:100] = [200, 30, 30]          # the edit
+    support = np.zeros((h, w), bool); support[30:80, 50:110] = True
+    s_mask = np.zeros((h, w), bool); s_mask[40:70, 60:100] = True
+    for name, arr in (("src.png", src), ("tgt.png", tgt)):
+        Image.fromarray(arr).save(tmp_path / name)
+    for name, arr in (("s.png", s_mask), ("sup.png", support)):
+        Image.fromarray(arr.astype(np.uint8) * 255).save(tmp_path / name)
+    row = {"sample_id": "abcd", "source_image": "src.png", "edited_image": "tgt.png", "mask": "s.png", "support_mask": "sup.png"}
+    field, png = pv.sa1b_edited_region(row, tmp_path)
+    region = np.asarray(Image.open(tmp_path / png).convert("L")) > 0
+    assert png == "masks/edited/ab/abcd.png" and field["method"] == pv.SA1B_EDITED_METHOD
+    assert region[55, 80] and not region[5, 5] and not (region & ~support).any()
+    assert field["s_covered"] > 0.9 and field["stats"]["strong_change_outside_support_frac"] == 0.0
+    assert pa.decode(field).sum() == region.sum()

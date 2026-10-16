@@ -190,3 +190,41 @@ def adapt_sa1b(row, root, mask_dir="masks/region_v2", out_root=None):
     out["noref_ineligible"] = reason
     out["protocol_v2_change"] = "mask_site_spot" if change and "mask" in change else (change or {}).get("note")
     return out
+
+
+# ---------------------------------------------------------------- SA-1B 50k: the pixels that really changed
+
+# The 50k compositor pastes the edit back inside the support mask only, so outside it the target equals the source
+# pixel for pixel and the noise there is zero.  The hysteresis thresholds therefore stay at their floors (Delta E 6
+# and 12) instead of scaling with a noise estimate, which for a support covering most of the image would otherwise
+# be taken over the edit itself.
+SA1B_EDITED_METHOD = "lab-diff-hysteresis-sa1b-1"
+SA1B_EDITED_PARAMS = {**pa.EDITED_PARAMS, "low_k": 0.0, "high_k": 0.0}
+
+
+def sa1b_edited_region(row, root, out_root=None, mask_dir="masks/edited"):
+    """Changed pixels of one 50k record, clipped to its support: (field dict for the record, PNG path or None)."""
+    from PIL import Image
+    root = Path(root)
+    source = Image.open(root / row["source_image"]).convert("RGB")
+    target = Image.open(root / row["edited_image"]).convert("RGB")
+    if target.size != source.size:
+        raise ValueError(f"{row['sample_id']}: target {target.size} != source {source.size}")
+    s_mask = np.asarray(Image.open(root / row["mask"]).convert("L")) > 0
+    support = np.asarray(Image.open(root / row["support_mask"]).convert("L")) > 0
+    region, stats = pa.edited_region(source, target, s_mask, support, SA1B_EDITED_PARAMS)
+    strong_outside = float(((pa.color_difference(source, target) > SA1B_EDITED_PARAMS["t_high"]) & ~support).mean())
+    if region is not None:
+        region &= support
+    field = {"method": SA1B_EDITED_METHOD, "stats": {**stats, "strong_change_outside_support_frac": round(strong_outside, 6)}}
+    if region is None or not region.any():
+        return {**field, "rle_size": None, "rle_counts": None, "box_1000": None, "area_frac": 0.0}, None
+    name = f"{mask_dir}/{row['sample_id'][:2]}/{row['sample_id']}.png"
+    path = Path(out_root or root) / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(region.astype(np.uint8) * 255).save(path)
+    h, w = region.shape
+    field.update(pa.encode(region), area_frac=round(float(region.sum()) / (h * w), 6),
+                 s_covered=round(float((region & s_mask).sum()) / max(int(s_mask.sum()), 1), 3),
+                 in_support=1.0)
+    return field, name

@@ -3,6 +3,7 @@
 
   python scripts/data_cleaning/protocol_v2_adapt.py v1     # cleaned v1 pairs -> protocol_v2_blind/
   python scripts/data_cleaning/protocol_v2_adapt.py sa1b   # SA-1B 50k release -> train_protocol_v2.jsonl
+  python scripts/data_cleaning/protocol_v2_adapt.py sa1b-edited   # add edited_region to train_protocol_v2.jsonl
 
 Each command refuses to overwrite an existing output and writes a summary next to it.
 """
@@ -90,12 +91,54 @@ def run_sa1b(args):
     print(json.dumps(summary, ensure_ascii=False, indent=1))
 
 
+def _edited(row):
+    try:
+        field, png = pv.sa1b_edited_region(row, SA1B)
+    except Exception as error:
+        raise RuntimeError(f"{row['sample_id']}: {error}") from error
+    return {**row, "edited_region": field, "edited_mask": png}
+
+
+def run_sa1b_edited(args):
+    """Adds the changed pixels to every record of train_protocol_v2.jsonl (rewritten atomically, same order)."""
+    path = SA1B / "annotations/train_protocol_v2.jsonl"
+    rows = read(path)
+    if any("edited_region" in r for r in rows):
+        sys.exit("edited_region already present; nothing to do")
+    started = time.time()
+    with Pool(args.workers) as pool:
+        out = []
+        for i, row in enumerate(pool.imap(_edited, rows, chunksize=8)):
+            out.append(row)
+            if i % 5000 == 0:
+                print(f"{i}/{len(rows)} {time.time() - started:.0f}s", flush=True)
+    assert [r["sample_id"] for r in out] == [r["sample_id"] for r in rows]
+    tmp = path.with_suffix(".jsonl.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for row in out:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    tmp.replace(path)
+    area = [r["edited_region"]["area_frac"] for r in out]
+    def op(r):
+        return r["instruction_spec"]["operation"]
+    import numpy as np
+    summary = {"method": pv.SA1B_EDITED_METHOD, "rows": len(out), "empty": sum(a == 0 for a in area),
+               "area_frac_median_by_operation": {o: float(np.median([r["edited_region"]["area_frac"] for r in out if op(r) == o]))
+                                                 for o in ("add", "replace", "remove", "attribute")},
+               "s_covered_median_by_operation": {o: float(np.median([r["edited_region"].get("s_covered", 0) for r in out if op(r) == o]))
+                                                 for o in ("add", "replace", "remove", "attribute")},
+               "strong_change_outside_support_max": max(r["edited_region"]["stats"]["strong_change_outside_support_frac"] for r in out),
+               "seconds": round(time.time() - started, 1)}
+    (SA1B / "protocol_v2_edited_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1))
+    print(json.dumps(summary, ensure_ascii=False, indent=1))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("dataset", choices=["v1", "sa1b"])
+    p.add_argument("dataset", choices=["v1", "sa1b", "sa1b-edited"])
     p.add_argument("--workers", type=int, default=48)
     args = p.parse_args()
-    (run_v1 if args.dataset == "v1" else run_sa1b)(args)
+    {"v1": run_v1, "sa1b": run_sa1b, "sa1b-edited": run_sa1b_edited}[args.dataset](args)
 
 
 if __name__ == "__main__":

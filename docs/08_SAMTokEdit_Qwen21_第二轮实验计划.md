@@ -26,12 +26,20 @@
 
 | 编号 | 数据 | 路径 | 规模 | 用于 |
 |---|---|---|---|---|
-| D1 | SA-1B 50k 单条编辑（协议 2.0） | `datasets/sa1b_samtok_edit_50k_20261014/release/annotations/train_protocol_v2.jsonl` | 50,000 条，1,132 张源图；有盲指代的 49,753 条 | 阶段 B 的主体 |
+| D1 | SA-1B 50k 单条编辑（协议 2.0） | `datasets/sa1b_samtok_edit_50k_20261014/release/annotations/train_protocol_v2.jsonl` | 50,000 条，1,132 张源图；有盲指代的 49,753 条。每条有 `support_mask`（允许改动的区域，区域外与源图逐像素相同），以及 2026-10-16 补的 `edited_region`（实际改动的像素，RLE）和 `edited_mask`（同一区域的 PNG） | 阶段 B 的主体 |
 | D2 | 同一批 1,132 张源图的 SA-1B 稠密 mask | `datasets/sa1b_samtok_edit_50k_20261014/sources/*/dense.json` | 每张图约 75 个 mask，共约 8.5 万个；面积中位约 0.1% | 指认任务（目标图由程序生成） |
 | D3 | 清洗后的 v1 单条编辑（协议 2.0） | `datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1/protocol_v2_blind/manifest_protocol_v2.jsonl` | 39,615 条；有盲指代的 39,356 条 | 阶段 B，真实照片的多样性 |
 | D4 | v1 多目标召回（转换成协议 2.0 是 P0 的一步） | `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/manifest_multi.jsonl` | 4,066 对，9,964 个单元，每对 2–5 个 | 多目标编辑 |
 | D5 | D1 同图拼合的多目标 | 训练时由 D1 生成 | 同一张源图上执行区域不相交的 2–3 条编辑，贴到一张目标图上 | 多目标编辑 |
 | D6 | 孪生组、链式多目标（数据侧交付后） | 待定 | 孪生 1.5 万组，多目标 5,000 组 | 阶段 B 全量 |
+
+**训练时用到的区域**：都只用在损失里，不作为模型输入。
+
+| 用途 | D1（50k） | D3、D4（v1） |
+|---|---|---|
+| 区域内误差加权、区域外贴边一圈加权 | `support_mask` | `execution_region`；缺失时（825 条 add）用 `edited_region` |
+| 路由标签（哪些图像 token 应当看 ⟨M⟩） | 源 mask ∪ `edited_region` | `selection` ∪ `edited_region` |
+| 评测：区域外保持、区域内与目标的接近程度 | `support_mask`、`edited_region` | `execution_region`、`edited_region` |
 
 **开发集**（P0 划分，不进训练）：
 - D1 和 D2 按源图留出约 60 张（约 2,600 条编辑），从中取 400 条单目标编辑（四类各 100）、100 条拼合多目标、800 个指认区域（按 benchmark 的面积分布抽取）。
