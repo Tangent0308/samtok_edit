@@ -63,12 +63,12 @@ def grid_mask(mask, height_width):
 
 
 @torch.no_grad()
-def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0):
+def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_AREA):
     """Token-only inference: inline region tokens, raw text encoder, no binding, no blending, CFG 1."""
     from samtok_edit21.models.binding import BindingConfig
     from samtok_edit21.models.pipeline import edit
 
-    height, width = canvas(source_rgb)
+    height, width = canvas(source_rgb, area)
     image, _ = edit(pipe, prompt, [source_rgb.convert("RGBA")], mode="inline", height=height, width=width,
                     num_inference_steps=steps, cfg_scale=1.0, seed=seed, use_kv_cache=True, pass2_te="raw",
                     binding=BindingConfig("none"), codec=codec, blend_region=None)

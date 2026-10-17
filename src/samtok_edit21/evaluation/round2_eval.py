@@ -243,6 +243,7 @@ def parser():
     p.add_argument("--samtok", default=DEFAULT_SAMTOK)
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--limit", type=int, default=0, help="Smoke test: at most this many items per set")
+    p.add_argument("--canvas-area", type=int, default=0, help="Generation canvas in pixels (default 1024 * 1024)")
     return p
 
 
@@ -254,6 +255,9 @@ def main(argv=None):
     from samtok_edit21.training.round2 import Context
 
     args = parser().parse_args(argv)
+    if args.canvas_area:   # every probe calls the module-level generate
+        import functools
+        globals()["generate"] = functools.partial(generate, area=args.canvas_area)
     dist.init_process_group("nccl", timeout=timedelta(hours=2))
     rank, world = dist.get_rank(), dist.get_world_size()
     local = int(os.environ["LOCAL_RANK"])
@@ -289,7 +293,7 @@ def main(argv=None):
     if rank == 0:
         merged = sorted((r for part in gathered for r in part), key=lambda r: r["idx"])
         summary = summarize(merged)
-        json.dump({"adapter": args.adapter, "steps": args.steps, "jobs": len(jobs), "summary": summary, "records": merged},
+        json.dump({"adapter": args.adapter, "steps": args.steps, "canvas_area": args.canvas_area or 1024 * 1024, "jobs": len(jobs), "summary": summary, "records": merged},
                   open(out / "eval.json", "w"))
         (out / "EVAL_DONE").write_text(json.dumps(summary))
         print(json.dumps(summary), flush=True)
