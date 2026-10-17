@@ -199,3 +199,43 @@ def test_round2_loss_combines_terms(tiny_dit):  # noqa: F811
             / torch.nn.functional.max_pool2d(r[None, None], 3, 1, 1)[0, 0].sum()) for r in (a, b)]
     assert r2.region_error(error, [a, b]).item() == pytest.approx(float(sum(per) / 2))
     router.remove()
+
+
+def test_c1b_pairs_share_a_rank_and_an_update():
+    import random
+    units = [[{"id": f"p{k}a"}, {"id": f"p{k}b"}] for k in range(6)] + [[{"id": f"s{k}"}] for k in range(20)]
+    rows = rd.place_in_slots(units, random.Random(0), updates=2, world=4, accumulation=4)
+    assert sorted(r["id"] for r in rows) == sorted(x["id"] for u in units for x in u)
+    for k in range(6):
+        a, b = (rows.index(next(r for r in rows if r["id"] == f"p{k}{m}")) for m in "ab")
+        (step_a, rank_a), (step_b, rank_b) = divmod(a, 4), divmod(b, 4)      # global step = update * 4 + step
+        assert rank_a == rank_b and step_a // 4 == step_b // 4 and abs(step_a - step_b) == 1
+
+
+def test_c1b_near_negatives_skip_parts_and_far_objects():
+    from pycocotools import mask as mu
+
+    def mask(box):
+        m = np.zeros((100, 100), np.uint8)
+        m[box[1]:box[3], box[0]:box[2]] = 1
+        rle = mu.encode(np.asfortranarray(m))
+        return {"size": list(rle["size"]), "counts": rle["counts"].decode()}
+
+    boxes = [(10, 10, 40, 40), (15, 15, 25, 25), (42, 10, 60, 40), (90, 90, 99, 99), (0, 0, 60, 60)]
+    masks = [{"rle": mask(b), "dec": mask(b), "category": None} for b in boxes]
+    rel = rd.relations(masks)
+    for m, r in zip(masks, rel):
+        m["rel"] = r
+    entry = {"masks": masks, "size": [100, 100]}
+    # 1 is a part of 0, 2 a neighbour 2 px away, 3 far away, 4 the host of 0
+    assert rd.near_negatives(entry, 0) == [2, 4]
+    assert rd.near_negatives(entry, 0, exclude=[2]) == [4]
+
+
+def test_c1b_learning_rate_warms_up_then_decays_to_the_floor():
+    from samtok_edit21.training.round2_engine import learning_rate
+    args = SimpleNamespace(lr=1e-4, lr_min=1e-5, warmup=10, updates=110, lr_schedule="cosine")
+    assert learning_rate(args, 0) == pytest.approx(1e-5) and learning_rate(args, 9) == pytest.approx(1e-4)
+    assert learning_rate(args, 10) == pytest.approx(1e-4) and learning_rate(args, 109) == pytest.approx(1e-5)
+    assert learning_rate(args, 60) == pytest.approx(5.5e-5, rel=0.02)
+    assert learning_rate(SimpleNamespace(**{**vars(args), "lr_schedule": "constant"}), 109) == pytest.approx(1e-4)

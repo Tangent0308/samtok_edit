@@ -50,6 +50,7 @@ class Round2Sample:
     route_regions: list = field(default_factory=list)  # [h, w] write-side positive region per span (target grid)
     source_positions: list = field(default_factory=list)
     source_regions: list = field(default_factory=list)  # [hs, ws] region per span on the source grid
+    source_distractors: torch.Tensor | None = None      # [hs, ws] negatives on the source grid (C1b rows; read side)
 
 
 class Context:
@@ -136,9 +137,10 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
     for region in regions_px:
         union |= region
     negative_px = np.zeros_like(union)
+    key = "rle" if row.get("neg_ann") else "dec"            # C1b: the annotated objects themselves
     for group in row["negatives"]:
         for j in group:
-            negative_px |= rd.decode_rle(entry["masks"][j]["dec"])
+            negative_px |= rd.decode_rle(entry["masks"][j][key])
     negative_px &= ~union
     prompt = highlight_prompt(row, spans, entry)
     with torch.no_grad():
@@ -158,11 +160,14 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
     device = target_latent.device
     regions = [grid_coverage(resize_mask(r, size), grid).to(device) for r in regions_px]
     source_size = prepared[0].size
+    source_distractors = (grid_coverage(resize_mask(negative_px, source_size), source_grid).to(device)
+                          if row.get("neg_ann") else None)
     return Round2Sample(
         inputs=inputs, kind=row["kind"], regions=regions,
         distractors=grid_coverage(resize_mask(negative_px, size), grid).to(device),
         spans=span_pos, route_regions=regions, source_positions=source_pos,
-        source_regions=[grid_coverage(resize_mask(r, source_size), source_grid).to(device) for r in regions_px])
+        source_regions=[grid_coverage(resize_mask(r, source_size), source_grid).to(device) for r in regions_px],
+        source_distractors=source_distractors)
 
 
 def _prepare_edit(pipe, ctx, row, max_pixels):
@@ -190,24 +195,32 @@ def _prepare_edit(pipe, ctx, row, max_pixels):
     grid, source_grid = target_latent.shape[-2:], source_latents[0].shape[-2:]
     device = target_latent.device
     size = (width, height)
+    negative_px = np.zeros_like(s_px)
+    if row.get("negatives"):
+        entry = ctx.pool(record["source_id"])
+        for j in row["negatives"]:
+            negative_px |= rd.decode_rle(entry["masks"][j]["rle"])
+        negative_px &= ~(support_px | s_px | changed_px)
     sample = Round2Sample(inputs={}, kind="edit", regions=[grid_coverage(resize_mask(support_px, size), grid).to(device)],
-                          distractors=torch.zeros(tuple(grid), device=device))
+                          distractors=grid_coverage(resize_mask(negative_px, size), grid).to(device))
     if span is not None:
         sample.spans = span_positions_all(pipe.processor.tokenizer, prompt, conditioning, 1)
         sample.source_positions = source_token_positions(conditioning, source_grid)
         sample.route_regions = [grid_coverage(resize_mask(s_px | changed_px, size), grid).to(device)]
         token_px = rd.decode_rle(token["dec"])
         sample.source_regions = [grid_coverage(resize_mask(token_px, prepared[0].size), source_grid).to(device)]
+        if row.get("negatives"):
+            sample.source_distractors = grid_coverage(resize_mask(negative_px, prepared[0].size), source_grid).to(device)
     conditioning.pop("prompt_input_ids")
     sample.inputs = {"input_latents": target_latent, "edit_latents": source_latents, **conditioning}
     validate_conditioning({k: (v.detach() if torch.is_tensor(v) else v) for k, v in sample.inputs.items()})
     return sample
 
 
-def balanced(labels, heavy):
-    """Positive and negative halves of the weight; negatives on ``heavy`` count DISTRACTOR_WEIGHT times."""
+def balanced(labels, heavy, heavy_weight=DISTRACTOR_WEIGHT):
+    """Positive and negative halves of the weight; negatives on ``heavy`` count ``heavy_weight`` times."""
     negative = 1 - labels
-    weight_neg = negative * (1 + (DISTRACTOR_WEIGHT - 1) * heavy)
+    weight_neg = negative * (1 + (heavy_weight - 1) * heavy)
     weights = torch.zeros_like(labels)
     if labels.sum() > 0:
         weights = weights + labels * (0.5 / labels.sum())
@@ -225,10 +238,11 @@ def token_labels(coverage):
     return labels
 
 
-def route_entries(sample):
+def route_entries(sample, heavy_weight=DISTRACTOR_WEIGHT):
     """Router entries: per span, write-side labels on the target grid and read-side labels on the source grid.
 
-    Negatives that count DISTRACTOR_WEIGHT times: the distractors and, with several spans, the other spans' regions.
+    Negatives that count ``heavy_weight`` times: the distractors (on the source grid too, when the sample has
+    them) and, with several spans, the other spans' regions.
     """
     target = [token_labels(r) for r in sample.route_regions]
     source = [token_labels(r) for r in sample.source_regions]
@@ -239,14 +253,15 @@ def route_entries(sample):
         for j, other in enumerate(target):
             if j != k:
                 heavy = torch.maximum(heavy, other)
-        entry = {"span": span, "labels": target[k], "weights": balanced(target[k], heavy)}
+        entry = {"span": span, "labels": target[k], "weights": balanced(target[k], heavy, heavy_weight)}
         if sample.source_positions:
-            src_heavy = torch.zeros_like(source[k])
+            src_heavy = (torch.zeros_like(source[k]) if sample.source_distractors is None
+                         else (sample.source_distractors > 0.5).float().flatten())
             for j, other in enumerate(source):
                 if j != k:
                     src_heavy = torch.maximum(src_heavy, other)
             entry.update(source_positions=sample.source_positions, source_labels=source[k],
-                         source_weights=balanced(source[k], src_heavy))
+                         source_weights=balanced(source[k], src_heavy, heavy_weight))
         entries.append(entry)
     return entries
 
@@ -262,7 +277,7 @@ def region_error(squared_error, regions, dilate=True):
 
 
 def round2_loss(pipe, sample, router=None, *, lambda_region=1.0, lambda_distractor=1.0, timestep_index=None,
-                noise=None, checkpointing=True):
+                noise=None, checkpointing=True, heavy_weight=DISTRACTOR_WEIGHT):
     """Returns ``(flow, write, read, metrics)``; the caller adds ``lambda_route * write + lambda_read * read``.
     With a router, call ``router.disarm()`` after backward (gradient checkpointing re-runs the hooks)."""
     inputs = sample.inputs
@@ -282,7 +297,7 @@ def round2_loss(pipe, sample, router=None, *, lambda_region=1.0, lambda_distract
     if router is None or not sample.spans:
         prediction = predict()
     else:
-        router.arm_entries(sample.regions[0].numel(), route_entries(sample))
+        router.arm_entries(sample.regions[0].numel(), route_entries(sample, heavy_weight))
         with router.recording():
             prediction = predict()
         write, read = router.collect(), router.collect_read()

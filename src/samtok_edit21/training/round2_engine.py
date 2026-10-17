@@ -1,4 +1,10 @@
-"""Round-2 trainer (docs/08 section 5.3): stock Qwen-Image-2.1 DiT + fresh LoRA + code injector, C1 rows.
+"""Round-2 trainer (docs/08 sections 5.3 and 7): stock Qwen-Image-2.1 DiT + LoRA + code injector, C1 or C1b rows.
+
+C1 starts a fresh LoRA; C1b warm-starts from a C1 adapter (``--init-adapter``) with the C1b rows, a cosine decay
+and heavier hard negatives::
+
+    ... round2-train --data <round2 dir> --output <run dir>/train --rows rows_c1b.jsonl \\
+        --init-adapter <C1 run>/train/adapter_1500 --updates 800 --warmup 20 --lr-schedule cosine --heavy-weight 8
 
 The model sees what inference sees (source image + prompt with tokens); regions enter only through the loss
 (``training.round2``).  Same distributed recipe as the round-1 trainer: every rank processes its own rows, gradients
@@ -7,13 +13,14 @@ are averaged, all ranks start from rank 0's weights and the checkpoints verify t
     python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-train \\
         --data <round2 dir> --output <run dir>/train
 
-Global row ``(update * accumulation + step) * world + rank`` of ``rows_c1.jsonl`` is processed by ``rank`` at that
+Global row ``(update * accumulation + step) * world + rank`` of the rows file is processed by ``rank`` at that
 step, so the batch of every update is fixed by the data, whatever the number of GPUs.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import time
@@ -36,12 +43,20 @@ def parser():
     p.add_argument("--data", required=True, help="Directory written by `samtok-edit round2-data`")
     p.add_argument("--output", required=True)
     p.add_argument("--rows", default="rows_c1.jsonl")
+    p.add_argument("--eval-items", default="eval_c1.json")
+    p.add_argument("--quick-items", default="eval_c1_quick_idx.json")
+    p.add_argument("--init-adapter", help="Warm start: LoRA, code injector and routing calibrations of a round-2 adapter")
     p.add_argument("--qwen", default=DEFAULT_QWEN)
     p.add_argument("--samtok", default=DEFAULT_SAMTOK)
     p.add_argument("--updates", type=int, default=2000)
     p.add_argument("--accumulation", type=int, default=4, help="Rows per rank per optimizer step")
     p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--warmup", type=int, default=50)
+    p.add_argument("--lr-schedule", choices=["constant", "cosine"], default="constant",
+                   help="After warm-up: constant, or cosine from --lr down to --lr-min at the last update")
+    p.add_argument("--lr-min", type=float, default=1e-5)
+    p.add_argument("--heavy-weight", type=float, default=3.0,
+                   help="Weight of hard negatives (distractors, other spans) in both routing terms")
     p.add_argument("--weight-decay", type=float, default=0.01, help="LoRA only; injector and routing calibration use 0")
     p.add_argument("--rank", type=int, default=32)
     p.add_argument("--lambda-route", type=float, default=0.05, help="Write-side routing weight")
@@ -58,14 +73,24 @@ def parser():
     return p
 
 
+def learning_rate(args, update):
+    """Linear warm-up, then constant or cosine decay to ``lr_min`` at the last update (0-based ``update``)."""
+    if update < args.warmup:
+        return args.lr * (update + 1) / max(1, args.warmup)
+    if args.lr_schedule == "constant":
+        return args.lr
+    progress = (update - args.warmup) / max(1, args.updates - 1 - args.warmup)
+    return args.lr_min + 0.5 * (args.lr - args.lr_min) * (1 + math.cos(math.pi * min(1.0, progress)))
+
+
 def main(argv=None):
     import torch.distributed as dist
 
     from samtok_edit21.evaluation.round2_eval import run_item, summarize
-    from samtok_edit21.models.code_injector import CodeInjector, attach_code_injector, save_code_injector
+    from samtok_edit21.models.code_injector import CodeInjector, attach_code_injector, load_code_injector, save_code_injector
     from samtok_edit21.models.codec import load_codec
     from samtok_edit21.models.pipeline import load_pipeline
-    from samtok_edit21.training.objectives import add_adapter, save_adapter
+    from samtok_edit21.training.objectives import add_adapter, load_adapter, save_adapter
     from samtok_edit21.training.round2 import Context, prepare_round2, round2_loss
     from samtok_edit21.training.routing import AttentionRouter
 
@@ -91,11 +116,24 @@ def main(argv=None):
     random.seed(args.seed + rank)
     pipe = load_pipeline(args.qwen, args.samtok, device=device)
     pipe.scheduler.set_timesteps(1000, training=True)
-    add_adapter(pipe.dit, "stage2", args.rank, 0.0)
+    if args.init_adapter:
+        init_config = load_adapter(pipe.dit, args.init_adapter, trainable=True)
+    else:
+        add_adapter(pipe.dit, "stage2", args.rank, 0.0)
     pipe.dit.train()
     codec = load_codec(args.samtok, device)
     injector = attach_code_injector(pipe, CodeInjector.from_codec(codec, pipe.processor.tokenizer))
     router = AttentionRouter(pipe.dit, args.route_layers, read=args.lambda_read > 0).to(device)
+    if args.init_adapter:
+        load_code_injector(injector, args.init_adapter)
+        injector.requires_grad_(True)
+        grounding = init_config.get("grounding", {})
+        if list(grounding.get("route_layers", args.route_layers)) != list(args.route_layers):
+            raise ValueError("--route-layers differ from the warm-start adapter's routing layers")
+        with torch.no_grad():
+            router.affine.copy_(torch.tensor(grounding["route_affine"], dtype=router.affine.dtype))
+            if router.read_affine is not None and grounding.get("read_affine") is not None:
+                router.read_affine.copy_(torch.tensor(grounding["read_affine"], dtype=router.read_affine.dtype))
 
     lora = [p for p in pipe.dit.parameters() if p.requires_grad]
     extra = list(injector.proj.parameters()) + [router.affine] + ([router.read_affine] if router.read_affine is not None else [])
@@ -108,8 +146,8 @@ def main(argv=None):
     needed = args.updates * args.accumulation * world
     if needed > len(rows):
         raise ValueError(f"{needed} rows needed, {args.rows} has {len(rows)}")
-    items = json.load(open(data / "eval_c1.json"))
-    quick = [items[i] | {"idx": i} for i in json.load(open(data / "eval_c1_quick_idx.json"))]
+    items = json.load(open(data / args.eval_items))
+    quick = [items[i] | {"idx": i} for i in json.load(open(data / args.quick_items))]
     quick = quick[rank::world][:args.quick_limit]
 
     start, resume_path = 0, out / "resume.pt"
@@ -163,14 +201,15 @@ def main(argv=None):
     totals = torch.zeros(10 + len(KIND_INDEX), device=device)
     for update in range(start, args.updates):
         for group in optimizer.param_groups:
-            group["lr"] = args.lr * min(1.0, (update + 1) / max(1, args.warmup))
+            group["lr"] = learning_rate(args, update)
         optimizer.zero_grad(set_to_none=True)
         for step in range(args.accumulation):
             row = rows[(update * args.accumulation + step) * world + rank]
             try:
                 sample = prepare_round2(pipe, ctx, row, max_pixels=args.max_pixels)
                 flow, write, read, metrics = round2_loss(pipe, sample, router, lambda_region=args.lambda_region,
-                                                         lambda_distractor=args.lambda_distractor)
+                                                         lambda_distractor=args.lambda_distractor,
+                                                         heavy_weight=args.heavy_weight)
                 loss = flow
                 if write is not None:
                     loss = loss + args.lambda_route * write

@@ -325,12 +325,18 @@ def pick_regions(entries, rng, count, *, replace=True):
     return draws[:count]
 
 
-def multi_group(entry, rng, size):
-    """``size`` usable, pairwise disjoint, non-duplicate masks of one image (decoded regions disjoint too)."""
+def multi_group(entry, rng, size, start=()):
+    """``size`` usable, pairwise disjoint, non-duplicate masks of one image (decoded regions disjoint too),
+    beginning with ``start`` when given."""
     candidates = [i for i, m in enumerate(entry["masks"]) if usable(m) and bucket(m["area"]) is not None]
     rng.shuffle(candidates)
-    chosen, decoded = [], []
+    chosen = list(start)
+    decoded = [decode_rle(entry["masks"][i]["dec"]) for i in chosen]
+    if len(chosen) >= size:
+        return chosen[:size]
     for i in candidates:
+        if i in chosen:
+            continue
         rel = entry["masks"][i]["rel"]
         if any(j in chosen for j in rel["hosts"] + rel["parts"] + rel["duplicate"] + rel["touching"]):
             continue
@@ -398,6 +404,227 @@ def build_rows(out, seed=20261016, updates=2000, batch=32):
              "train_images": len(train_entries), "dev_images": len(dev),
              "usable_masks_train": sum(usable(m) for e in train_entries for m in e["masks"])}
     (out / "rows_c1_stats.json").write_text(json.dumps(stats, indent=1))
+    return stats
+
+
+# ---------------------------------------------------------------- C1b rows: hard negatives next to the target (CPU)
+#
+# C1 took its negatives from the same-category list in annotation order: the nearest same-category instance was a
+# negative in only half of the rows that had one, a different-category neighbour never was, and the read side had
+# no heavy negatives.  C1's near misses landed on a different-category neighbour (37 %), the host of a part
+# (29 %) or a same-category neighbour (24 %).  C1b therefore takes as negatives the nearest annotated regions of
+# any category plus the hosts, adds counterfactual pairs of adjacent regions (and of a part and its host), and builds
+# part of the multi-token rows around an adjacent pair (docs/08 section 6.3).
+
+NEAR_GAP = 0.05            # a neighbour: box gap at most 5 % of the image diagonal
+MAX_NEAR, MAX_HOSTS = 6, 2
+PAIR_SHARE = 0.30          # share of the single-token highlight rows that come as counterfactual pairs
+PAIR_PART_HOST = 0.30      # of the pairs: a part and its host; the rest are adjacent regions of similar size
+PAIR_AREA_RATIO = 4.0
+MULTI_ADJACENT = 0.40      # share of the multi-token rows built around an adjacent pair
+
+
+def geometry(entry):
+    """Boxes (x, y, w, h) of the decoded regions and of the annotations, and the image diagonal (cached)."""
+    if "_geo" not in entry:
+        from pycocotools import mask as mu
+        masks = entry["masks"]
+        dec = np.asarray(mu.toBbox([as_rle(m["dec"]) for m in masks]), float).reshape(-1, 4) if masks else np.zeros((0, 4))
+        ann = np.asarray(mu.toBbox([as_rle(m["rle"]) for m in masks]), float).reshape(-1, 4) if masks else np.zeros((0, 4))
+        entry["_geo"] = (dec, ann, float(np.hypot(*entry["size"])))
+    return entry["_geo"]
+
+
+def box_gap(a, b):
+    """Euclidean gap between two (x, y, w, h) boxes; 0 when they touch or overlap."""
+    dx = max(0.0, max(a[0], b[0]) - min(a[0] + a[2], b[0] + b[2]))
+    dy = max(0.0, max(a[1], b[1]) - min(a[1] + a[3], b[1] + b[3]))
+    return float(np.hypot(dx, dy))
+
+
+def centre_distance(a, b):
+    return float(np.hypot(a[0] + a[2] / 2 - b[0] - b[2] / 2, a[1] + a[3] / 2 - b[1] - b[3] / 2))
+
+
+def overlap_frac(entry, i, j):
+    """Intersection of the decoded regions of i and j over the smaller one."""
+    from pycocotools import mask as mu
+    a, b = as_rle(entry["masks"][i]["dec"]), as_rle(entry["masks"][j]["dec"])
+    return float(max(mu.iou([a], [b], [1])[0, 0], mu.iou([b], [a], [1])[0, 0]))
+
+
+def near_negatives(entry, index, *, target_box=None, exclude=()):
+    """Annotated regions that must stay unchanged when region ``index`` is the target: the nearest objects of
+    any category (box gap at most NEAR_GAP of the diagonal, closest first, up to MAX_NEAR) and its hosts.
+
+    Never negatives: the target, its parts (they lie inside it) and duplicate annotations of it.  For an edit
+    whose region is not a pool region, ``index`` is None and ``target_box`` gives the region's box.
+    """
+    dec, ann, diag = geometry(entry)
+    if index is None:
+        rel, box = {"hosts": [], "parts": [], "duplicate": []}, target_box
+    else:
+        rel, box = entry["masks"][index]["rel"], dec[index] if target_box is None else target_box
+    skip = set(rel["parts"]) | set(rel["duplicate"]) | set(exclude) | ({index} if index is not None else set())
+    ranked = sorted((box_gap(box, ann[j]), centre_distance(box, ann[j]), j)
+                    for j in range(len(entry["masks"])) if j not in skip)
+    near = [j for gap, _, j in ranked if gap <= NEAR_GAP * diag][:MAX_NEAR]
+    hosts = [j for j in rel["hosts"] if j not in skip][:MAX_HOSTS]
+    return sorted(set(near) | set(hosts))
+
+
+def edit_negatives(entry, token_dec):
+    """Near negatives of an SA-1B edit: pool regions around its token's decoded region, without the edited
+    object itself (IoU at least 0.5) and its parts (at least 90 % inside the edited region)."""
+    from pycocotools import mask as mu
+    if not entry["masks"]:
+        return []
+    target = as_rle(token_dec)
+    anns = [as_rle(m["rle"]) for m in entry["masks"]]
+    same = mu.iou(anns, [target], [0])[:, 0]
+    inside = mu.iou(anns, [target], [1])[:, 0]        # crowd: intersection over the area of the annotation
+    exclude = [j for j in range(len(anns)) if same[j] >= 0.5 or inside[j] >= 0.9]
+    return near_negatives(entry, None, target_box=np.asarray(mu.toBbox([target]), float)[0], exclude=exclude)
+
+
+def pair_partner(entry, index, rng, part_host):
+    """The second region of a counterfactual pair: the host of a part or a part of a host (``part_host``), else
+    an adjacent usable region of similar size (any category, decoded regions disjoint).  None if there is none."""
+    dec, _, diag = geometry(entry)
+    m = entry["masks"][index]
+    if part_host:
+        options = [j for j in m["rel"]["hosts"] + m["rel"]["parts"] if usable(entry["masks"][j])]
+    else:
+        skip = set(m["rel"]["hosts"]) | set(m["rel"]["parts"]) | set(m["rel"]["duplicate"]) | {index}
+        options = [j for j, o in enumerate(entry["masks"])
+                   if j not in skip and usable(o) and max(m["area"], o["area"]) <= PAIR_AREA_RATIO * min(m["area"], o["area"])
+                   and box_gap(dec[index], dec[j]) <= NEAR_GAP * diag]
+        rng.shuffle(options)
+        options = [j for j in options[:8] if overlap_frac(entry, index, j) <= DISJOINT]
+    return rng.choice(options) if options else None
+
+
+def multi_group_adjacent(entry, rng, size):
+    """A multi-token group built around an adjacent pair of usable, disjoint regions (None if there is none)."""
+    dec, _, diag = geometry(entry)
+    candidates = [i for i, m in enumerate(entry["masks"]) if usable(m) and bucket(m["area"]) is not None]
+    rng.shuffle(candidates)
+    for i in candidates[:20]:
+        rel = entry["masks"][i]["rel"]
+        blocked = set(rel["hosts"]) | set(rel["parts"]) | set(rel["duplicate"]) | set(rel["touching"]) | {i}
+        near = [j for j in candidates if j not in blocked and box_gap(dec[i], dec[j]) <= NEAR_GAP * diag]
+        rng.shuffle(near)
+        for j in near[:5]:
+            if overlap_frac(entry, i, j) <= DISJOINT:
+                group = multi_group(entry, rng, size, start=(i, j))
+                if group:
+                    return group
+    return None
+
+
+def place_in_slots(units, rng, updates, world, accumulation):
+    """Rows in training order: global row (u * accumulation + s) * world + r is processed by rank r at step s of
+    update u.  A pair occupies steps s, s + 1 (s even) of one rank, so both members share an update; singles fill
+    the remaining slots two by two."""
+    if accumulation % 2:
+        raise ValueError("pairs need an even accumulation")
+    pairs = [u for u in units if len(u) == 2]
+    singles = [u[0] for u in units if len(u) == 1]
+    rng.shuffle(singles)
+    blocks = pairs + [singles[k:k + 2] for k in range(0, len(singles), 2)]
+    rng.shuffle(blocks)
+    if len(blocks) != updates * world * accumulation // 2 or any(len(b) != 2 for b in blocks):
+        raise ValueError("units do not fill the slots exactly")
+    rows, k = [None] * (updates * world * accumulation), 0
+    for u in range(updates):
+        for r in range(world):
+            for s in range(0, accumulation, 2):
+                rows[(u * accumulation + s) * world + r], rows[(u * accumulation + s + 1) * world + r] = blocks[k]
+                k += 1
+    return rows
+
+
+def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
+    """C1b rows (same kinds and shares as C1) with near negatives, counterfactual pairs and adjacent multi groups."""
+    rng = random.Random(seed)
+    dev = set(json.load(open(out / "dev_split.json"))["sa1b_sources"])
+    train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
+    by_id = {e["source_id"]: e for e in train}
+    total = updates * world * accumulation
+    counts = {kind: round(total * share) for kind, share in C1_MIX.items()}
+    counts["edit"] = total - counts["hl"] - counts["hl_ref"] - counts["hlm"]
+    n_pairs = round(PAIR_SHARE * (counts["hl"] + counts["hl_ref"]) / 2)
+    units = []
+    for e_index, m_index in pick_regions(train, rng, 4 * n_pairs):
+        if len(units) == n_pairs:
+            break
+        entry = train[e_index]
+        part_host = rng.random() < PAIR_PART_HOST
+        partner = pair_partner(entry, m_index, rng, part_host)
+        if partner is None:
+            continue
+        template, color, key = rng.randrange(len(HL_SINGLE)), rng.choice(MULTI_COLORS), f"c1b-pair-{len(units)}"
+        members = []
+        for a, b in ((m_index, partner), (partner, m_index)):
+            negatives = set(near_negatives(entry, a))
+            if b not in entry["masks"][a]["rel"]["parts"]:          # the other member, unless it lies inside a
+                negatives.add(b)
+            members.append({"kind": "hl", "source_id": entry["source_id"], "masks": [a], "negatives": [sorted(negatives)],
+                            "neg_ann": True, "colors": [color], "template": template, "phrase": None,
+                            "pair_key": key, "pair_kind": "part_host" if part_host else "adjacent"})
+        units.append(members)
+    if len(units) < n_pairs:
+        raise RuntimeError(f"only {len(units)} of {n_pairs} counterfactual pairs found")
+    need = counts["hl"] + counts["hl_ref"] - 2 * n_pairs
+    singles = pick_regions(train, rng, need + 16)[:need]      # the per-bucket rounding can fall a few draws short
+    if len(singles) != need:
+        raise RuntimeError(f"{len(singles)} of {need} single-token regions drawn")
+    named = [k for k, (e, m) in enumerate(singles) if train[e]["masks"][m]["category"]]
+    with_name = set(rng.sample(named, min(counts["hl_ref"], len(named))))
+    for k, (e_index, m_index) in enumerate(singles):
+        entry = train[e_index]
+        phrase = entry["masks"][m_index]["category"] if k in with_name else None
+        units.append([{"kind": "hl_ref" if phrase else "hl", "source_id": entry["source_id"], "masks": [m_index],
+                       "negatives": [near_negatives(entry, m_index)], "neg_ann": True, "colors": [rng.choice(MULTI_COLORS)],
+                       "template": rng.randrange(len(HL_SINGLE)), "phrase": phrase}])
+    for size in rng.choices([2, 3, 4, 5], weights=[0.35, 0.30, 0.20, 0.15], k=counts["hlm"]):
+        adjacent = rng.random() < MULTI_ADJACENT
+        for _ in range(50):
+            entry = rng.choice(train)
+            group = multi_group_adjacent(entry, rng, size) if adjacent else multi_group(entry, rng, size)
+            if group:
+                break
+        else:
+            raise RuntimeError("no multi-token group found")
+        units.append([{"kind": "hlm", "source_id": entry["source_id"], "masks": group,
+                       "negatives": [near_negatives(entry, i, exclude=group) for i in group], "neg_ann": True,
+                       "colors": rng.sample(MULTI_COLORS, size), "template": rng.randrange(len(HL_MULTI)),
+                       "adjacent": adjacent}])
+    release = [json.loads(line) for line in open(RELEASE / "annotations/train_protocol_v2.jsonl")]
+    tokens = {t["sample_id"]: t for t in map(json.loads, open(out / "edit_tokens.jsonl"))}
+    train_edits = [r for r in release if r["source_id"] not in dev]
+    token_ok = [r for r in train_edits if r["instruction_noref"] and tokens[r["sample_id"]]["roundtrip"] >= MIN_ROUNDTRIP]
+    for form in rng.choices(list(EDIT_FORMS), weights=list(EDIT_FORMS.values()), k=counts["edit"]):
+        r = rng.choice(train_edits if form == "ref_only" else token_ok)
+        token = tokens[r["sample_id"]]
+        negatives = edit_negatives(by_id[r["source_id"]], token["dec"]) if token["roundtrip"] >= MIN_ROUNDTRIP else []
+        units.append([{"kind": "edit", "form": form, "sample_id": r["sample_id"], "source_id": r["source_id"],
+                       "negatives": negatives}])
+    rows = place_in_slots(units, rng, updates, world, accumulation)
+    with open(out / "rows_c1b.jsonl", "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    hl = [r for r in rows if r["kind"] in ("hl", "hl_ref")]
+    stats = {"rows": len(rows), "updates": updates, "world": world, "accumulation": accumulation,
+             "kinds": dict(Counter(r["kind"] for r in rows)),
+             "pairs": {k: v // 2 for k, v in Counter(r["pair_kind"] for r in rows if r.get("pair_key")).items()},
+             "pair_rows": sum(1 for r in rows if r.get("pair_key")),
+             "multi_adjacent": round(float(np.mean([r["adjacent"] for r in rows if r["kind"] == "hlm"])), 3),
+             "single_rows_with_negatives": round(float(np.mean([bool(r["negatives"][0]) for r in hl])), 3),
+             "negatives_per_single_row": round(float(np.mean([len(r["negatives"][0]) for r in hl])), 2),
+             "edit_rows_with_negatives": round(float(np.mean([bool(r["negatives"]) for r in rows if r["kind"] == "edit"])), 3),
+             "edit_forms": dict(Counter(r["form"] for r in rows if r["kind"] == "edit"))}
+    (out / "rows_c1b_stats.json").write_text(json.dumps(stats, indent=1))
     return stats
 
 
@@ -470,7 +697,7 @@ def build_eval(out, seed=20261017):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="samtok-edit round2-data", description=__doc__.split("\n\n")[0])
-    p.add_argument("step", choices=["pool", "rows", "eval"])
+    p.add_argument("step", choices=["pool", "rows", "rows-c1b", "eval"])
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
     out = Path(args.out)
@@ -478,6 +705,8 @@ def main(argv=None):
         run_pool(args)
     elif args.step == "rows":
         print(json.dumps(build_rows(out), indent=1))
+    elif args.step == "rows-c1b":
+        print(json.dumps(build_rows_c1b(out), indent=1))
     else:
         print(json.dumps(build_eval(out), indent=1))
 
