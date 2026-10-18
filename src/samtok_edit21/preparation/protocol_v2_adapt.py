@@ -148,6 +148,15 @@ def adapt_v1(record):
     return out
 
 
+def adapt_multi(record):
+    """One accepted multi-unit pair of protocol_multi_qwen38_27b_v1/manifest_multi.jsonl -> protocol 2.0, each unit
+    adapted like a single v1 record (same blind sentence, same source-mask rules)."""
+    out = {k: v for k, v in record.items() if k not in ("units", "adapter_version", "instruction_protocol_version")}
+    out.update(units=[adapt_v1(unit) for unit in record["units"]], instruction_protocol_version=p2.VERSION,
+               adapter_version=ADAPTER_VERSION)
+    return out
+
+
 # ---------------------------------------------------------------- SA-1B 50k release
 
 def adapt_sa1b(row, root, mask_dir="masks/region_v2", out_root=None):

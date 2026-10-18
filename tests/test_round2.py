@@ -276,9 +276,61 @@ def test_c2_twins_and_v1_filter():
     import random
     group = [{"bbox": [0, 0, 10, 10]}, {"bbox": [12, 0, 20, 10]}, {"bbox": [90, 90, 99, 99]}]
     assert rd.twin_pair(group, random.Random(0), close=True) == (group[0], group[1])
+    pairs, left = rd.pair_within(group + [{"bbox": [80, 90, 88, 99]}])
+    assert [(a["bbox"][0], b["bbox"][0]) for a, b in pairs] == [(0, 12), (90, 80)] and left == []
     rows = [{"id": i, "instruction_noref": "Remove the selected region."} for i in "abcd"]
     tokens = {"a": {"roundtrip": 0.9, "size_ok": True, "out_diff": 0.2, "out_share8": 0.0},
               "b": {"roundtrip": 0.3, "size_ok": True, "out_diff": 0.2, "out_share8": 0.0},     # token misses the mask
               "c": {"roundtrip": 0.9, "size_ok": True, "out_diff": 4.0, "out_share8": 0.1},     # target drifts outside
               "d": {"roundtrip": 0.9, "size_ok": True, "out_diff": 0.1, "out_share8": 0.0}}
-    assert [r["id"] for r in rd.v1_usable(rows, tokens, dev_ids={"d"})] == ["a"]
+    assert [r["id"] for r in rd.v1_usable(rows, tokens, dev_ids={"d"})] == ["a", "c"]
+    assert not rd.drifts(tokens["a"]) and rd.drifts(tokens["c"])
+
+
+def test_c2_local_loss_takes_fm_only_near_the_edit(tiny_dit):  # noqa: F811
+    class Scheduler:
+        timesteps = torch.linspace(1000.0, 1.0, 1000)
+
+        def add_noise(self, clean, noise, timestep):
+            sigma = (timestep / 1000).view(-1, 1, 1, 1)
+            return (1 - sigma) * clean + sigma * noise
+
+        def training_target(self, clean, noise, timestep):
+            return noise - clean
+
+        def training_weight(self, timestep):
+            return torch.ones_like(timestep)
+
+    def model_fn(dit, latents, timestep, **kwargs):
+        prediction = tiny_dit.run(latents.flatten(2).transpose(1, 2), kwargs["use_gradient_checkpointing"])
+        return prediction.transpose(1, 2).reshape(latents.shape)
+
+    pipe = SimpleNamespace(scheduler=Scheduler(), model_fn=model_fn, dit=tiny_dit.model, device="cpu", torch_dtype=torch.float32)
+    region = torch.zeros(tiny_dit.grid)
+    region[0, 0] = 1.0
+    sample = r2.Round2Sample({"input_latents": torch.randn(1, 8, *tiny_dit.grid)}, "edit_v1", [region],
+                             torch.zeros(tiny_dit.grid), region_dilate=True)
+    noise = torch.randn(1, 8, *tiny_dit.grid)
+    _, _, _, full = r2.round2_loss(pipe, sample, None, timestep_index=300, noise=noise, lambda_region=0.0)
+    sample.loss_mask = torch.zeros(tiny_dit.grid)
+    sample.loss_mask[:2, :2] = 1.0
+    with torch.no_grad():
+        latents = sample.inputs["input_latents"]
+        t = Scheduler.timesteps[300].view(1)
+        error = (model_fn(None, Scheduler().add_noise(latents, noise, t), t, use_gradient_checkpointing=False)
+                 - (noise - latents)).pow(2).mean(1)[0]
+    _, _, _, local = r2.round2_loss(pipe, sample, None, timestep_index=300, noise=noise, lambda_region=0.0)
+    assert local["mse"] == pytest.approx(float(error[:2, :2].mean()), rel=1e-5)
+    assert full["mse"] == pytest.approx(float(error.mean()), rel=1e-5)
+
+
+def test_c2_unit_change_cuts_a_shared_changed_region_to_each_unit():
+    changed = np.zeros((200, 200), bool)
+    changed[10:60, 10:60] = True
+    changed[120:180, 120:180] = True                  # the pair's whole change, given to every unit
+    own_a = np.zeros_like(changed); own_a[15:55, 15:55] = True
+    own_b = np.zeros_like(changed); own_b[125:175, 125:175] = True
+    own_c = np.zeros_like(changed); own_c[80:90, 150:160] = True     # no change near it
+    a, b, c = (r2.unit_change(changed, own) for own in (own_a, own_b, own_c))
+    assert a[30, 30] and not a[150, 150] and b[150, 150] and not b[30, 30]
+    assert (c == own_c).all() and r2.unit_change(None, own_c) is own_c

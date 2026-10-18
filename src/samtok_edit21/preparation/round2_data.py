@@ -650,21 +650,26 @@ def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
 
 # ---------------------------------------------------------------- C2 rows: stage B, editing with tokens (CPU)
 #
-# Stage B (docs/08 section 9): editing becomes the main task, starting from C1b.  Every edit carries its token, as a
-# blind sentence + token or ref + token; no row goes without one, since the method always has a token at inference.
-# add and replace are drawn more often than the data holds them; natural twins of the 50k (same image, same blind
-# sentence, another region) come as pairs in one update; a tenth of the rows join 2-4 non-overlapping 50k edits of one
-# image into one multi-target edit; 15 % stay highlights, so that C1b's localisation is kept.  The loss weights the
-# pixels that really changed (``region: changed``) rather than the whole execution region.
+# Stage B (docs/08 section 9): editing becomes the main task, starting from C1b, and every usable edit is used.
+# * every 50k record whose token names its region, and every cleaned v1 record likewise, appears once; add records
+#   (the weakest operation after stage A) appear twice;
+# * v1 targets that also change the image outside the edit are kept, with the loss restricted to the edit's
+#   neighbourhood (``loss_region: local``), instead of being left out;
+# * natural twins of the 50k (same image, same blind sentence, another region) are paired inside their group and
+#   both rows of a pair go into one update;
+# * the cleaned v1 multi-object pairs (D4, real joint targets) appear once; joined 50k edits of one image add more
+#   multi-target rows; highlights as in C1b keep the localisation.
+# Every edit carries its token, as a blind sentence + token or ref + token: the method always has a token.  The loss
+# weights the pixels that really changed (``region: changed``) rather than the whole execution region.
 
-C2_MIX = {"edit": 0.55, "edit_v1": 0.20, "edit_multi": 0.10, "hl": 0.09, "hlm": 0.06}
-C2_OPS = {"add": 0.30, "replace": 0.25, "attribute": 0.25, "remove": 0.20}
+C2_SHARE = {"edit_multi": 0.10, "hl": 0.06, "hlm": 0.04}      # of all rows; the rest are the real edits above
+C2_REPEAT = {"add": 2, "replace": 1, "attribute": 1, "remove": 1}
 C2_FORMS = {"noref_token": 0.65, "ref_token": 0.35}
-C2_TWIN_SHARE = 0.25          # share of the 50k single-edit rows that come as natural twin pairs
-C2_TWIN_CLOSE = 0.5           # of the twin pairs: the two records of the group whose boxes are nearest
+C2_OPS = {"add": 0.30, "replace": 0.25, "attribute": 0.25, "remove": 0.20}   # operation draw of the joined multi rows
 C2_MULTI_SIZES = {2: 0.40, 3: 0.35, 4: 0.25}
 C2_HL_NAMED = 0.27            # share of the single-token highlights that name the object (C1b: 15 of 55)
-V1_MAX_OUT_DIFF, V1_MAX_OUT_SHARE = 1.0, 0.02   # v1 targets that change the image outside the edit are left out
+V1_MAX_OUT_DIFF, V1_MAX_OUT_SHARE = 1.0, 0.02   # above either, a target changes the image outside the edit
+D4_MANIFEST = V1_ROOT / "protocol_multi_qwen38_27b_v1/protocol_v2_blind/manifest_multi_protocol_v2.jsonl"
 MULTI_EDIT_INTRO = "Execute all numbered instructions and keep everything else unchanged."
 
 
@@ -673,15 +678,33 @@ def multi_edit_prompt(sentences):
     return MULTI_EDIT_INTRO + "\n" + "\n".join(f"U{k + 1}: {sentence}" for k, sentence in enumerate(sentences))
 
 
+def drifts(stats):
+    """The target also changes the image outside the edit (v1 sources are other editors, not a paste-back)."""
+    return stats["out_diff"] > V1_MAX_OUT_DIFF or stats["out_share8"] > V1_MAX_OUT_SHARE
+
+
 def v1_usable(rows, tokens, dev_ids):
-    """Cleaned v1 records usable for stage B: blind sentence, token round trip, and a target that keeps the image."""
-    out = []
-    for r in rows:
-        t = tokens.get(r["id"])
-        if (r["instruction_noref"] and r["id"] not in dev_ids and t and t["roundtrip"] >= MIN_ROUNDTRIP and t.get("size_ok")
-                and t["out_diff"] <= V1_MAX_OUT_DIFF and t["out_share8"] <= V1_MAX_OUT_SHARE):
-            out.append(r)
-    return out
+    """Cleaned v1 records usable for stage B: the token names the source mask and the target has the source's size.
+    Records without a blind sentence are usable with ref + token."""
+    return [r for r in rows if r["id"] not in dev_ids and r["id"] in tokens and tokens[r["id"]].get("size_ok")
+            and tokens[r["id"]]["roundtrip"] >= MIN_ROUNDTRIP]
+
+
+def d4_usable(pairs, tokens):
+    """Multi-object pairs whose every unit's token names its source mask."""
+    return [p for p in pairs if p["id"] in tokens and tokens[p["id"]].get("size_ok")
+            and all(u["roundtrip"] >= MIN_ROUNDTRIP for u in tokens[p["id"]]["units"])]
+
+
+def pair_within(group):
+    """Pairs of one twin group, nearest boxes first; an odd record is returned alone."""
+    left = list(group)
+    pairs = []
+    while len(left) > 1:
+        a, b = min(((x, y) for i, x in enumerate(left) for y in left[i + 1:]), key=lambda p: record_gap(*p))
+        pairs.append((a, b))
+        left = [r for r in left if r is not a and r is not b]
+    return pairs, left
 
 
 def record_gap(a, b):
@@ -751,55 +774,78 @@ def composite_group(records, supports, rng, size):
     return chosen
 
 
-def build_rows_c2(out, seed=20261019, updates=1500, world=8, accumulation=4):
-    """Stage-B rows in training order (same order rule as C1/C1b) and their statistics."""
+def build_rows_c2(out, seed=20261019, world=8, accumulation=4):
+    """Stage-B rows in training order (same order rule as C1/C1b) and their statistics.  The number of updates
+    follows from the data: every usable edit once (add twice) plus the joined multi-target rows and highlights."""
     rng = random.Random(seed)
     split = json.load(open(out / "dev_split.json"))
     dev, dev_v1 = set(split["sa1b_sources"]), set(split["v1_ids"])
     train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
     by_id = {e["source_id"]: e for e in train}
-    total = updates * world * accumulation
-    counts = {kind: round(total * share) for kind, share in C2_MIX.items()}
-    counts["edit"] = total - sum(v for k, v in counts.items() if k != "edit")
     release = [json.loads(line) for line in open(RELEASE / "annotations/train_protocol_v2.jsonl")]
     tokens = {t["sample_id"]: t for t in map(json.loads, open(out / "edit_tokens.jsonl"))}
-    edits = [r for r in release if r["source_id"] not in dev and r["instruction_noref"]
-             and tokens[r["sample_id"]]["roundtrip"] >= MIN_ROUNDTRIP]
-    by_op = {op: [r for r in edits if r["operation"] == op] for op in C2_OPS}
+    edits = [r for r in release if r["source_id"] not in dev and tokens[r["sample_id"]]["roundtrip"] >= MIN_ROUNDTRIP]
     negatives = lambda r: edit_negatives(by_id[r["source_id"]], tokens[r["sample_id"]]["dec"])  # noqa: E731
-    form = lambda: rng.choices(list(C2_FORMS), weights=list(C2_FORMS.values()))[0]  # noqa: E731
-    units = []
 
-    # natural twins: same image, same blind sentence, another region; both rows in one update of one rank
-    twins = defaultdict(list)
-    for group in natural_twins(edits):
-        twins[group[0]["operation"]].append(group)
-    n_twin_pairs = round(C2_TWIN_SHARE * counts["edit"] / 2)
-    for k, op in enumerate(rng.choices(list(C2_OPS), weights=list(C2_OPS.values()), k=n_twin_pairs)):
-        a, b = twin_pair(rng.choice(twins[op]), rng, rng.random() < C2_TWIN_CLOSE)
-        units.append([{"kind": "edit", "form": "noref_token", "sample_id": x["sample_id"], "source_id": x["source_id"],
-                       "negatives": negatives(x), "partners": [y["sample_id"]], "region": "changed",
-                       "pair_key": f"c2-twin-{k}", "pair_kind": "twin"} for x, y in ((a, b), (b, a))])
-    # single 50k edits
-    for op in rng.choices(list(C2_OPS), weights=list(C2_OPS.values()), k=counts["edit"] - 2 * n_twin_pairs):
-        r = rng.choice(by_op[op])
-        units.append([{"kind": "edit", "form": form(), "sample_id": r["sample_id"], "source_id": r["source_id"],
-                       "negatives": negatives(r), "region": "changed"}])
-    # cleaned v1 edits (no dense annotations, so no near negatives)
+    def form(record_noref):
+        if not record_noref:
+            return "ref_token"
+        return rng.choices(list(C2_FORMS), weights=list(C2_FORMS.values()))[0]
+
+    units, counts = [], Counter()
+    # 50k: twins paired inside their group (blind sentence + token for both), every other record alone
+    paired = set()
+    for k, group in enumerate(natural_twins([r for r in edits if r["instruction_noref"]])):
+        pairs, _ = pair_within(group)
+        for a, b in pairs:
+            key = f"c2-twin-{len(paired) // 2}"
+            units.append([{"kind": "edit", "form": "noref_token", "sample_id": x["sample_id"], "source_id": x["source_id"],
+                           "negatives": negatives(x), "partners": [y["sample_id"]], "region": "changed",
+                           "pair_key": key, "pair_kind": "twin"} for x, y in ((a, b), (b, a))])
+            paired |= {a["sample_id"], b["sample_id"]}
+    counts["edit_twin_rows"] = len(paired)
+    for r in edits:
+        for repeat in range(C2_REPEAT[r["operation"]]):
+            if repeat == 0 and r["sample_id"] in paired:
+                continue
+            units.append([{"kind": "edit", "form": form(r["instruction_noref"]), "sample_id": r["sample_id"],
+                           "source_id": r["source_id"], "negatives": negatives(r), "region": "changed"}])
+    # cleaned v1: every usable record; drifting targets keep the loss near the edit
     v1_rows = [json.loads(line) for line in open(V1_MANIFEST)]
     v1_tokens = {t["id"]: t for t in map(json.loads, open(out / "v1_tokens.jsonl"))}
     v1_ok = v1_usable(v1_rows, v1_tokens, dev_v1)
-    v1_by_op = {op: [r for r in v1_ok if r["instruction_spec"]["operation"] == op] for op in C2_OPS}
-    for op in rng.choices(list(C2_OPS), weights=list(C2_OPS.values()), k=counts["edit_v1"]):
-        units.append([{"kind": "edit_v1", "form": form(), "id": rng.choice(v1_by_op[op])["id"]}])
-    # multi-target edits joined from non-overlapping 50k edits of one image
+    for r in v1_ok:
+        for _ in range(C2_REPEAT[r["instruction_spec"]["operation"]]):
+            row = {"kind": "edit_v1", "form": form(r["instruction_noref"]), "id": r["id"]}
+            if drifts(v1_tokens[r["id"]]):
+                row["loss_region"] = "local"
+            units.append([row])
+    # D4: the real multi-object pairs, units in a random order
+    d4_pairs = [json.loads(line) for line in open(D4_MANIFEST)]
+    d4_tokens = {t["id"]: t for t in map(json.loads, open(out / "d4_tokens.jsonl"))}
+    d4_ok = d4_usable(d4_pairs, d4_tokens)
+    for p in d4_ok:
+        order = list(range(len(p["units"])))
+        rng.shuffle(order)
+        row = {"kind": "edit_multi_v1", "id": p["id"], "order": order,
+               "forms": [form(p["units"][i]["instruction_noref"]) for i in order]}
+        if drifts(d4_tokens[p["id"]]):
+            row["loss_region"] = "local"
+        units.append([row])
+    real = sum(len(u) for u in units)
+    total = -(-round(real / (1 - sum(C2_SHARE.values()))) // (world * accumulation)) * world * accumulation
+    updates = total // (world * accumulation)
+    n_multi, n_hlm = round(total * C2_SHARE["edit_multi"]), round(total * C2_SHARE["hlm"])
+    n_hl = total - real - n_multi - n_hlm
+    # joined multi-target rows from non-overlapping 50k edits of one image
     supports = CoarseSupports(out / "support_cache.jsonl")
     by_image = defaultdict(list)
     for r in edits:
-        by_image[r["source_id"]].append(r)
+        if r["instruction_noref"]:
+            by_image[r["source_id"]].append(r)
     images = sorted(by_image)
     sizes = Counter()
-    for size in rng.choices(list(C2_MULTI_SIZES), weights=list(C2_MULTI_SIZES.values()), k=counts["edit_multi"]):
+    for size in rng.choices(list(C2_MULTI_SIZES), weights=list(C2_MULTI_SIZES.values()), k=n_multi):
         for _ in range(200):
             group = composite_group(by_image[rng.choice(images)], supports, rng, size)
             if group:
@@ -809,12 +855,12 @@ def build_rows_c2(out, seed=20261019, updates=1500, world=8, accumulation=4):
         rng.shuffle(group)
         sizes[size] += 1
         units.append([{"kind": "edit_multi", "source_id": group[0]["source_id"], "sample_ids": [r["sample_id"] for r in group],
-                       "forms": [form() for _ in group], "negatives": sorted({j for r in group for j in negatives(r)})}])
+                       "forms": [form(True) for _ in group], "negatives": sorted({j for r in group for j in negatives(r)})}])
     # highlights, as in C1b
-    n_hl_pairs = round(PAIR_SHARE * counts["hl"] / 2)
+    n_hl_pairs = round(PAIR_SHARE * n_hl / 2)
     units += highlight_pairs(train, rng, n_hl_pairs, "c2-hlpair")
-    units += highlight_singles(train, rng, counts["hl"] - 2 * n_hl_pairs, round(C2_HL_NAMED * counts["hl"]))
-    units += highlight_multis(train, rng, counts["hlm"])
+    units += highlight_singles(train, rng, n_hl - 2 * n_hl_pairs, round(C2_HL_NAMED * n_hl))
+    units += highlight_multis(train, rng, n_hlm)
 
     rows = place_in_slots(units, rng, updates, world, accumulation)
     with open(out / "rows_c2.jsonl", "w") as f:
@@ -824,14 +870,18 @@ def build_rows_c2(out, seed=20261019, updates=1500, world=8, accumulation=4):
     v1_op = {r["id"]: r["instruction_spec"]["operation"] for r in v1_rows}
     stats = {"rows": len(rows), "updates": updates, "world": world, "accumulation": accumulation,
              "kinds": dict(Counter(r["kind"] for r in rows)),
-             "ops_50k_single": dict(Counter(release_op[r["sample_id"]] for r in rows if r["kind"] == "edit")),
+             "ops_50k": dict(Counter(release_op[r["sample_id"]] for r in rows if r["kind"] == "edit")),
              "ops_v1": dict(Counter(v1_op[r["id"]] for r in rows if r["kind"] == "edit_v1")),
-             "ops_multi_units": dict(Counter(release_op[s] for r in rows if r["kind"] == "edit_multi" for s in r["sample_ids"])),
-             "forms": dict(Counter(r["form"] for r in rows if r["kind"] in ("edit", "edit_v1"))),
-             "twin_pairs": n_twin_pairs, "twin_groups": {op: len(g) for op, g in twins.items()},
-             "multi_sizes": dict(sizes), "highlight_pairs": n_hl_pairs,
-             "distinct_50k_records": len({r["sample_id"] for r in rows if r["kind"] == "edit"}),
-             "v1_usable": len(v1_ok), "v1_records": len(v1_rows),
+             "ops_joined_multi_units": dict(Counter(release_op[s] for r in rows if r["kind"] == "edit_multi" for s in r["sample_ids"])),
+             "forms_single": dict(Counter(r["form"] for r in rows if r["kind"] in ("edit", "edit_v1"))),
+             "records_50k_usable": len(edits), "records_50k_used": len({r["sample_id"] for r in rows if r["kind"] == "edit"}),
+             "twin_rows": counts["edit_twin_rows"], "twin_pairs": sum(1 for r in rows if r.get("pair_kind") == "twin") // 2,
+             "v1_usable": len(v1_ok), "v1_used": len({r["id"] for r in rows if r["kind"] == "edit_v1"}),
+             "v1_rows_local_loss": sum(1 for r in rows if r["kind"] == "edit_v1" and r.get("loss_region") == "local"),
+             "d4_pairs_usable": len(d4_ok), "d4_pairs": len(d4_pairs),
+             "d4_rows_local_loss": sum(1 for r in rows if r["kind"] == "edit_multi_v1" and r.get("loss_region") == "local"),
+             "d4_units": dict(Counter(len(p["units"]) for p in d4_ok)),
+             "joined_multi_sizes": dict(sizes), "highlight_pairs": n_hl_pairs,
              "edit_rows_with_negatives": round(float(np.mean([bool(r["negatives"]) for r in rows if r["kind"] == "edit"])), 3)}
     (out / "rows_c2_stats.json").write_text(json.dumps(stats, indent=1))
     return stats

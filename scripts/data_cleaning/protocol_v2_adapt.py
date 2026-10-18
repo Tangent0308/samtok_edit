@@ -4,6 +4,7 @@
   python scripts/data_cleaning/protocol_v2_adapt.py v1     # cleaned v1 pairs -> protocol_v2_blind/
   python scripts/data_cleaning/protocol_v2_adapt.py sa1b   # SA-1B 50k release -> train_protocol_v2.jsonl
   python scripts/data_cleaning/protocol_v2_adapt.py sa1b-edited   # add edited_region to train_protocol_v2.jsonl
+  python scripts/data_cleaning/protocol_v2_adapt.py multi  # cleaned v1 multi-unit pairs -> protocol_v2_blind/
 
 Each command refuses to overwrite an existing output and writes a summary next to it.
 """
@@ -22,6 +23,7 @@ from samtok_edit21.preparation import protocol_v2_adapt as pv
 USER = Path("/mnt/bn/strategy-mllm-train/user/tanyue")
 V1 = USER / "datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1"
 SA1B = USER / "datasets/sa1b_samtok_edit_50k_20261014/release"
+V1_MULTI = USER / "datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1"
 
 
 def read(path):
@@ -61,6 +63,22 @@ def run_v1(args):
         rows = pool.map(pv.adapt_v1, read(source), chunksize=64)
     write_new(out_dir / "manifest_protocol_v2.jsonl", rows)
     summary = summarize(rows, started, {"input": str(source)})
+    (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1))
+    print(json.dumps(summary, ensure_ascii=False, indent=1))
+
+
+def run_multi(args):
+    out_dir = V1_MULTI / "protocol_v2_blind"
+    out_dir.mkdir(exist_ok=True)
+    started = time.time()
+    source = V1_MULTI / "manifest_multi.jsonl"
+    with Pool(args.workers) as pool:
+        pairs = pool.map(pv.adapt_multi, read(source), chunksize=16)
+    write_new(out_dir / "manifest_multi_protocol_v2.jsonl", pairs)
+    units = [u for pair in pairs for u in pair["units"]]
+    summary = summarize(units, started, {"input": str(source), "pairs": len(pairs),
+                                         "pairs_all_units_with_noref": sum(all(u["instruction_noref"] for u in p["units"])
+                                                                           for p in pairs)})
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     print(json.dumps(summary, ensure_ascii=False, indent=1))
 
@@ -135,10 +153,10 @@ def run_sa1b_edited(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("dataset", choices=["v1", "sa1b", "sa1b-edited"])
+    p.add_argument("dataset", choices=["v1", "sa1b", "sa1b-edited", "multi"])
     p.add_argument("--workers", type=int, default=48)
     args = p.parse_args()
-    {"v1": run_v1, "sa1b": run_sa1b, "sa1b-edited": run_sa1b_edited}[args.dataset](args)
+    {"v1": run_v1, "sa1b": run_sa1b, "sa1b-edited": run_sa1b_edited, "multi": run_multi}[args.dataset](args)
 
 
 if __name__ == "__main__":

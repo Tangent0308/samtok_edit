@@ -2,8 +2,9 @@
 
 A row is a highlight with one token (``hl``, ``hl_ref``), a highlight with several tokens (``hlm``, one colour each)
 or an edit: an SA-1B 50k edit (``edit``: blind no-ref + token, ref + token, or ref without a token), a cleaned v1 edit
-(``edit_v1``) or 2-4 non-overlapping 50k edits of one image joined into one multi-target edit (``edit_multi``, one
-numbered line and one token per unit).  The model input is what inference gives it: the source image and the prompt.
+(``edit_v1``), a cleaned v1 multi-object pair (``edit_multi_v1``, its real joint target) or 2-4 non-overlapping 50k
+edits of one image joined into one multi-target edit (``edit_multi``); a multi-target prompt has one numbered line and
+one token per unit.  The model input is what inference gives it: the source image and the prompt.
 Regions enter only through targets and loss weights:
 
     loss = w(t) * (FM + lambda_region * FM_region + lambda_distractor * FM_distractor)
@@ -12,6 +13,7 @@ Regions enter only through targets and loss weights:
 * FM_region      highlight: the error inside each token's region (one token of context), averaged per region and
                  then over the regions, so a small region counts as much as a large one; edit: inside the support,
                  or (stage-B rows, ``region: changed``) inside the pixels that really changed, one token of context.
+  Rows whose target also changes the image outside the edit (``loss_region: local``) take FM only near the edit.
 * FM_distractor  the error on regions that must not change: other instances of the same category and the host of
                  a part (minus every highlighted region).
 * write          each span: target tokens inside its region attend to it more than those outside; negatives are the
@@ -55,6 +57,7 @@ class Round2Sample:
     source_regions: list = field(default_factory=list)  # [hs, ws] region per span on the source grid
     source_distractors: torch.Tensor | None = None      # [hs, ws] negatives on the source grid (C1b rows; read side)
     region_dilate: bool | None = None                   # FM_region context; None: highlights yes, edits no
+    loss_mask: torch.Tensor | None = None                # [h, w] where FM is taken (rows with a drifting target)
 
 
 class Context:
@@ -65,7 +68,14 @@ class Context:
         self.release = {r["sample_id"]: r for r in map(json.loads, open(rd.RELEASE / "annotations/train_protocol_v2.jsonl"))}
         self.tokens = {t["sample_id"]: t for t in map(json.loads, open(self.data / "edit_tokens.jsonl"))}
         self._pool = lru_cache(maxsize=256)(self._load)
-        self._v1 = None
+        self._v1 = self._d4 = None
+
+    def d4(self, pair_id):
+        """A cleaned v1 multi-object pair and its units' tokens (loaded on first use)."""
+        if self._d4 is None:
+            tokens = {t["id"]: t for t in map(json.loads, open(self.data / "d4_tokens.jsonl"))}
+            self._d4 = {p["id"]: (p, tokens[p["id"]]) for p in map(json.loads, open(rd.D4_MANIFEST)) if p["id"] in tokens}
+        return self._d4[pair_id]
 
     def v1(self, record_id):
         """A cleaned v1 record and its token (loaded on first use)."""
@@ -153,6 +163,8 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
         return _prepare_edit_v1(pipe, ctx, row, max_pixels)
     if row["kind"] == "edit_multi":
         return _prepare_edit_multi(pipe, ctx, row, max_pixels)
+    if row["kind"] == "edit_multi_v1":
+        return _prepare_edit_multi_v1(pipe, ctx, row, max_pixels)
     entry = ctx.pool(row["source_id"])
     with Image.open(entry["image"]) as im:
         source = im.convert("RGBA")
@@ -196,9 +208,13 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
         source_distractors=source_distractors)
 
 
+LOCAL_CONTEXT = 2             # tokens around the edit that a local loss still covers
+
+
 def _edit_sample(pipe, kind, source, target, prompt, *, loss_px, route_px, token_px, negative_px, read_negatives,
-                 max_pixels, dilate=None):
-    """Conditioning, latents and region maps of an edit whose prompt carries ``len(token_px)`` spans in order."""
+                 max_pixels, dilate=None, local_px=None):
+    """Conditioning, latents and region maps of an edit whose prompt carries ``len(token_px)`` spans in order.
+    ``local_px``: take FM only within LOCAL_CONTEXT tokens of these pixels."""
     with torch.no_grad():
         width, height = dimensions(target, max_pixels)
         target = target.resize((width, height), Image.Resampling.LANCZOS)
@@ -211,6 +227,9 @@ def _edit_sample(pipe, kind, source, target, prompt, *, loss_px, route_px, token
     size = (width, height)
     sample = Round2Sample(inputs={}, kind=kind, regions=[grid_coverage(resize_mask(px, size), grid).to(device) for px in loss_px],
                           distractors=grid_coverage(resize_mask(negative_px, size), grid).to(device), region_dilate=dilate)
+    if local_px is not None:
+        near = (grid_coverage(resize_mask(local_px, size), grid) > 0).float()[None, None]
+        sample.loss_mask = (F.max_pool2d(near, 2 * LOCAL_CONTEXT + 1, 1, LOCAL_CONTEXT)[0, 0] > 0).float().to(device)
     if token_px:
         sample.spans = span_positions_all(pipe.processor.tokenizer, prompt, conditioning, len(token_px))
         sample.source_positions = source_token_positions(conditioning, source_grid)
@@ -274,9 +293,56 @@ def _prepare_edit_v1(pipe, ctx, row, max_pixels):
     loss_px = next(m for m in (changed_px, execution_px, s_px) if m is not None and m.any())
     route_px = s_px | changed_px if changed_px is not None else s_px
     prompt = p2.render(record["instruction_spec"], row["form"] == "ref_token", selector_token=token["span"])
+    local_px = None
+    if row.get("loss_region") == "local":
+        local_px = s_px.copy()
+        for m in (changed_px, execution_px):
+            if m is not None:
+                local_px |= m
     return _edit_sample(pipe, "edit_v1", source, target, prompt, loss_px=[loss_px], route_px=[route_px],
                         token_px=[rd.decode_rle(token["dec"])], negative_px=np.zeros(shape, bool), read_negatives=False,
-                        max_pixels=max_pixels, dilate=True)
+                        max_pixels=max_pixels, dilate=True, local_px=local_px)
+
+
+def unit_change(changed, own):
+    """The changed pixels that belong to one unit of a multi-object pair.  In 1,598 of the 4,066 pairs every unit
+    carries the pair's whole changed region, so it is cut to the unit's own region grown by 1 % of the image
+    diagonal; when nothing is left, the unit's own region stands in."""
+    import cv2
+    radius = max(4, round(0.01 * float(np.hypot(*own.shape))))
+    grown = cv2.dilate(own.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))) > 0
+    part = changed & grown if changed is not None else None
+    return part if part is not None and part.any() else own
+
+
+def _prepare_edit_multi_v1(pipe, ctx, row, max_pixels):
+    """A cleaned v1 multi-object pair: the target already holds every unit's edit."""
+    pair, tokens = ctx.d4(row["id"])
+    with Image.open(rd.V1_ROOT / pair["source_image"]) as im:
+        source = im.convert("RGBA")
+    with Image.open(rd.V1_ROOT / pair["target_image"]) as im:
+        target = im.convert("RGBA")
+    shape = (source.height, source.width)
+    sentences, loss_px, route_px, token_px = [], [], [], []
+    near = np.zeros(shape, bool)
+    for index, form in zip(row["order"], row["forms"]):
+        unit, token = pair["units"][index], tokens["units"][index]
+        if token["uid"] != unit["id"]:
+            raise ValueError("D4 token file does not match the manifest")
+        s_px = rle_region(unit["selection"], shape)
+        execution_px = rle_region(unit.get("execution_region"), shape)
+        own = s_px | execution_px if execution_px is not None else s_px
+        changed_px = unit_change(rle_region(unit.get("edited_region"), shape), own)
+        loss_px.append(changed_px)
+        route_px.append(s_px | changed_px)
+        token_px.append(rd.decode_rle(token["dec"]))
+        sentences.append(p2.render(unit["instruction_spec"], form == "ref_token", selector_token=token["span"]))
+        for m in (s_px, changed_px, execution_px):
+            if m is not None:
+                near |= m
+    return _edit_sample(pipe, "edit_multi_v1", source, target, rd.multi_edit_prompt(sentences), loss_px=loss_px,
+                        route_px=route_px, token_px=token_px, negative_px=np.zeros(shape, bool), read_negatives=False,
+                        max_pixels=max_pixels, dilate=True, local_px=near if row.get("loss_region") == "local" else None)
 
 
 def _prepare_edit_multi(pipe, ctx, row, max_pixels):
@@ -403,7 +469,8 @@ def round2_loss(pipe, sample, router=None, *, lambda_region=1.0, lambda_distract
     if prediction.shape != target.shape:
         raise RuntimeError("FM prediction/target shape mismatch")
     squared_error = (prediction.float() - target.float()).pow(2).mean(1)[0]
-    mean = squared_error.mean()
+    mean = squared_error.mean() if sample.loss_mask is None else \
+        (squared_error * sample.loss_mask).sum() / sample.loss_mask.sum().clamp(min=1.0)
     dilate = sample.region_dilate if sample.region_dilate is not None else sample.kind != "edit"
     in_region = region_error(squared_error, sample.regions, dilate=dilate)
     other = (sample.distractors > DISTRACTOR_COVERAGE).float()
