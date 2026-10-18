@@ -334,3 +334,25 @@ def test_c2_unit_change_cuts_a_shared_changed_region_to_each_unit():
     a, b, c = (r2.unit_change(changed, own) for own in (own_a, own_b, own_c))
     assert a[30, 30] and not a[150, 150] and b[150, 150] and not b[30, 30]
     assert (c == own_c).all() and r2.unit_change(None, own_c) is own_c
+
+
+def test_round2_report_reads_edits_with_the_drift_removed(tmp_path):
+    import json
+    from samtok_edit21.evaluation import round2_report as rr
+    def run(shift, in_change):
+        records = [{"idx": 0, "set": "single", "variant": "noref", "area": 0.003, "iou": 0.2 + shift},
+                   {"idx": 1, "set": "single", "variant": "ref", "area": 0.01, "iou": 0.5},
+                   {"idx": 2, "set": "edit", "operation": "add", "in_change": in_change, "out_change": 6.0,
+                    "in_target_err": 20.0, "teacher_in_change": 40.0},
+                   {"idx": 3, "set": "edit", "operation": "remove", "in_change": 30.0, "out_change": 2.0,
+                    "in_target_err": 20.0, "teacher_in_change": 50.0}]
+        return {r["idx"]: r for r in records}
+    lines, numbers = rr.summarize({"stock": run(0.0, 9.0), "model": run(0.3, 15.0)})
+    # stock: 9 - 6 = 3 < 5 -> not done; model: 15 - 6 = 9 -> done
+    assert numbers["edit_add_stock"]["not_done"] == 1.0 and numbers["edit_add_model"]["not_done"] == 0.0
+    assert numbers["single_noref_model_minus_stock"][0] == pytest.approx(0.3)
+    eval_dir = tmp_path / "eval"
+    eval_dir.mkdir()
+    json.dump({"records": list(run(0.1, 20.0).values())}, open(eval_dir / "eval.json", "w"))
+    rr.main(["--eval", str(eval_dir), "--name", "C2", "--reference", f"self={eval_dir}", "--output", str(tmp_path / "a.txt")])
+    assert (tmp_path / "a.json").exists() and "Round-2 report: C2" in (tmp_path / "a.txt").read_text()
