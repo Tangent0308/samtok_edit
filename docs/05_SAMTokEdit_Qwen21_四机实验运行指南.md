@@ -246,7 +246,11 @@ ls $R/nodes/*/failure.json 2>/dev/null
   - 训练行（`--rows`）、快速评测项（`--quick-items`）、评测项（`--items`，默认 `eval_c1.json`）；
   - `edit_tokens.jsonl` 和 `pool/`；
   - `--init-adapter` 指向的权重。
-- 报告 `analysis.txt` 由 `round2-report` 写出，与参考评测逐项配对比较，参考默认是原版、C1-1500、C1b-800。编辑一项看扣除背景漂移后"几乎没改"的比例、改动强度和区域外改动。
+- **C2 在四机上只训练**（`SAMTOK_PHASES=train`）。
+  - 训练结束后，0 号机写 `SUCCESS.json`，记下最终权重路径。
+  - 训练中仍按设置做快速评测（112 项，每 500 次一次），用来监控。
+  - 完整评测、报告和分析在开发机上训练结束后做，用 `round2-eval`、`round2-report`。
+  - 入口也支持 `train,eval,report` 三步全在四机上跑，由 `SAMTOK_PHASES` 控制，本次不用。
 - **W&B**：做法与 v2 相同（`archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md` 第 1 节）。
   - 位置：entity `2200012743-peking-university`，project `samtok-edit`，run 名就是 `SAMTOK_RUN_ID`。
   - key：优先用 ARNOLD 注入的 `WANDB_API_KEY`；没有时读共享盘上的私有文件 `experiments2/SAMTokEdit/.secrets/wandb.env`（内容是 `export WANDB_API_KEY=...`，权限 600）。两处都没有时，入口在 clone 之前退出。
@@ -254,7 +258,7 @@ ls $R/nodes/*/failure.json 2>/dev/null
   - 记录内容：
     - 0 号进程每 10 次更新记一次训练指标（`train/…`，各类训练行数 `count/…`）；
     - 每次快速评测记一次（`quick/…`）；
-    - 报告这一步把开发集结果写进同一个 W&B 运行的 summary（`dev/…`）。
+    - 在开发机上出报告时，`round2-report --wandb <run>/train/wandb.json` 会把开发集结果写进同一个 W&B 运行的 summary（`dev/…`）。
   - 链接：W&B 运行的地址写在 `train/wandb.json`。
   - 失败处理：W&B 初始化在加载模型之前，起不来就直接停止；之后的上传错误只记进 `wandb.json`，不中断训练。所有指标在共享盘的 JSONL 里也都有完整一份。
   - 环境：`byted-wandb==0.13.98` 已在 `requirements-cluster.txt` 里，装环境时一起安装并校验版本。
@@ -286,10 +290,8 @@ export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SA
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
 # 32 卡 × accumulation 1 = batch 32，与 8 卡 × 4 每次更新用到的样本相同；3,522 次更新把 rows_c2.jsonl 的 112,704 行各用一次
 export SAMTOK_TRAIN_ARGS="--rows rows_c2.jsonl --quick-items eval_c2_quick_idx.json --init-adapter $SAMTOK_EXPERIMENT/runs/c1b_local8_001/train/adapter_800 --updates 3522 --accumulation 1 --warmup 20 --lr 1e-4 --lr-schedule cosine --lr-min 1e-5 --heavy-weight 8 --checkpoints 500,1000,1500,2000,2500,3000,3500,3522 --quick-eval 0,500,1000,1500,2000,2500,3000,3500,3522"
-export SAMTOK_EVAL_ARGS=""
-# 报告里的参考评测，原版放第一个
-export SAMTOK_REPORT_REFERENCES="stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1=$SAMTOK_EXPERIMENT/runs/c1_local8_001/eval_1500 C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800"
-export SAMTOK_PHASES=train,eval,report
+# 四机只训练：评测、报告和分析在开发机上训练结束后做（scripts/round2/eval_local.sh，docs/05 第 7 节）
+export SAMTOK_PHASES=train
 # W&B 与 v2 相同：entity 2200012743-peking-university，project samtok-edit，run 名即 SAMTOK_RUN_ID。
 # key 优先用 ARNOLD 注入的 WANDB_API_KEY，否则读共享盘上的私有文件（权限 600），不要写进脚本
 export SAMTOK_WANDB_MODE=online
@@ -434,14 +436,14 @@ echo "[$(date -u +%FT%TZ)] node $NODE: done"
 ### 7.2 完整入口脚本：四机冒烟测试（正式提交前，约 30 分钟）
 
 - 用法与 7.1 相同，运行设置来自 `scripts/round2/settings/c2_smoke_4n.sh`。
-- 只训练 3 次更新，每类评测 2 项。
-- 跑通的标志是 `runs/c2_smoke_4n_001/SUCCESS.json` 和 `analysis.txt` 都生成了，并且 W&B 项目 `samtok-edit` 里出现 `c2_smoke_4n_001` 这次运行。数值没有意义，只看流程。
+- 只训练 3 次更新。
+- 跑通的标志：`runs/c2_smoke_4n_001/SUCCESS.json` 生成了，并且 W&B 项目 `samtok-edit` 里出现 `c2_smoke_4n_001` 这次运行。数值没有意义，只看流程。
 
 <!-- code: scripts/round2/settings/c2_smoke_4n.sh + scripts/round2/bootstrap_arnold.sh -->
 ```bash
 #!/usr/bin/env bash
 # C2 四机冒烟测试的完整入口（正式提交前检查集群环境，约 30 分钟）。整段原样粘贴成 ARNOLD 四个 worker（4 × 8 卡）的启动命令。
-# 跑通的标志是 runs/<SAMTOK_RUN_ID>/SUCCESS.json 和 analysis.txt 都生成了；数值没有意义，只看流程。
+# 跑通的标志是 runs/<SAMTOK_RUN_ID>/SUCCESS.json 生成、W&B 里出现这次运行；数值没有意义，只看流程。
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
 export SAMTOK_RUN_ID=c2_smoke_4n_001
 export SAMTOK_RUN_NAME=smoke
@@ -449,11 +451,10 @@ export SAMTOK_EDIT_COMMIT=d485ddb2f69f8cf16e7333886f827a7849c31d44   # 与正式
 export SAMTOK_NNODES=4
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
-# 3 次更新、每卡 1 个快速评测项、每类 2 个评测项：只检查 clone、装环境、四机训练、评测和报告能否走通
+# 3 次更新、每卡 1 个快速评测项：只检查 clone、装环境、四机训练和 W&B 能否走通
 export SAMTOK_TRAIN_ARGS="--rows rows_c2.jsonl --quick-items eval_c2_quick_idx.json --init-adapter $SAMTOK_EXPERIMENT/runs/c1b_local8_001/train/adapter_800 --updates 3 --accumulation 1 --warmup 1 --lr-schedule cosine --heavy-weight 8 --checkpoints 3 --quick-eval 3 --quick-limit 1"
-export SAMTOK_EVAL_ARGS="--limit 2"
-export SAMTOK_REPORT_REFERENCES="stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800"
-export SAMTOK_PHASES=train,eval,report
+# 四机只训练：评测、报告和分析在开发机上训练结束后做（scripts/round2/eval_local.sh，docs/05 第 7 节）
+export SAMTOK_PHASES=train
 # W&B 与 v2 相同：entity 2200012743-peking-university，project samtok-edit，run 名即 SAMTOK_RUN_ID。
 # key 优先用 ARNOLD 注入的 WANDB_API_KEY，否则读共享盘上的私有文件（权限 600），不要写进脚本
 export SAMTOK_WANDB_MODE=online
@@ -610,11 +611,10 @@ echo "[$(date -u +%FT%TZ)] node $NODE: done"
 | 装环境、加载模型 | 约 10–20 分钟 |
 | 训练 | 每次更新每卡 1 行，约 8–9 秒（本机每卡 4 行约 28 秒；四机之间同步梯度约 350 MB，可忽略）；3,522 次约 8–9 小时 |
 | 快速评测 | 9 次，每次约 1 分钟 |
-| 完整评测 | 1,320 项分到 32 卡，约 15 分钟 |
-| 报告 | 1 分钟 |
-| **合计** | **约 9–10 小时** |
+| **四机合计** | **约 9 小时** |
 
-本机 8 卡跑同样的配方约 30 小时。
+- 本机 8 卡跑同样的训练约 30 小时。
+- 训练结束后在开发机上做完整评测（1,320 项），约 1.7 小时。
 
 ### 7.5 看进度
 
@@ -639,8 +639,14 @@ ls $R/nodes/*/failure.json 2>/dev/null
     - 报告把开发集结果写进了它的 summary。
 
     run 目录 `V3/runs/c2_entry_check_1n_002/`，续训状态文件已删除。
+  - `d485ddb2`，只训练（`SAMTOK_PHASES=train`，与 7.1 相同）：
+    - 训练 2 次更新：64 个样本无跳过，两个路由校准与 C1b 相同；
+    - W&B 运行 `c2_entry_check_1n_003` 正常结束；
+    - 0 号机写出 `SUCCESS.json`（含最终权重路径），没有跑评测和报告。
+
+    run 目录 `V3/runs/c2_entry_check_1n_003/`。
 - **多机。** torchrun 参数与第一轮入口相同。
-- **四机实测：没有。** 第二轮的训练和评测还没有在四机上跑过，7.4 的耗时是按单机速度推算的。第一次提交建议先跑 7.3 的冒烟测试。
+- **四机实测：没有。** 第二轮的训练还没有在四机上跑过，7.4 的耗时是按单机速度推算的。第一次提交建议先跑 7.2 的冒烟测试。
 
 - 7.1、7.2 的完整脚本 = 设置文件 + 上面验证过的入口脚本，由 `scripts/docs/sync_code_blocks.py` 拼接生成，测试会检查它们与仓库里的文件一致。
 
