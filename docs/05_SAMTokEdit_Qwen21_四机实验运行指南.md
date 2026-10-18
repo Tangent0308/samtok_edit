@@ -247,6 +247,18 @@ ls $R/nodes/*/failure.json 2>/dev/null
   - `edit_tokens.jsonl` 和 `pool/`；
   - `--init-adapter` 指向的权重。
 - 报告 `analysis.txt` 由 `round2-report` 写出，与参考评测逐项配对比较，参考默认是原版、C1-1500、C1b-800。编辑一项看扣除背景漂移后"几乎没改"的比例、改动强度和区域外改动。
+- **W&B**：做法与 v2 相同（`archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md` 第 1 节）。
+  - 位置：entity `2200012743-peking-university`，project `samtok-edit`，run 名就是 `SAMTOK_RUN_ID`。
+  - key：优先用 ARNOLD 注入的 `WANDB_API_KEY`；没有时读共享盘上的私有文件 `experiments2/SAMTokEdit/.secrets/wandb.env`（内容是 `export WANDB_API_KEY=...`，权限 600）。两处都没有时，入口在 clone 之前退出。
+  - 仓库是公开的，key 不要写进脚本或提交。
+  - 记录内容：
+    - 0 号进程每 10 次更新记一次训练指标（`train/…`，各类训练行数 `count/…`）；
+    - 每次快速评测记一次（`quick/…`）；
+    - 报告这一步把开发集结果写进同一个 W&B 运行的 summary（`dev/…`）。
+  - 链接：W&B 运行的地址写在 `train/wandb.json`。
+  - 失败处理：W&B 初始化在加载模型之前，起不来就直接停止；之后的上传错误只记进 `wandb.json`，不中断训练。所有指标在共享盘的 JSONL 里也都有完整一份。
+  - 环境：`byted-wandb==0.13.98` 已在 `requirements-cluster.txt` 里，装环境时一起安装并校验版本。
+  - 不用 W&B 时设 `export SAMTOK_WANDB_MODE=disabled`。
 - 其余约定与第 1、5 节相同：run ID、clone 指定 commit、各节点自装环境、一个节点失败其余停下、产物目录。
 
 ### 7.1 完整入口脚本：C2 正式运行（整段原样粘贴）
@@ -268,7 +280,7 @@ ls $R/nodes/*/failure.json 2>/dev/null
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
 export SAMTOK_RUN_ID=c2_4n_001       # 每次提交换新的，四个 worker 相同；用过的会被拒绝，调度器重试不会覆盖日志
 export SAMTOK_RUN_NAME=C2            # 报告里这次运行的名字
-export SAMTOK_EDIT_COMMIT=e681f238122ef1e3dcbd0d58c4f0a7cb7479688a   # 代码 commit，四个 worker 必须相同
+export SAMTOK_EDIT_COMMIT=d485ddb2f69f8cf16e7333886f827a7849c31d44   # 代码 commit，四个 worker 必须相同
 export SAMTOK_NNODES=4
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
@@ -278,6 +290,11 @@ export SAMTOK_EVAL_ARGS=""
 # 报告里的参考评测，原版放第一个
 export SAMTOK_REPORT_REFERENCES="stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1=$SAMTOK_EXPERIMENT/runs/c1_local8_001/eval_1500 C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800"
 export SAMTOK_PHASES=train,eval,report
+# W&B 与 v2 相同：entity 2200012743-peking-university，project samtok-edit，run 名即 SAMTOK_RUN_ID。
+# key 优先用 ARNOLD 注入的 WANDB_API_KEY，否则读共享盘上的私有文件（权限 600），不要写进脚本
+export SAMTOK_WANDB_MODE=online
+export WANDB_ENTITY=2200012743-peking-university
+export WANDB_PROJECT=samtok-edit
 # ===== 以下是入口脚本 scripts/round2/bootstrap_arnold.sh，不用改；其中的设置是默认值，已被上面的值覆盖 =====
 # Round-2 run (stage B, C2 by default): pre-clone ARNOLD entry.  Paste this whole file as the start command of every
 # worker (4 workers x 8 GPUs), after editing the "run settings" block.  Each worker clones the repository at the pinned
@@ -300,6 +317,13 @@ export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---rows rows_c2.jsonl --quick-item
 export SAMTOK_EVAL_ARGS="${SAMTOK_EVAL_ARGS:-}"
 # Reference evaluations for the paired report, "LABEL=PATH ..." with the base model first.
 export SAMTOK_REPORT_REFERENCES="${SAMTOK_REPORT_REFERENCES:-stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1=$SAMTOK_EXPERIMENT/runs/c1_local8_001/eval_1500 C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800}"
+# W&B, as in the v2 runs: rank 0 logs the training metrics and quick evaluations; the report adds the dev results.
+export SAMTOK_WANDB_MODE="${SAMTOK_WANDB_MODE:-online}"   # online | offline | disabled
+export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
+export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
+# W&B key: an ARNOLD secret if injected, else the private key file on the shared disk (export WANDB_API_KEY=..., mode
+# 600).  The repository is public: never write the key into a script or commit it.
+export SAMTOK_WANDB_KEY_FILE="${SAMTOK_WANDB_KEY_FILE:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/.secrets/wandb.env}"
 # Phases to run: train,eval,report.  Without "train", set SAMTOK_ADAPTER to the adapter directory to evaluate.
 export SAMTOK_PHASES="${SAMTOK_PHASES:-train,eval,report}"
 export SAMTOK_ADAPTER="${SAMTOK_ADAPTER:-}"
@@ -319,6 +343,13 @@ export SAMTOK_NNODES="${SAMTOK_NNODES:-4}"
 [[ "$ARNOLD_WORKER_GPU" =~ ^[1-9][0-9]*$ ]] || { echo 'ARNOLD_WORKER_GPU must be a positive integer' >&2; exit 2; }
 [[ "$ARNOLD_ID" =~ ^[0-9]+$ && "$ARNOLD_ID" -lt "$SAMTOK_NNODES" ]] || { echo "ARNOLD_ID must be 0..$((SAMTOK_NNODES - 1))" >&2; exit 2; }
 [[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
+[[ "$SAMTOK_WANDB_MODE" =~ ^(online|offline|disabled)$ ]] || { echo 'SAMTOK_WANDB_MODE must be online, offline or disabled' >&2; exit 2; }
+if [[ "$SAMTOK_WANDB_MODE" == online ]]; then
+  # shellcheck disable=SC1090  # the private key file
+  [[ -n "${WANDB_API_KEY:-}" || ! -f "$SAMTOK_WANDB_KEY_FILE" ]] || source "$SAMTOK_WANDB_KEY_FILE"
+  [[ -n "${WANDB_API_KEY:-}" ]] || { echo "No W&B key: inject WANDB_API_KEY or create $SAMTOK_WANDB_KEY_FILE" >&2; exit 2; }
+  export WANDB_API_KEY
+fi
 option() {  # option() NAME DEFAULT ARGS...: the value given to --NAME in ARGS, else DEFAULT
   local name="$1" default="$2" previous="" word
   shift 2
@@ -404,7 +435,7 @@ echo "[$(date -u +%FT%TZ)] node $NODE: done"
 
 - 用法与 7.1 相同，运行设置来自 `scripts/round2/settings/c2_smoke_4n.sh`。
 - 只训练 3 次更新，每类评测 2 项。
-- 跑通的标志是 `runs/c2_smoke_4n_001/SUCCESS.json` 和 `analysis.txt` 都生成了。数值没有意义，只看流程。
+- 跑通的标志是 `runs/c2_smoke_4n_001/SUCCESS.json` 和 `analysis.txt` 都生成了，并且 W&B 项目 `samtok-edit` 里出现 `c2_smoke_4n_001` 这次运行。数值没有意义，只看流程。
 
 <!-- code: scripts/round2/settings/c2_smoke_4n.sh + scripts/round2/bootstrap_arnold.sh -->
 ```bash
@@ -414,7 +445,7 @@ echo "[$(date -u +%FT%TZ)] node $NODE: done"
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
 export SAMTOK_RUN_ID=c2_smoke_4n_001
 export SAMTOK_RUN_NAME=smoke
-export SAMTOK_EDIT_COMMIT=e681f238122ef1e3dcbd0d58c4f0a7cb7479688a   # 与正式运行相同的代码 commit
+export SAMTOK_EDIT_COMMIT=d485ddb2f69f8cf16e7333886f827a7849c31d44   # 与正式运行相同的代码 commit
 export SAMTOK_NNODES=4
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
@@ -423,6 +454,11 @@ export SAMTOK_TRAIN_ARGS="--rows rows_c2.jsonl --quick-items eval_c2_quick_idx.j
 export SAMTOK_EVAL_ARGS="--limit 2"
 export SAMTOK_REPORT_REFERENCES="stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800"
 export SAMTOK_PHASES=train,eval,report
+# W&B 与 v2 相同：entity 2200012743-peking-university，project samtok-edit，run 名即 SAMTOK_RUN_ID。
+# key 优先用 ARNOLD 注入的 WANDB_API_KEY，否则读共享盘上的私有文件（权限 600），不要写进脚本
+export SAMTOK_WANDB_MODE=online
+export WANDB_ENTITY=2200012743-peking-university
+export WANDB_PROJECT=samtok-edit
 # ===== 以下是入口脚本 scripts/round2/bootstrap_arnold.sh，不用改；其中的设置是默认值，已被上面的值覆盖 =====
 # Round-2 run (stage B, C2 by default): pre-clone ARNOLD entry.  Paste this whole file as the start command of every
 # worker (4 workers x 8 GPUs), after editing the "run settings" block.  Each worker clones the repository at the pinned
@@ -445,6 +481,13 @@ export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---rows rows_c2.jsonl --quick-item
 export SAMTOK_EVAL_ARGS="${SAMTOK_EVAL_ARGS:-}"
 # Reference evaluations for the paired report, "LABEL=PATH ..." with the base model first.
 export SAMTOK_REPORT_REFERENCES="${SAMTOK_REPORT_REFERENCES:-stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1=$SAMTOK_EXPERIMENT/runs/c1_local8_001/eval_1500 C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800}"
+# W&B, as in the v2 runs: rank 0 logs the training metrics and quick evaluations; the report adds the dev results.
+export SAMTOK_WANDB_MODE="${SAMTOK_WANDB_MODE:-online}"   # online | offline | disabled
+export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
+export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
+# W&B key: an ARNOLD secret if injected, else the private key file on the shared disk (export WANDB_API_KEY=..., mode
+# 600).  The repository is public: never write the key into a script or commit it.
+export SAMTOK_WANDB_KEY_FILE="${SAMTOK_WANDB_KEY_FILE:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/.secrets/wandb.env}"
 # Phases to run: train,eval,report.  Without "train", set SAMTOK_ADAPTER to the adapter directory to evaluate.
 export SAMTOK_PHASES="${SAMTOK_PHASES:-train,eval,report}"
 export SAMTOK_ADAPTER="${SAMTOK_ADAPTER:-}"
@@ -464,6 +507,13 @@ export SAMTOK_NNODES="${SAMTOK_NNODES:-4}"
 [[ "$ARNOLD_WORKER_GPU" =~ ^[1-9][0-9]*$ ]] || { echo 'ARNOLD_WORKER_GPU must be a positive integer' >&2; exit 2; }
 [[ "$ARNOLD_ID" =~ ^[0-9]+$ && "$ARNOLD_ID" -lt "$SAMTOK_NNODES" ]] || { echo "ARNOLD_ID must be 0..$((SAMTOK_NNODES - 1))" >&2; exit 2; }
 [[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
+[[ "$SAMTOK_WANDB_MODE" =~ ^(online|offline|disabled)$ ]] || { echo 'SAMTOK_WANDB_MODE must be online, offline or disabled' >&2; exit 2; }
+if [[ "$SAMTOK_WANDB_MODE" == online ]]; then
+  # shellcheck disable=SC1090  # the private key file
+  [[ -n "${WANDB_API_KEY:-}" || ! -f "$SAMTOK_WANDB_KEY_FILE" ]] || source "$SAMTOK_WANDB_KEY_FILE"
+  [[ -n "${WANDB_API_KEY:-}" ]] || { echo "No W&B key: inject WANDB_API_KEY or create $SAMTOK_WANDB_KEY_FILE" >&2; exit 2; }
+  export WANDB_API_KEY
+fi
 option() {  # option() NAME DEFAULT ARGS...: the value given to --NAME in ARGS, else DEFAULT
   local name="$1" default="$2" previous="" word
   shift 2
@@ -581,11 +631,14 @@ ls $R/nodes/*/failure.json 2>/dev/null
 
 ### 7.6 这份入口验证到了什么程度
 
-- **单机完整跑通（2026-10-18）。** 入口以单机模式（`SAMTOK_NNODES=1`，8 卡 × accumulation 4）从 GitHub 上的固定 commit `e681f238` 跑完了全流程：
-  - clone、装环境；
-  - 从 C1b 接续训练 2 次更新：64 个样本无跳过，七类训练行中出现了五类，两个路由校准与 C1b 相同；
-  - 快速评测、少量项的完整评测、对比报告、`SUCCESS.json` 都已生成；
-  - run 目录 `V3/runs/c2_entry_check_1n_001/`，续训状态文件已删除。
+- **单机完整跑通（2026-10-18），共两次，都用单机模式（`SAMTOK_NNODES=1`，8 卡 × accumulation 4）从 GitHub 上的固定 commit 跑完全流程。**
+  - `e681f238`：clone、装环境；从 C1b 接续训练 2 次更新（64 个样本无跳过，两个路由校准与 C1b 相同）；快速评测、少量项的完整评测、对比报告、`SUCCESS.json` 都已生成。run 目录 `V3/runs/c2_entry_check_1n_001/`。
+  - `d485ddb2`：同上，加 W&B online。
+    - key 由入口从共享盘私有文件读取；
+    - W&B 运行 `c2_entry_check_1n_002` 正常结束，没有上传错误；
+    - 报告把开发集结果写进了它的 summary。
+
+    run 目录 `V3/runs/c2_entry_check_1n_002/`，续训状态文件已删除。
 - **多机。** torchrun 参数与第一轮入口相同。
 - **四机实测：没有。** 第二轮的训练和评测还没有在四机上跑过，7.4 的耗时是按单机速度推算的。第一次提交建议先跑 7.3 的冒烟测试。
 
@@ -618,6 +671,9 @@ export PYTHONPATH="$REPO/src:$REPO/third_party/diffsynth:$REPO/third_party${PYTH
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" NCCL_DEBUG="${NCCL_DEBUG:-WARN}" TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/samtok21-inductor-$(id -u)}"
+export WANDB_DISABLE_SERVICE=true WANDB_START_METHOD=thread   # required by byted-wandb in ARNOLD containers
+WANDB_ARGS=(--wandb-mode "${SAMTOK_WANDB_MODE:-disabled}" --wandb-project "${WANDB_PROJECT:-samtok-edit}"
+            --wandb-entity "${WANDB_ENTITY:-2200012743-peking-university}" --wandb-name "$SAMTOK_RUN_ID")
 PYTHON="$SAMTOK_ENV/bin/python"
 cd "$REPO"
 
@@ -664,7 +720,7 @@ if [[ "$PHASES" == *,train,* ]]; then
   phase train
   # shellcheck disable=SC2086  # SAMTOK_TRAIN_ARGS is a list of options
   run_watched "${TORCHRUN[@]}" --log_dir "$RUN/logs/node${NODE}/train-ranks" --tee 3 -m samtok_edit21 round2-train \
-    --data "$SAMTOK_ROUND2_DATA" --output "$RUN/train" ${SAMTOK_TRAIN_ARGS:-}
+    --data "$SAMTOK_ROUND2_DATA" --output "$RUN/train" "${WANDB_ARGS[@]}" ${SAMTOK_TRAIN_ARGS:-}
   wait_for "$RUN/train/TRAIN_DONE"
   ADAPTER="$RUN/train/$("$PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1]))["adapter"])' "$RUN/train/TRAIN_DONE")"
 fi
@@ -684,6 +740,7 @@ if [[ "$NODE" == 0 ]]; then
     REPORT=("$PYTHON" -m samtok_edit21 round2-report --eval "$RUN/eval" --name "${SAMTOK_RUN_NAME:-$SAMTOK_RUN_ID}"
             --output "$RUN/analysis.txt")
     [[ -f "$RUN/train/train_metrics.jsonl" ]] && REPORT+=(--train "$RUN/train")
+    [[ -f "$RUN/train/wandb.json" ]] && REPORT+=(--wandb "$RUN/train/wandb.json")
     for reference in ${SAMTOK_REPORT_REFERENCES:-}; do REPORT+=(--reference "$reference"); done
     "${REPORT[@]}"
   fi

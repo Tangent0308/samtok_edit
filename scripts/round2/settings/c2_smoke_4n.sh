@@ -4,7 +4,7 @@
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
 export SAMTOK_RUN_ID=c2_smoke_4n_001
 export SAMTOK_RUN_NAME=smoke
-export SAMTOK_EDIT_COMMIT=e681f238122ef1e3dcbd0d58c4f0a7cb7479688a   # 与正式运行相同的代码 commit
+export SAMTOK_EDIT_COMMIT=d485ddb2f69f8cf16e7333886f827a7849c31d44   # 与正式运行相同的代码 commit
 export SAMTOK_NNODES=4
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
