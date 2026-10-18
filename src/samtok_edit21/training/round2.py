@@ -1,14 +1,17 @@
 """Round-2 objective (docs/08 section 5.3): one prompt may carry several mask tokens; supervision only in the loss.
 
 A row is a highlight with one token (``hl``, ``hl_ref``), a highlight with several tokens (``hlm``, one colour each)
-or an SA-1B 50k edit (``edit``: blind no-ref + token, ref + token, or ref without a token).  The model input is what
-inference gives it: the source image and the prompt.  Regions enter only through targets and loss weights:
+or an edit: an SA-1B 50k edit (``edit``: blind no-ref + token, ref + token, or ref without a token), a cleaned v1 edit
+(``edit_v1``) or 2-4 non-overlapping 50k edits of one image joined into one multi-target edit (``edit_multi``, one
+numbered line and one token per unit).  The model input is what inference gives it: the source image and the prompt.
+Regions enter only through targets and loss weights:
 
     loss = w(t) * (FM + lambda_region * FM_region + lambda_distractor * FM_distractor)
            + lambda_route * write + lambda_read * read
 
 * FM_region      highlight: the error inside each token's region (one token of context), averaged per region and
-                 then over the regions, so a small region counts as much as a large one; edit: inside the support.
+                 then over the regions, so a small region counts as much as a large one; edit: inside the support,
+                 or (stage-B rows, ``region: changed``) inside the pixels that really changed, one token of context.
 * FM_distractor  the error on regions that must not change: other instances of the same category and the host of
                  a part (minus every highlighted region).
 * write          each span: target tokens inside its region attend to it more than those outside; negatives are the
@@ -51,6 +54,7 @@ class Round2Sample:
     source_positions: list = field(default_factory=list)
     source_regions: list = field(default_factory=list)  # [hs, ws] region per span on the source grid
     source_distractors: torch.Tensor | None = None      # [hs, ws] negatives on the source grid (C1b rows; read side)
+    region_dilate: bool | None = None                   # FM_region context; None: highlights yes, edits no
 
 
 class Context:
@@ -61,6 +65,14 @@ class Context:
         self.release = {r["sample_id"]: r for r in map(json.loads, open(rd.RELEASE / "annotations/train_protocol_v2.jsonl"))}
         self.tokens = {t["sample_id"]: t for t in map(json.loads, open(self.data / "edit_tokens.jsonl"))}
         self._pool = lru_cache(maxsize=256)(self._load)
+        self._v1 = None
+
+    def v1(self, record_id):
+        """A cleaned v1 record and its token (loaded on first use)."""
+        if self._v1 is None:
+            tokens = {t["id"]: t for t in map(json.loads, open(self.data / "v1_tokens.jsonl"))}
+            self._v1 = {r["id"]: (r, tokens[r["id"]]) for r in map(json.loads, open(rd.V1_MANIFEST)) if r["id"] in tokens}
+        return self._v1[record_id]
 
     def _load(self, source_id):
         return json.load(open(self.data / "pool" / f"{source_id}.json"))
@@ -123,10 +135,24 @@ def load_mask(path, size=None):
     return mask
 
 
+def rle_region(field, shape):
+    """A v1 RLE region (``rle_size``/``rle_counts``) at ``shape``; None when the record has none."""
+    if not field or not field.get("rle_counts"):
+        return None
+    mask = rd.decode_rle({"size": field["rle_size"], "counts": field["rle_counts"]}).astype(bool)
+    if mask.shape != shape:
+        mask = np.asarray(Image.fromarray(mask.astype(np.uint8) * 255).resize((shape[1], shape[0]), Image.NEAREST)) > 0
+    return mask
+
+
 def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
     """Conditioning, target latent and every region map of one row (no gradients outside the code injector)."""
     if row["kind"] == "edit":
         return _prepare_edit(pipe, ctx, row, max_pixels)
+    if row["kind"] == "edit_v1":
+        return _prepare_edit_v1(pipe, ctx, row, max_pixels)
+    if row["kind"] == "edit_multi":
+        return _prepare_edit_multi(pipe, ctx, row, max_pixels)
     entry = ctx.pool(row["source_id"])
     with Image.open(entry["image"]) as im:
         source = im.convert("RGBA")
@@ -170,6 +196,44 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
         source_distractors=source_distractors)
 
 
+def _edit_sample(pipe, kind, source, target, prompt, *, loss_px, route_px, token_px, negative_px, read_negatives,
+                 max_pixels, dilate=None):
+    """Conditioning, latents and region maps of an edit whose prompt carries ``len(token_px)`` spans in order."""
+    with torch.no_grad():
+        width, height = dimensions(target, max_pixels)
+        target = target.resize((width, height), Image.Resampling.LANCZOS)
+        prepared = resize_sources(pipe, [source], height, width)
+        target_latent = pipe.vae.encode(pipe.preprocess_image(target))
+        source_latents = [pipe.vae.encode(pipe.preprocess_image(image)) for image in prepared]
+    conditioning = encode_edit(pipe, prompt, prepared, return_ids=True)
+    grid, source_grid = target_latent.shape[-2:], source_latents[0].shape[-2:]
+    device = target_latent.device
+    size = (width, height)
+    sample = Round2Sample(inputs={}, kind=kind, regions=[grid_coverage(resize_mask(px, size), grid).to(device) for px in loss_px],
+                          distractors=grid_coverage(resize_mask(negative_px, size), grid).to(device), region_dilate=dilate)
+    if token_px:
+        sample.spans = span_positions_all(pipe.processor.tokenizer, prompt, conditioning, len(token_px))
+        sample.source_positions = source_token_positions(conditioning, source_grid)
+        sample.route_regions = [grid_coverage(resize_mask(px, size), grid).to(device) for px in route_px]
+        sample.source_regions = [grid_coverage(resize_mask(px, prepared[0].size), source_grid).to(device) for px in token_px]
+        if read_negatives:
+            sample.source_distractors = grid_coverage(resize_mask(negative_px, prepared[0].size), source_grid).to(device)
+    conditioning.pop("prompt_input_ids")
+    sample.inputs = {"input_latents": target_latent, "edit_latents": source_latents, **conditioning}
+    validate_conditioning({k: (v.detach() if torch.is_tensor(v) else v) for k, v in sample.inputs.items()})
+    return sample
+
+
+def _release_regions(root, record):
+    """Execution region, source mask and changed pixels of a 50k record."""
+    support_px = load_mask(root / record["support_mask"])
+    s_px = load_mask(root / record["mask"])
+    changed = record["edited_region"]
+    changed_px = rd.decode_rle({"size": changed["rle_size"], "counts": changed["rle_counts"]}) if changed.get("rle_counts") \
+        else np.zeros_like(s_px)
+    return support_px, s_px, changed_px.astype(bool)
+
+
 def _prepare_edit(pipe, ctx, row, max_pixels):
     record = ctx.release[row["sample_id"]]
     token = ctx.tokens[row["sample_id"]]
@@ -178,43 +242,78 @@ def _prepare_edit(pipe, ctx, row, max_pixels):
         source = im.convert("RGBA")
     with Image.open(root / record["edited_image"]) as im:
         edited = im.convert("RGBA")
-    support_px = load_mask(root / record["support_mask"])
-    s_px = load_mask(root / record["mask"])
-    changed = record["edited_region"]
-    changed_px = rd.decode_rle({"size": changed["rle_size"], "counts": changed["rle_counts"]}) if changed.get("rle_counts") \
-        else np.zeros_like(s_px)
+    support_px, s_px, changed_px = _release_regions(root, record)
     span = None if row["form"] == "ref_only" else token["span"]
     prompt = edit_prompt(row, record, span)
-    with torch.no_grad():
-        width, height = dimensions(edited, max_pixels)
-        target = edited.resize((width, height), Image.Resampling.LANCZOS)
-        prepared = resize_sources(pipe, [source], height, width)
-        target_latent = pipe.vae.encode(pipe.preprocess_image(target))
-        source_latents = [pipe.vae.encode(pipe.preprocess_image(image)) for image in prepared]
-    conditioning = encode_edit(pipe, prompt, prepared, return_ids=True)
-    grid, source_grid = target_latent.shape[-2:], source_latents[0].shape[-2:]
-    device = target_latent.device
-    size = (width, height)
     negative_px = np.zeros_like(s_px)
     if row.get("negatives"):
         entry = ctx.pool(record["source_id"])
         for j in row["negatives"]:
             negative_px |= rd.decode_rle(entry["masks"][j]["rle"])
+    for partner in row.get("partners", ()):           # stage-B twins: the region the other token names
+        negative_px |= load_mask(root / ctx.release[partner]["mask"])
+    if row.get("negatives") or row.get("partners"):
         negative_px &= ~(support_px | s_px | changed_px)
-    sample = Round2Sample(inputs={}, kind="edit", regions=[grid_coverage(resize_mask(support_px, size), grid).to(device)],
-                          distractors=grid_coverage(resize_mask(negative_px, size), grid).to(device))
-    if span is not None:
-        sample.spans = span_positions_all(pipe.processor.tokenizer, prompt, conditioning, 1)
-        sample.source_positions = source_token_positions(conditioning, source_grid)
-        sample.route_regions = [grid_coverage(resize_mask(s_px | changed_px, size), grid).to(device)]
-        token_px = rd.decode_rle(token["dec"])
-        sample.source_regions = [grid_coverage(resize_mask(token_px, prepared[0].size), source_grid).to(device)]
-        if row.get("negatives"):
-            sample.source_distractors = grid_coverage(resize_mask(negative_px, prepared[0].size), source_grid).to(device)
-    conditioning.pop("prompt_input_ids")
-    sample.inputs = {"input_latents": target_latent, "edit_latents": source_latents, **conditioning}
-    validate_conditioning({k: (v.detach() if torch.is_tensor(v) else v) for k, v in sample.inputs.items()})
-    return sample
+    changed_only = row.get("region") == "changed" and changed_px.any()
+    return _edit_sample(pipe, "edit", source, edited, prompt, loss_px=[changed_px if changed_only else support_px],
+                        route_px=[s_px | changed_px], token_px=[] if span is None else [rd.decode_rle(token["dec"])],
+                        negative_px=negative_px, read_negatives=bool(row.get("negatives") or row.get("partners")),
+                        max_pixels=max_pixels, dilate=True if row.get("region") == "changed" else None)
+
+
+def _prepare_edit_v1(pipe, ctx, row, max_pixels):
+    record, token = ctx.v1(row["id"])
+    with Image.open(rd.V1_ROOT / record["source_image"]) as im:
+        source = im.convert("RGBA")
+    with Image.open(rd.V1_ROOT / record["target_image"]) as im:
+        target = im.convert("RGBA")
+    shape = (source.height, source.width)
+    s_px = rle_region(record["selection"], shape)
+    changed_px = rle_region(record.get("edited_region"), shape)
+    execution_px = rle_region(record.get("execution_region"), shape)
+    loss_px = next(m for m in (changed_px, execution_px, s_px) if m is not None and m.any())
+    route_px = s_px | changed_px if changed_px is not None else s_px
+    prompt = p2.render(record["instruction_spec"], row["form"] == "ref_token", selector_token=token["span"])
+    return _edit_sample(pipe, "edit_v1", source, target, prompt, loss_px=[loss_px], route_px=[route_px],
+                        token_px=[rd.decode_rle(token["dec"])], negative_px=np.zeros(shape, bool), read_negatives=False,
+                        max_pixels=max_pixels, dilate=True)
+
+
+def _prepare_edit_multi(pipe, ctx, row, max_pixels):
+    """2-4 50k edits of one image: each target equals the source outside its own execution region and the regions are
+    disjoint, so the joint target is the source plus every edit's difference."""
+    root = rd.RELEASE
+    records = [ctx.release[sample_id] for sample_id in row["sample_ids"]]
+    with Image.open(root / records[0]["source_image"]) as im:
+        source = im.convert("RGBA")
+    base = np.asarray(source.convert("RGB"), np.int16)
+    joint = base.copy()
+    sentences, loss_px, route_px, token_px = [], [], [], []
+    covered = np.zeros(base.shape[:2], bool)
+    for record, form in zip(records, row["forms"]):
+        if record["source_id"] != records[0]["source_id"]:
+            raise ValueError("multi-target units must share their source image")
+        token = ctx.tokens[record["sample_id"]]
+        with Image.open(root / record["edited_image"]) as im:
+            joint += np.asarray(im.convert("RGB"), np.int16) - base
+        support_px, s_px, changed_px = _release_regions(root, record)
+        if (covered & support_px).any():
+            raise ValueError("multi-target execution regions overlap")
+        covered |= support_px | s_px | changed_px
+        sentences.append(p2.render(record["instruction_spec"], form == "ref_token", selector_token=token["span"]))
+        loss_px.append(changed_px if changed_px.any() else support_px)
+        route_px.append(s_px | changed_px)
+        token_px.append(rd.decode_rle(token["dec"]))
+    target = Image.fromarray(joint.clip(0, 255).astype(np.uint8)).convert("RGBA")
+    negative_px = np.zeros(base.shape[:2], bool)
+    if row.get("negatives"):
+        entry = ctx.pool(row["source_id"])
+        for j in row["negatives"]:
+            negative_px |= rd.decode_rle(entry["masks"][j]["rle"])
+        negative_px &= ~covered
+    return _edit_sample(pipe, "edit_multi", source, target, rd.multi_edit_prompt(sentences), loss_px=loss_px,
+                        route_px=route_px, token_px=token_px, negative_px=negative_px,
+                        read_negatives=bool(row.get("negatives")), max_pixels=max_pixels, dilate=True)
 
 
 def balanced(labels, heavy, heavy_weight=DISTRACTOR_WEIGHT):
@@ -305,7 +404,8 @@ def round2_loss(pipe, sample, router=None, *, lambda_region=1.0, lambda_distract
         raise RuntimeError("FM prediction/target shape mismatch")
     squared_error = (prediction.float() - target.float()).pow(2).mean(1)[0]
     mean = squared_error.mean()
-    in_region = region_error(squared_error, sample.regions, dilate=sample.kind != "edit")
+    dilate = sample.region_dilate if sample.region_dilate is not None else sample.kind != "edit"
+    in_region = region_error(squared_error, sample.regions, dilate=dilate)
     other = (sample.distractors > DISTRACTOR_COVERAGE).float()
     on_distractors = (squared_error * other).sum() / other.sum() if float(other.sum()) > 0 else mean.detach() * 0
     weight = pipe.scheduler.training_weight(timestep).to(pipe.device)

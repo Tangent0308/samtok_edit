@@ -32,7 +32,7 @@ import torch
 from samtok_edit21.training.grounding_engine import average_gradients, broadcast_parameters, rank_divergence
 from samtok_edit21.training.routing import DEFAULT_LAYERS
 
-KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3}
+KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5}
 
 
 def parser():

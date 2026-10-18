@@ -239,3 +239,46 @@ def test_c1b_learning_rate_warms_up_then_decays_to_the_floor():
     assert learning_rate(args, 10) == pytest.approx(1e-4) and learning_rate(args, 109) == pytest.approx(1e-5)
     assert learning_rate(args, 60) == pytest.approx(5.5e-5, rel=0.02)
     assert learning_rate(SimpleNamespace(**{**vars(args), "lr_schedule": "constant"}), 109) == pytest.approx(1e-4)
+
+
+def test_c2_multi_edit_prompt_numbers_the_units_in_token_order():
+    spans = [f"<|mt_start|><|mt_{k:04d}|><|mt_0300|><|mt_end|>" for k in range(3)]
+    text = rd.multi_edit_prompt([f"Remove the selected region {spans[0]}.", f"Add a red hat to the selected region {spans[1]}.",
+                                 f"Change the color of the selected region {spans[2]} to blue."])
+    lines = text.split("\n")
+    assert lines[0] == rd.MULTI_EDIT_INTRO and [line[:4] for line in lines[1:]] == ["U1: ", "U2: ", "U3: "]
+    assert [text.index(s) for s in spans] == sorted(text.index(s) for s in spans)
+
+
+def test_c2_composite_units_have_distinct_operations_and_separate_regions():
+    import random
+    grids = {}
+    def grid(cells):
+        g = np.zeros((8, 8), bool)
+        for y, x in cells:
+            g[y, x] = True
+        return g
+    records = [{"sample_id": "a", "operation": "add"}, {"sample_id": "b", "operation": "remove"},
+               {"sample_id": "c", "operation": "remove"}, {"sample_id": "d", "operation": "replace"}]
+    grids.update(a=grid([(0, 0), (0, 1), (1, 0), (1, 1)]), b=grid([(1, 1), (1, 2), (2, 1), (2, 2)]),   # b touches a
+                 c=grid([(6, 6), (6, 7), (7, 6), (7, 7)]), d=grid([(0, 6), (0, 7), (1, 6), (1, 7)]))
+    for seed in range(20):
+        group = rd.composite_group(records, grids.__getitem__, random.Random(seed), 3)
+        if group is None:
+            continue
+        ids = [r["sample_id"] for r in group]
+        assert len({r["operation"] for r in group}) == 3 and not {"a", "b"} <= set(ids)
+        assert not any((grids[x] & grids[y]).any() for i, x in enumerate(ids) for y in ids[i + 1:])
+    assert rd.composite_group(records[:2], grids.__getitem__, random.Random(0), 3) is None
+
+
+def test_c2_twins_and_v1_filter():
+    import random
+    group = [{"bbox": [0, 0, 10, 10]}, {"bbox": [12, 0, 20, 10]}, {"bbox": [90, 90, 99, 99]}]
+    assert rd.twin_pair(group, random.Random(0), close=True) == (group[0], group[1])
+    rows = [{"id": i, "instruction_noref": "Remove the selected region."} for i in "abcd"]
+    tokens = {"a": {"roundtrip": 0.9, "size_ok": True, "out_diff": 0.2, "out_share8": 0.0},
+              "b": {"roundtrip": 0.3, "size_ok": True, "out_diff": 0.2, "out_share8": 0.0},     # token misses the mask
+              "c": {"roundtrip": 0.9, "size_ok": True, "out_diff": 4.0, "out_share8": 0.1},     # target drifts outside
+              "d": {"roundtrip": 0.9, "size_ok": True, "out_diff": 0.1, "out_share8": 0.0}}
+    assert [r["id"] for r in rd.v1_usable(rows, tokens, dev_ids={"d"})] == ["a"]

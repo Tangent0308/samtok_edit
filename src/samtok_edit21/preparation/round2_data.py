@@ -9,6 +9,7 @@ Steps (outputs go to one data directory; nothing is written next to the sources)
     python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-data pool --out <dir>
     python -m samtok_edit21 round2-data rows --out <dir>
     python -m samtok_edit21 round2-data eval --out <dir>
+    python -m samtok_edit21 round2-data rows-c2 --out <dir>     # stage B (docs/08 section 9)
 
 ``pool`` encodes every usable dense mask (and every 50k source mask) with SAMTok and decodes the token again; the
 decoded region is what the token means and is the supervision target, exactly as in round 1.  ``rows`` writes the
@@ -29,8 +30,8 @@ import numpy as np
 
 SA1B = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/sa1b_samtok_edit_50k_20261014")
 RELEASE = SA1B / "release"
-V1_MANIFEST = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Cleaned_20261009/"
-                   "protocol_adapt_qwen38_27b_v1/protocol_v2_blind/manifest_protocol_v2.jsonl")
+V1_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Cleaned_20261009")
+V1_MANIFEST = V1_ROOT / "protocol_adapt_qwen38_27b_v1/protocol_v2_blind/manifest_protocol_v2.jsonl"
 
 AREA_MIN, AREA_MAX = 0.0005, 0.30       # smaller: below what SAMTok and a 16 px token grid resolve; larger: background
 MIN_ROUNDTRIP = 0.5                     # a token whose decoded region misses its mask this much does not name it
@@ -544,16 +545,8 @@ def place_in_slots(units, rng, updates, world, accumulation):
     return rows
 
 
-def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
-    """C1b rows (same kinds and shares as C1) with near negatives, counterfactual pairs and adjacent multi groups."""
-    rng = random.Random(seed)
-    dev = set(json.load(open(out / "dev_split.json"))["sa1b_sources"])
-    train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
-    by_id = {e["source_id"]: e for e in train}
-    total = updates * world * accumulation
-    counts = {kind: round(total * share) for kind, share in C1_MIX.items()}
-    counts["edit"] = total - counts["hl"] - counts["hl_ref"] - counts["hlm"]
-    n_pairs = round(PAIR_SHARE * (counts["hl"] + counts["hl_ref"]) / 2)
+def highlight_pairs(train, rng, n_pairs, key_prefix):
+    """Counterfactual highlight pairs: same prompt, template and colour, an adjacent region or a part and its host."""
     units = []
     for e_index, m_index in pick_regions(train, rng, 4 * n_pairs):
         if len(units) == n_pairs:
@@ -563,7 +556,7 @@ def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
         partner = pair_partner(entry, m_index, rng, part_host)
         if partner is None:
             continue
-        template, color, key = rng.randrange(len(HL_SINGLE)), rng.choice(MULTI_COLORS), f"c1b-pair-{len(units)}"
+        template, color, key = rng.randrange(len(HL_SINGLE)), rng.choice(MULTI_COLORS), f"{key_prefix}-{len(units)}"
         members = []
         for a, b in ((m_index, partner), (partner, m_index)):
             negatives = set(near_negatives(entry, a))
@@ -575,19 +568,30 @@ def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
         units.append(members)
     if len(units) < n_pairs:
         raise RuntimeError(f"only {len(units)} of {n_pairs} counterfactual pairs found")
-    need = counts["hl"] + counts["hl_ref"] - 2 * n_pairs
+    return units
+
+
+def highlight_singles(train, rng, need, n_named):
+    """``need`` single-token highlights with near negatives; ``n_named`` of them name the object (``hl_ref``)."""
     singles = pick_regions(train, rng, need + 16)[:need]      # the per-bucket rounding can fall a few draws short
     if len(singles) != need:
         raise RuntimeError(f"{len(singles)} of {need} single-token regions drawn")
     named = [k for k, (e, m) in enumerate(singles) if train[e]["masks"][m]["category"]]
-    with_name = set(rng.sample(named, min(counts["hl_ref"], len(named))))
+    with_name = set(rng.sample(named, min(n_named, len(named))))
+    units = []
     for k, (e_index, m_index) in enumerate(singles):
         entry = train[e_index]
         phrase = entry["masks"][m_index]["category"] if k in with_name else None
         units.append([{"kind": "hl_ref" if phrase else "hl", "source_id": entry["source_id"], "masks": [m_index],
                        "negatives": [near_negatives(entry, m_index)], "neg_ann": True, "colors": [rng.choice(MULTI_COLORS)],
                        "template": rng.randrange(len(HL_SINGLE)), "phrase": phrase}])
-    for size in rng.choices([2, 3, 4, 5], weights=[0.35, 0.30, 0.20, 0.15], k=counts["hlm"]):
+    return units
+
+
+def highlight_multis(train, rng, count):
+    """``count`` multi-token highlights of 2-5 regions, MULTI_ADJACENT of them built around an adjacent pair."""
+    units = []
+    for size in rng.choices([2, 3, 4, 5], weights=[0.35, 0.30, 0.20, 0.15], k=count):
         adjacent = rng.random() < MULTI_ADJACENT
         for _ in range(50):
             entry = rng.choice(train)
@@ -600,6 +604,22 @@ def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
                        "negatives": [near_negatives(entry, i, exclude=group) for i in group], "neg_ann": True,
                        "colors": rng.sample(MULTI_COLORS, size), "template": rng.randrange(len(HL_MULTI)),
                        "adjacent": adjacent}])
+    return units
+
+
+def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
+    """C1b rows (same kinds and shares as C1) with near negatives, counterfactual pairs and adjacent multi groups."""
+    rng = random.Random(seed)
+    dev = set(json.load(open(out / "dev_split.json"))["sa1b_sources"])
+    train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
+    by_id = {e["source_id"]: e for e in train}
+    total = updates * world * accumulation
+    counts = {kind: round(total * share) for kind, share in C1_MIX.items()}
+    counts["edit"] = total - counts["hl"] - counts["hl_ref"] - counts["hlm"]
+    n_pairs = round(PAIR_SHARE * (counts["hl"] + counts["hl_ref"]) / 2)
+    units = highlight_pairs(train, rng, n_pairs, "c1b-pair")
+    units += highlight_singles(train, rng, counts["hl"] + counts["hl_ref"] - 2 * n_pairs, counts["hl_ref"])
+    units += highlight_multis(train, rng, counts["hlm"])
     release = [json.loads(line) for line in open(RELEASE / "annotations/train_protocol_v2.jsonl")]
     tokens = {t["sample_id"]: t for t in map(json.loads, open(out / "edit_tokens.jsonl"))}
     train_edits = [r for r in release if r["source_id"] not in dev]
@@ -626,6 +646,216 @@ def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
              "edit_forms": dict(Counter(r["form"] for r in rows if r["kind"] == "edit"))}
     (out / "rows_c1b_stats.json").write_text(json.dumps(stats, indent=1))
     return stats
+
+
+# ---------------------------------------------------------------- C2 rows: stage B, editing with tokens (CPU)
+#
+# Stage B (docs/08 section 9): editing becomes the main task, starting from C1b.  Every edit carries its token, as a
+# blind sentence + token or ref + token; no row goes without one, since the method always has a token at inference.
+# add and replace are drawn more often than the data holds them; natural twins of the 50k (same image, same blind
+# sentence, another region) come as pairs in one update; a tenth of the rows join 2-4 non-overlapping 50k edits of one
+# image into one multi-target edit; 15 % stay highlights, so that C1b's localisation is kept.  The loss weights the
+# pixels that really changed (``region: changed``) rather than the whole execution region.
+
+C2_MIX = {"edit": 0.55, "edit_v1": 0.20, "edit_multi": 0.10, "hl": 0.09, "hlm": 0.06}
+C2_OPS = {"add": 0.30, "replace": 0.25, "attribute": 0.25, "remove": 0.20}
+C2_FORMS = {"noref_token": 0.65, "ref_token": 0.35}
+C2_TWIN_SHARE = 0.25          # share of the 50k single-edit rows that come as natural twin pairs
+C2_TWIN_CLOSE = 0.5           # of the twin pairs: the two records of the group whose boxes are nearest
+C2_MULTI_SIZES = {2: 0.40, 3: 0.35, 4: 0.25}
+C2_HL_NAMED = 0.27            # share of the single-token highlights that name the object (C1b: 15 of 55)
+V1_MAX_OUT_DIFF, V1_MAX_OUT_SHARE = 1.0, 0.02   # v1 targets that change the image outside the edit are left out
+MULTI_EDIT_INTRO = "Execute all numbered instructions and keep everything else unchanged."
+
+
+def multi_edit_prompt(sentences):
+    """Several edits in one prompt, one numbered line each (the v2 benchmark numbers its units U1, U2, ...)."""
+    return MULTI_EDIT_INTRO + "\n" + "\n".join(f"U{k + 1}: {sentence}" for k, sentence in enumerate(sentences))
+
+
+def v1_usable(rows, tokens, dev_ids):
+    """Cleaned v1 records usable for stage B: blind sentence, token round trip, and a target that keeps the image."""
+    out = []
+    for r in rows:
+        t = tokens.get(r["id"])
+        if (r["instruction_noref"] and r["id"] not in dev_ids and t and t["roundtrip"] >= MIN_ROUNDTRIP and t.get("size_ok")
+                and t["out_diff"] <= V1_MAX_OUT_DIFF and t["out_share8"] <= V1_MAX_OUT_SHARE):
+            out.append(r)
+    return out
+
+
+def record_gap(a, b):
+    """Gap between the (x0, y0, x1, y1) boxes of two 50k records."""
+    (ax0, ay0, ax1, ay1), (bx0, by0, bx1, by1) = a["bbox"], b["bbox"]
+    return float(np.hypot(max(0, max(ax0, bx0) - min(ax1, bx1)), max(0, max(ay0, by0) - min(ay1, by1))))
+
+
+def natural_twins(edits):
+    """Groups of 50k records on one image with the same blind sentence: only the token tells them apart."""
+    groups = defaultdict(list)
+    for r in edits:
+        groups[(r["source_id"], r["instruction_noref"])].append(r)
+    return [g for g in groups.values() if len(g) > 1]
+
+
+def twin_pair(group, rng, close):
+    if close:
+        return min(((a, b) for i, a in enumerate(group) for b in group[i + 1:]), key=lambda p: record_gap(*p))
+    return tuple(rng.sample(group, 2))
+
+
+def weighted_distinct(rng, weights, k):
+    """``k`` different keys of ``weights``, each draw proportional to the remaining weights."""
+    pool, out = dict(weights), []
+    for _ in range(k):
+        names = list(pool)
+        pick = rng.choices(names, weights=[pool[n] for n in names])[0]
+        out.append(pick)
+        del pool[pick]
+    return out
+
+
+class CoarseSupports:
+    """Execution regions of the 50k records on 32 px cells (``support_cache.jsonl``), dilated by one cell."""
+
+    def __init__(self, path):
+        self.rows = {r["sample_id"]: r for r in map(json.loads, open(path))}
+        self.cache = {}
+
+    def __call__(self, sample_id):
+        if sample_id not in self.cache:
+            from pycocotools import mask as mu
+            from scipy.ndimage import binary_dilation
+            grid = mu.decode(as_rle(self.rows[sample_id]["coarse"])).astype(bool)
+            self.cache[sample_id] = binary_dilation(grid, iterations=1)
+        return self.cache[sample_id]
+
+
+def composite_group(records, supports, rng, size):
+    """``size`` records of one image with different operations whose execution regions stay a cell apart."""
+    present = {r["operation"] for r in records}
+    if len(present) < size:
+        return None
+    chosen, occupied = [], None
+    for op in weighted_distinct(rng, {o: w for o, w in C2_OPS.items() if o in present}, size):
+        options = [r for r in records if r["operation"] == op]
+        rng.shuffle(options)
+        for r in options[:20]:
+            region = supports(r["sample_id"])
+            if occupied is None or (region.shape == occupied.shape and not (region & occupied).any()):
+                chosen.append(r)
+                occupied = region if occupied is None else occupied | region
+                break
+        else:
+            return None
+    return chosen
+
+
+def build_rows_c2(out, seed=20261019, updates=1500, world=8, accumulation=4):
+    """Stage-B rows in training order (same order rule as C1/C1b) and their statistics."""
+    rng = random.Random(seed)
+    split = json.load(open(out / "dev_split.json"))
+    dev, dev_v1 = set(split["sa1b_sources"]), set(split["v1_ids"])
+    train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
+    by_id = {e["source_id"]: e for e in train}
+    total = updates * world * accumulation
+    counts = {kind: round(total * share) for kind, share in C2_MIX.items()}
+    counts["edit"] = total - sum(v for k, v in counts.items() if k != "edit")
+    release = [json.loads(line) for line in open(RELEASE / "annotations/train_protocol_v2.jsonl")]
+    tokens = {t["sample_id"]: t for t in map(json.loads, open(out / "edit_tokens.jsonl"))}
+    edits = [r for r in release if r["source_id"] not in dev and r["instruction_noref"]
+             and tokens[r["sample_id"]]["roundtrip"] >= MIN_ROUNDTRIP]
+    by_op = {op: [r for r in edits if r["operation"] == op] for op in C2_OPS}
+    negatives = lambda r: edit_negatives(by_id[r["source_id"]], tokens[r["sample_id"]]["dec"])  # noqa: E731
+    form = lambda: rng.choices(list(C2_FORMS), weights=list(C2_FORMS.values()))[0]  # noqa: E731
+    units = []
+
+    # natural twins: same image, same blind sentence, another region; both rows in one update of one rank
+    twins = defaultdict(list)
+    for group in natural_twins(edits):
+        twins[group[0]["operation"]].append(group)
+    n_twin_pairs = round(C2_TWIN_SHARE * counts["edit"] / 2)
+    for k, op in enumerate(rng.choices(list(C2_OPS), weights=list(C2_OPS.values()), k=n_twin_pairs)):
+        a, b = twin_pair(rng.choice(twins[op]), rng, rng.random() < C2_TWIN_CLOSE)
+        units.append([{"kind": "edit", "form": "noref_token", "sample_id": x["sample_id"], "source_id": x["source_id"],
+                       "negatives": negatives(x), "partners": [y["sample_id"]], "region": "changed",
+                       "pair_key": f"c2-twin-{k}", "pair_kind": "twin"} for x, y in ((a, b), (b, a))])
+    # single 50k edits
+    for op in rng.choices(list(C2_OPS), weights=list(C2_OPS.values()), k=counts["edit"] - 2 * n_twin_pairs):
+        r = rng.choice(by_op[op])
+        units.append([{"kind": "edit", "form": form(), "sample_id": r["sample_id"], "source_id": r["source_id"],
+                       "negatives": negatives(r), "region": "changed"}])
+    # cleaned v1 edits (no dense annotations, so no near negatives)
+    v1_rows = [json.loads(line) for line in open(V1_MANIFEST)]
+    v1_tokens = {t["id"]: t for t in map(json.loads, open(out / "v1_tokens.jsonl"))}
+    v1_ok = v1_usable(v1_rows, v1_tokens, dev_v1)
+    v1_by_op = {op: [r for r in v1_ok if r["instruction_spec"]["operation"] == op] for op in C2_OPS}
+    for op in rng.choices(list(C2_OPS), weights=list(C2_OPS.values()), k=counts["edit_v1"]):
+        units.append([{"kind": "edit_v1", "form": form(), "id": rng.choice(v1_by_op[op])["id"]}])
+    # multi-target edits joined from non-overlapping 50k edits of one image
+    supports = CoarseSupports(out / "support_cache.jsonl")
+    by_image = defaultdict(list)
+    for r in edits:
+        by_image[r["source_id"]].append(r)
+    images = sorted(by_image)
+    sizes = Counter()
+    for size in rng.choices(list(C2_MULTI_SIZES), weights=list(C2_MULTI_SIZES.values()), k=counts["edit_multi"]):
+        for _ in range(200):
+            group = composite_group(by_image[rng.choice(images)], supports, rng, size)
+            if group:
+                break
+        else:
+            raise RuntimeError(f"no {size}-unit composite found")
+        rng.shuffle(group)
+        sizes[size] += 1
+        units.append([{"kind": "edit_multi", "source_id": group[0]["source_id"], "sample_ids": [r["sample_id"] for r in group],
+                       "forms": [form() for _ in group], "negatives": sorted({j for r in group for j in negatives(r)})}])
+    # highlights, as in C1b
+    n_hl_pairs = round(PAIR_SHARE * counts["hl"] / 2)
+    units += highlight_pairs(train, rng, n_hl_pairs, "c2-hlpair")
+    units += highlight_singles(train, rng, counts["hl"] - 2 * n_hl_pairs, round(C2_HL_NAMED * counts["hl"]))
+    units += highlight_multis(train, rng, counts["hlm"])
+
+    rows = place_in_slots(units, rng, updates, world, accumulation)
+    with open(out / "rows_c2.jsonl", "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    release_op = {r["sample_id"]: r["operation"] for r in release}
+    v1_op = {r["id"]: r["instruction_spec"]["operation"] for r in v1_rows}
+    stats = {"rows": len(rows), "updates": updates, "world": world, "accumulation": accumulation,
+             "kinds": dict(Counter(r["kind"] for r in rows)),
+             "ops_50k_single": dict(Counter(release_op[r["sample_id"]] for r in rows if r["kind"] == "edit")),
+             "ops_v1": dict(Counter(v1_op[r["id"]] for r in rows if r["kind"] == "edit_v1")),
+             "ops_multi_units": dict(Counter(release_op[s] for r in rows if r["kind"] == "edit_multi" for s in r["sample_ids"])),
+             "forms": dict(Counter(r["form"] for r in rows if r["kind"] in ("edit", "edit_v1"))),
+             "twin_pairs": n_twin_pairs, "twin_groups": {op: len(g) for op, g in twins.items()},
+             "multi_sizes": dict(sizes), "highlight_pairs": n_hl_pairs,
+             "distinct_50k_records": len({r["sample_id"] for r in rows if r["kind"] == "edit"}),
+             "v1_usable": len(v1_ok), "v1_records": len(v1_rows),
+             "edit_rows_with_negatives": round(float(np.mean([bool(r["negatives"]) for r in rows if r["kind"] == "edit"])), 3)}
+    (out / "rows_c2_stats.json").write_text(json.dumps(stats, indent=1))
+    return stats
+
+
+def build_quick_c2(out, seed=20261019):
+    """Items checked during stage-B training: 40 edits (10 per operation), 10 remove pairs, 24 + 8 single
+    highlights, 8 multi-token highlights, 4 instance pairs and 2 part/host pairs (112 items)."""
+    rng = random.Random(seed)
+    items = json.load(open(out / "eval_c1.json"))
+    pick = []
+    for op in ("add", "remove", "replace", "attribute"):
+        pick += rng.sample([i for i, it in enumerate(items) if it["set"] == "edit" and it["operation"] == op], 10)
+    for kind, n_pairs in (("remove", 10), ("instance", 4), ("part_host", 2)):
+        group = "remove" if kind == "remove" else "pair"
+        pairs = sorted({it["pair"] for it in items if it["set"] == group and (group == "remove" or it["pair_kind"] == kind)})
+        chosen = set(rng.sample(pairs, n_pairs))
+        pick += [i for i, it in enumerate(items) if it["set"] == group and it["pair"] in chosen
+                 and (group == "remove" or it["pair_kind"] == kind)]
+    for variant, n in (("noref", 24), ("ref", 8)):
+        pick += rng.sample([i for i, it in enumerate(items) if it["set"] == "single" and it["variant"] == variant], n)
+    pick += rng.sample([i for i, it in enumerate(items) if it["set"] == "multi"], 8)
+    json.dump(sorted(pick), open(out / "eval_c2_quick_idx.json", "w"))
+    return {"items": len(pick), "sets": dict(Counter(items[i]["set"] for i in pick))}
 
 
 # ---------------------------------------------------------------- C1 evaluation items (CPU)
@@ -697,7 +927,7 @@ def build_eval(out, seed=20261017):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="samtok-edit round2-data", description=__doc__.split("\n\n")[0])
-    p.add_argument("step", choices=["pool", "rows", "rows-c1b", "eval"])
+    p.add_argument("step", choices=["pool", "rows", "rows-c1b", "rows-c2", "quick-c2", "eval"])
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
     out = Path(args.out)
@@ -707,6 +937,10 @@ def main(argv=None):
         print(json.dumps(build_rows(out), indent=1))
     elif args.step == "rows-c1b":
         print(json.dumps(build_rows_c1b(out), indent=1))
+    elif args.step == "rows-c2":
+        print(json.dumps(build_rows_c2(out), indent=1))
+    elif args.step == "quick-c2":
+        print(json.dumps(build_quick_c2(out), indent=1))
     else:
         print(json.dumps(build_eval(out), indent=1))
 
