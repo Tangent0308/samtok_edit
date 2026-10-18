@@ -2,9 +2,9 @@
 # C2（阶段 B，全部可用数据）四机正式运行的完整入口。整段原样粘贴成 ARNOLD 四个 worker（4 × 8 卡）的启动命令。
 # 开头是运行设置，后面接入口脚本 scripts/round2/bootstrap_arnold.sh。设计见 docs/08 第 9 节，说明见 docs/05 第 7 节。
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
-export SAMTOK_RUN_ID=c2_4n_001       # 每次提交换新的，四个 worker 相同；用过的会被拒绝，调度器重试不会覆盖日志
+export SAMTOK_RUN_ID=c2_4n_002       # 每次提交换新的，四个 worker 相同；用过的会被拒绝，调度器重试不会覆盖日志
 export SAMTOK_RUN_NAME=C2            # 报告里这次运行的名字
-export SAMTOK_EDIT_COMMIT=d485ddb2f69f8cf16e7333886f827a7849c31d44   # 代码 commit，四个 worker 必须相同
+export SAMTOK_EDIT_COMMIT=50ffa0ce3d1a1b9db88ffc4fb633b684f1e4df2a   # 代码 commit，四个 worker 必须相同
 export SAMTOK_NNODES=4
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016

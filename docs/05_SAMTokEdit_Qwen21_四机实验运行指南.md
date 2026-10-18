@@ -282,9 +282,9 @@ ls $R/nodes/*/failure.json 2>/dev/null
 # C2（阶段 B，全部可用数据）四机正式运行的完整入口。整段原样粘贴成 ARNOLD 四个 worker（4 × 8 卡）的启动命令。
 # 开头是运行设置，后面接入口脚本 scripts/round2/bootstrap_arnold.sh。设计见 docs/08 第 9 节，说明见 docs/05 第 7 节。
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
-export SAMTOK_RUN_ID=c2_4n_001       # 每次提交换新的，四个 worker 相同；用过的会被拒绝，调度器重试不会覆盖日志
+export SAMTOK_RUN_ID=c2_4n_002       # 每次提交换新的，四个 worker 相同；用过的会被拒绝，调度器重试不会覆盖日志
 export SAMTOK_RUN_NAME=C2            # 报告里这次运行的名字
-export SAMTOK_EDIT_COMMIT=d485ddb2f69f8cf16e7333886f827a7849c31d44   # 代码 commit，四个 worker 必须相同
+export SAMTOK_EDIT_COMMIT=50ffa0ce3d1a1b9db88ffc4fb633b684f1e4df2a   # 代码 commit，四个 worker 必须相同
 export SAMTOK_NNODES=4
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
@@ -447,7 +447,7 @@ echo "[$(date -u +%FT%TZ)] node $NODE: done"
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
 export SAMTOK_RUN_ID=c2_smoke_4n_001
 export SAMTOK_RUN_NAME=smoke
-export SAMTOK_EDIT_COMMIT=d485ddb2f69f8cf16e7333886f827a7849c31d44   # 与正式运行相同的代码 commit
+export SAMTOK_EDIT_COMMIT=50ffa0ce3d1a1b9db88ffc4fb633b684f1e4df2a   # 与正式运行相同的代码 commit
 export SAMTOK_NNODES=4
 export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
 export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
@@ -646,7 +646,11 @@ ls $R/nodes/*/failure.json 2>/dev/null
 
     run 目录 `V3/runs/c2_entry_check_1n_003/`。
 - **多机。** torchrun 参数与第一轮入口相同。
-- **四机实测：没有。** 第二轮的训练还没有在四机上跑过，7.4 的耗时是按单机速度推算的。第一次提交建议先跑 7.2 的冒烟测试。
+- **四机第一次提交（`c2_4n_001`，`d485ddb2`，2026-10-18 10:07）。**
+  - 正常的部分：clone、装环境、模型加载（约 20 分钟，32 个进程同时从共享盘读）、W&B、第 0 次快速评测、训练都正常。
+  - 问题：D4 多目标样本全部被跳过，前 20 次更新共 15 个。原因是集群镜像缺 `libxcb.so.1`，`import cv2` 失败；本机有这个库，所以单机验证没有发现。
+  - 修复：`50ffa0ce` 改用 SciPy，不再在训练里用 OpenCV。7.1 已改为 `c2_4n_002` 和这个 commit，需要停掉 `c2_4n_001` 后重新提交。
+  - 速度与耗时：第 10–20 次更新约 5.8 秒一次，按此估计训练约 6 小时。
 
 - 7.1、7.2 的完整脚本 = 设置文件 + 上面验证过的入口脚本，由 `scripts/docs/sync_code_blocks.py` 拼接生成，测试会检查它们与仓库里的文件一致。
 
