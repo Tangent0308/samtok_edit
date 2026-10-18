@@ -20,6 +20,13 @@ export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---rows rows_c2.jsonl --quick-item
 export SAMTOK_EVAL_ARGS="${SAMTOK_EVAL_ARGS:-}"
 # Reference evaluations for the paired report, "LABEL=PATH ..." with the base model first.
 export SAMTOK_REPORT_REFERENCES="${SAMTOK_REPORT_REFERENCES:-stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1=$SAMTOK_EXPERIMENT/runs/c1_local8_001/eval_1500 C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800}"
+# W&B, as in the v2 runs: rank 0 logs the training metrics and quick evaluations; the report adds the dev results.
+export SAMTOK_WANDB_MODE="${SAMTOK_WANDB_MODE:-online}"   # online | offline | disabled
+export WANDB_ENTITY="${WANDB_ENTITY:-2200012743-peking-university}"
+export WANDB_PROJECT="${WANDB_PROJECT:-samtok-edit}"
+# W&B key: an ARNOLD secret if injected, else the private key file on the shared disk (export WANDB_API_KEY=..., mode
+# 600).  The repository is public: never write the key into a script or commit it.
+export SAMTOK_WANDB_KEY_FILE="${SAMTOK_WANDB_KEY_FILE:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/.secrets/wandb.env}"
 # Phases to run: train,eval,report.  Without "train", set SAMTOK_ADAPTER to the adapter directory to evaluate.
 export SAMTOK_PHASES="${SAMTOK_PHASES:-train,eval,report}"
 export SAMTOK_ADAPTER="${SAMTOK_ADAPTER:-}"
@@ -39,6 +46,13 @@ export SAMTOK_NNODES="${SAMTOK_NNODES:-4}"
 [[ "$ARNOLD_WORKER_GPU" =~ ^[1-9][0-9]*$ ]] || { echo 'ARNOLD_WORKER_GPU must be a positive integer' >&2; exit 2; }
 [[ "$ARNOLD_ID" =~ ^[0-9]+$ && "$ARNOLD_ID" -lt "$SAMTOK_NNODES" ]] || { echo "ARNOLD_ID must be 0..$((SAMTOK_NNODES - 1))" >&2; exit 2; }
 [[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
+[[ "$SAMTOK_WANDB_MODE" =~ ^(online|offline|disabled)$ ]] || { echo 'SAMTOK_WANDB_MODE must be online, offline or disabled' >&2; exit 2; }
+if [[ "$SAMTOK_WANDB_MODE" == online ]]; then
+  # shellcheck disable=SC1090  # the private key file
+  [[ -n "${WANDB_API_KEY:-}" || ! -f "$SAMTOK_WANDB_KEY_FILE" ]] || source "$SAMTOK_WANDB_KEY_FILE"
+  [[ -n "${WANDB_API_KEY:-}" ]] || { echo "No W&B key: inject WANDB_API_KEY or create $SAMTOK_WANDB_KEY_FILE" >&2; exit 2; }
+  export WANDB_API_KEY
+fi
 option() {  # option() NAME DEFAULT ARGS...: the value given to --NAME in ARGS, else DEFAULT
   local name="$1" default="$2" previous="" word
   shift 2

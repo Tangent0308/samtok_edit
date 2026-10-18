@@ -19,6 +19,7 @@ step, so the batch of every update is fixed by the data, whatever the number of 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -70,6 +71,12 @@ def parser():
     p.add_argument("--max-pixels", type=int, default=1024 * 1024)
     p.add_argument("--seed", type=int, default=2000, help="Rank r draws timesteps and noise from seed + r")
     p.add_argument("--resume", action="store_true")
+    p.add_argument("--wandb-mode", choices=("disabled", "offline", "online"), default="disabled",
+                   help="W&B tracking on rank 0 (the four-node entry uses online; the key comes from WANDB_API_KEY)")
+    p.add_argument("--wandb-project", default="samtok-edit")
+    p.add_argument("--wandb-entity", default="2200012743-peking-university")
+    p.add_argument("--wandb-name", help="Default: the name of the run directory (the parent of --output)")
+    p.add_argument("--wandb-id", help="Default: derived from --output, so a --resume continues the same W&B run")
     return p
 
 
@@ -93,6 +100,7 @@ def main(argv=None):
     from samtok_edit21.training.objectives import add_adapter, load_adapter, save_adapter
     from samtok_edit21.training.round2 import Context, prepare_round2, round2_loss
     from samtok_edit21.training.routing import AttentionRouter
+    from samtok_edit21.training.tracking import DistributedTracker
 
     args = parser().parse_args(argv)
     if args.updates < 1 or args.accumulation < 1:
@@ -111,6 +119,14 @@ def main(argv=None):
             print(json.dumps(message), flush=True)
             with open(out / name, "a") as handle:
                 handle.write(json.dumps(message) + "\n")
+
+    # W&B first: a wrong key or an unreachable backend stops the run before the models are loaded
+    args.wandb_name = args.wandb_name or out.resolve().parent.name
+    args.wandb_id = args.wandb_id or hashlib.sha256(str(out.resolve()).encode()).hexdigest()[:16] + "-round2"
+    stats_path = data / (Path(args.rows).stem + "_stats.json")
+    tracker = DistributedTracker(args, rank, dist, {
+        "training": {k: (list(v) if isinstance(v, tuple) else v) for k, v in vars(args).items()} | {"world": world},
+        "rows": json.load(open(stats_path)) if stats_path.exists() else {}})
 
     torch.manual_seed(args.seed + rank)
     random.seed(args.seed + rank)
@@ -193,7 +209,9 @@ def main(argv=None):
         if rank == 0:
             merged = [r for part in gathered for r in part]
             json.dump(merged, open(out / f"quick_{tag}.json", "w"))
-            log("quick_summary.jsonl", {"quick": tag, **summarize(merged), "sec": round(time.time() - started)})
+            summary = summarize(merged)
+            log("quick_summary.jsonl", {"quick": tag, **summary, "sec": round(time.time() - started)})
+            tracker.log({f"quick/{k}": v for k, v in summary.items()}, step=tag)
 
     if start == 0 and 0 in quick_at:
         quick_eval(0)
@@ -245,7 +263,7 @@ def main(argv=None):
             totals.zero_()
             count = max(float(summed[1]), 1.0)
             norm = float(sum(p.detach().float().norm() ** 2 for p in injector.proj.parameters()) ** 0.5)
-            log("train_metrics.jsonl", {
+            metrics = {
                 "update": done, "loss": round(float(summed[0]) / count, 5), "mse": round(float(summed[2]) / count, 5),
                 "reg": round(float(summed[3]) / count, 5), "dis": round(float(summed[4]) / count, 5),
                 "write": round(float(summed[5]) / max(float(summed[6]), 1.0), 5),
@@ -254,7 +272,14 @@ def main(argv=None):
                 "kinds": {k: int(summed[10 + i]) for k, i in KIND_INDEX.items()},
                 "sec": round(time.time() - started), "lr": optimizer.param_groups[0]["lr"], "inj_norm": round(norm, 4),
                 "affine": [round(float(x), 3) for x in router.affine.detach().flatten()[:2]],
-                "read_affine": [] if router.read_affine is None else [round(float(x), 3) for x in router.read_affine.detach().flatten()[:2]]})
+                "read_affine": [] if router.read_affine is None else [round(float(x), 3) for x in router.read_affine.detach().flatten()[:2]]}
+            log("train_metrics.jsonl", metrics)
+            if rank == 0:
+                tracker.log({**{f"train/{k}": v for k, v in metrics.items() if k != "kinds"},
+                             **{f"count/{k}": v for k, v in metrics["kinds"].items()},
+                             **{f"train/affine_{n}": v for n, v in zip(("scale", "bias"), metrics["affine"])},
+                             **{f"train/read_affine_{n}": v for n, v in zip(("scale", "bias"), metrics["read_affine"])}},
+                            step=done)
         if done in checkpoints or done == args.updates:
             dist.barrier()
             divergence = rank_divergence(parameters, dist, world)
@@ -276,6 +301,7 @@ def main(argv=None):
             quick_eval(done)
     dist.barrier()
     if rank == 0:
+        tracker.finish()
         (out / "TRAIN_DONE").write_text(json.dumps({"updates": args.updates, "adapter": f"adapter_{args.updates}",
                                                     "sec": round(time.time() - started)}))
     dist.destroy_process_group()

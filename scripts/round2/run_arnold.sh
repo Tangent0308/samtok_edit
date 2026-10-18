@@ -21,6 +21,9 @@ export PYTHONPATH="$REPO/src:$REPO/third_party/diffsynth:$REPO/third_party${PYTH
 export PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}" NCCL_DEBUG="${NCCL_DEBUG:-WARN}" TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-/tmp/samtok21-inductor-$(id -u)}"
+export WANDB_DISABLE_SERVICE=true WANDB_START_METHOD=thread   # required by byted-wandb in ARNOLD containers
+WANDB_ARGS=(--wandb-mode "${SAMTOK_WANDB_MODE:-disabled}" --wandb-project "${WANDB_PROJECT:-samtok-edit}"
+            --wandb-entity "${WANDB_ENTITY:-2200012743-peking-university}" --wandb-name "$SAMTOK_RUN_ID")
 PYTHON="$SAMTOK_ENV/bin/python"
 cd "$REPO"
 
@@ -67,7 +70,7 @@ if [[ "$PHASES" == *,train,* ]]; then
   phase train
   # shellcheck disable=SC2086  # SAMTOK_TRAIN_ARGS is a list of options
   run_watched "${TORCHRUN[@]}" --log_dir "$RUN/logs/node${NODE}/train-ranks" --tee 3 -m samtok_edit21 round2-train \
-    --data "$SAMTOK_ROUND2_DATA" --output "$RUN/train" ${SAMTOK_TRAIN_ARGS:-}
+    --data "$SAMTOK_ROUND2_DATA" --output "$RUN/train" "${WANDB_ARGS[@]}" ${SAMTOK_TRAIN_ARGS:-}
   wait_for "$RUN/train/TRAIN_DONE"
   ADAPTER="$RUN/train/$("$PYTHON" -c 'import json, sys; print(json.load(open(sys.argv[1]))["adapter"])' "$RUN/train/TRAIN_DONE")"
 fi
@@ -87,6 +90,7 @@ if [[ "$NODE" == 0 ]]; then
     REPORT=("$PYTHON" -m samtok_edit21 round2-report --eval "$RUN/eval" --name "${SAMTOK_RUN_NAME:-$SAMTOK_RUN_ID}"
             --output "$RUN/analysis.txt")
     [[ -f "$RUN/train/train_metrics.jsonl" ]] && REPORT+=(--train "$RUN/train")
+    [[ -f "$RUN/train/wandb.json" ]] && REPORT+=(--wandb "$RUN/train/wandb.json")
     for reference in ${SAMTOK_REPORT_REFERENCES:-}; do REPORT+=(--reference "$reference"); done
     "${REPORT[@]}"
   fi

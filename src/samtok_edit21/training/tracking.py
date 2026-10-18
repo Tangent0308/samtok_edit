@@ -120,3 +120,76 @@ class TrainingTracker:
             value["status"] = "finished"
             write_json(path, value)
         self._collective(finish)
+
+
+class DistributedTracker:
+    """The same rank-zero W&B tracking for a plain torch.distributed trainer (round 2).
+
+    Initialisation must succeed (it runs before the models are loaded, so a wrong key or an unreachable backend stops
+    the run within minutes).  Later failures do not stop a long run: they are printed and recorded in ``wandb.json``,
+    and the metrics stay complete in the trainer's own JSONL files.
+    """
+
+    def __init__(self, args, rank, dist, config):
+        self.args, self.rank, self.dist, self.run, self.errors = args, rank, dist, None, []
+        if args.wandb_mode == "disabled":
+            return
+
+        def start():
+            os.environ.setdefault("WANDB_DISABLE_SERVICE", "true")   # required by byted-wandb in ARNOLD containers
+            os.environ.setdefault("WANDB_START_METHOD", "thread")
+            import wandb
+            directory = Path(args.output) / "tracking"
+            directory.mkdir(parents=True, exist_ok=True)
+            values, paths = wandb_config(config, {})
+            write_json(directory / "config-key-map.json", paths)
+            self.run = wandb.init(
+                project=args.wandb_project, entity=args.wandb_entity, name=args.wandb_name, id=args.wandb_id,
+                mode=args.wandb_mode, dir=str(directory), resume="allow" if args.resume else "never", config=values,
+                settings=wandb.Settings(start_method="thread", init_timeout=180))
+            if self.run is None:
+                raise RuntimeError("W&B initialization returned no run")
+            self._record("running")
+
+        error = [None]
+        if rank == 0:
+            try:
+                start()
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                # Don't include environment variables or credentials in diagnostics.
+                error[0] = f"W&B initialization failed ({type(exc).__name__}); see the rank-zero log"
+        dist.broadcast_object_list(error, src=0)
+        if error[0]:
+            raise RuntimeError(error[0])
+
+    def _record(self, status):
+        write_json(Path(self.args.output) / "wandb.json", {
+            "id": self.run.id, "name": self.run.name, "mode": self.args.wandb_mode,
+            "project": self.args.wandb_project, "entity": self.args.wandb_entity,
+            "url": self.run.url if self.args.wandb_mode == "online" else None, "status": status, "errors": self.errors})
+
+    def _guarded(self, function, what):
+        if self.run is None:
+            return
+        try:
+            function()
+        except Exception as exc:   # tracking must not end a long run; the JSONL logs hold every value
+            self.errors.append(f"{what}: {type(exc).__name__}")
+            print(f"[W&B] {what} failed ({type(exc).__name__}); training continues", flush=True)
+
+    def log(self, metrics, step):
+        """Rank zero only; numbers only (lists and None are skipped)."""
+        values = {k: v for k, v in metrics.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        self._guarded(lambda: self.run.log(values, step=step), "log")
+
+    def finish(self):
+        def finish():
+            self.run.finish()
+            try:
+                check_wandb_upload_errors(Path(self.args.output) / "tracking")
+            except RuntimeError as exc:
+                self.errors.append(str(exc))
+            self._record("finished" if not self.errors else "finished_with_errors")
+        self._guarded(finish, "finish")

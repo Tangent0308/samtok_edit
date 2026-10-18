@@ -13,4 +13,9 @@ export SAMTOK_TRAIN_ARGS="--rows rows_c2.jsonl --quick-items eval_c2_quick_idx.j
 export SAMTOK_EVAL_ARGS="--limit 2"
 export SAMTOK_REPORT_REFERENCES="stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800"
 export SAMTOK_PHASES=train,eval,report
+# W&B 与 v2 相同：entity 2200012743-peking-university，project samtok-edit，run 名即 SAMTOK_RUN_ID。
+# key 优先用 ARNOLD 注入的 WANDB_API_KEY，否则读共享盘上的私有文件（权限 600），不要写进脚本
+export SAMTOK_WANDB_MODE=online
+export WANDB_ENTITY=2200012743-peking-university
+export WANDB_PROJECT=samtok-edit
 # ===== 以下是入口脚本 scripts/round2/bootstrap_arnold.sh，不用改；其中的设置是默认值，已被上面的值覆盖 =====

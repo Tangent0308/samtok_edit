@@ -161,6 +161,45 @@ def training_lines(train_dir):
     return lines, numbers
 
 
+def dev_scalars(numbers, name):
+    """The evaluated model's headline numbers as flat W&B summary values (``dev/...``)."""
+    out = {}
+    for key, value in numbers.items():
+        if key.startswith(("single_", "pair_")) and isinstance(value, dict) and value.get(name):
+            out[f"dev/{key}"] = value[name][0]
+        elif key.startswith(("single_", "edit_not_done_")) and isinstance(value, list) and value:
+            out[f"dev/{key}"] = value[0]
+        elif key in (f"multi_{name}", f"remove_{name}") and value:
+            if isinstance(value, dict):
+                out.update({f"dev/multi_{k}": v for k, v in value.items()})
+            else:
+                out["dev/remove_pair_follow"] = value[0]
+        elif key.startswith("edit_") and key.endswith(f"_{name}") and isinstance(value, dict):
+            operation = key[len("edit_"):-len(name) - 1]
+            out.update({f"dev/edit_{operation}_{k}": v for k, v in value.items()})
+    return out
+
+
+def log_to_wandb(path, values):
+    """Add the dev results to the training run's W&B summary (resumed from its wandb.json); never fails the report."""
+    try:
+        record = json.loads(Path(path).read_text())
+        if record.get("mode") not in ("online", "offline"):
+            return
+        import os
+        os.environ.setdefault("WANDB_DISABLE_SERVICE", "true")
+        os.environ.setdefault("WANDB_START_METHOD", "thread")
+        import wandb
+        run = wandb.init(project=record["project"], entity=record["entity"], id=record["id"], resume="allow",
+                         mode=record["mode"], dir=str(Path(path).parent / "tracking"),
+                         settings=wandb.Settings(start_method="thread", init_timeout=180))
+        run.summary.update(values)
+        run.finish()
+        print(f"W&B summary updated: {len(values)} dev values", flush=True)
+    except Exception as exc:
+        print(f"[W&B] dev summary not written ({type(exc).__name__}); the report files are complete", flush=True)
+
+
 def parser():
     p = argparse.ArgumentParser(prog="samtok-edit round2-report", description=__doc__.split("\n\n")[0])
     p.add_argument("--eval", required=True, help="Evaluation directory of the model (holds eval.json)")
@@ -168,6 +207,7 @@ def parser():
     p.add_argument("--reference", action="append", default=[], help="LABEL=EVAL_DIR, base model first; repeatable")
     p.add_argument("--train", help="Training directory (train_metrics.jsonl, quick_summary.jsonl)")
     p.add_argument("--output", required=True, help="Text report; the numbers go to the same name with .json")
+    p.add_argument("--wandb", help="wandb.json of the training run: add the dev results to that W&B run's summary")
     return p
 
 
@@ -188,6 +228,8 @@ def main(argv=None):
     output.write_text(text)
     output.with_suffix(".json").write_text(json.dumps({"name": args.name, **numbers, "training": train}, indent=1))
     print(text, flush=True)
+    if args.wandb and Path(args.wandb).exists():
+        log_to_wandb(args.wandb, dev_scalars(numbers, args.name))
 
 
 if __name__ == "__main__":

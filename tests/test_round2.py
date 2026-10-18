@@ -356,3 +356,51 @@ def test_round2_report_reads_edits_with_the_drift_removed(tmp_path):
     json.dump({"records": list(run(0.1, 20.0).values())}, open(eval_dir / "eval.json", "w"))
     rr.main(["--eval", str(eval_dir), "--name", "C2", "--reference", f"self={eval_dir}", "--output", str(tmp_path / "a.txt")])
     assert (tmp_path / "a.json").exists() and "Round-2 report: C2" in (tmp_path / "a.txt").read_text()
+
+
+class _OneProcess:
+    """torch.distributed stand-in for a single process (rank 0 broadcasts to itself)."""
+
+    @staticmethod
+    def broadcast_object_list(values, src=0):
+        return values
+
+
+def _tracker_args(tmp_path, mode):
+    return SimpleNamespace(output=str(tmp_path), wandb_mode=mode, wandb_project="samtok-edit", wandb_entity="test",
+                           wandb_name="check", wandb_id="check-round2", resume=False)
+
+
+def test_round2_tracker_records_the_run_offline(tmp_path, monkeypatch):
+    import json
+    from samtok_edit21.training.tracking import DistributedTracker
+    monkeypatch.setenv("WANDB_SILENT", "true")
+    tracker = DistributedTracker(_tracker_args(tmp_path, "offline"), 0, _OneProcess, {"training": {"lr": 1e-4}})
+    record = json.loads((tmp_path / "wandb.json").read_text())
+    assert record["status"] == "running" and record["id"] == "check-round2" and record["url"] is None
+    tracker.log({"train/loss": 0.1, "train/kinds": [1, 2], "train/read": None, "train/flag": True}, step=10)
+    tracker.finish()
+    assert json.loads((tmp_path / "wandb.json").read_text())["status"] == "finished"
+    assert list((tmp_path / "tracking").glob("wandb/offline-run-*"))
+
+
+def test_round2_tracker_stops_the_run_when_wandb_cannot_start(tmp_path, monkeypatch):
+    import wandb
+    from samtok_edit21.training.tracking import DistributedTracker
+
+    def refuse(**kwargs):
+        raise PermissionError("bad key")
+    monkeypatch.setattr(wandb, "init", refuse)
+    with pytest.raises(RuntimeError, match="W&B initialization failed"):
+        DistributedTracker(_tracker_args(tmp_path, "online"), 0, _OneProcess, {})
+    assert DistributedTracker(_tracker_args(tmp_path, "disabled"), 0, _OneProcess, {}).run is None
+
+
+def test_round2_report_dev_scalars_take_the_evaluated_model():
+    from samtok_edit21.evaluation import round2_report as rr
+    numbers = {"single_noref": {"stock": [0.1, 0.0, 0.2], "C2": [0.5, 0.4, 0.6]}, "single_noref_C2_minus_stock": [0.4, 0.3, 0.5],
+               "edit_add_C2": {"not_done": 0.5, "strength": 9.0}, "edit_add_stock": {"not_done": 0.8},
+               "remove_C2": [0.6, 0.5, 0.7], "multi_C2": {"all_correct": 0.2}}
+    values = rr.dev_scalars(numbers, "C2")
+    assert values == {"dev/single_noref": 0.5, "dev/single_noref_C2_minus_stock": 0.4, "dev/edit_add_not_done": 0.5,
+                      "dev/edit_add_strength": 9.0, "dev/remove_pair_follow": 0.6, "dev/multi_all_correct": 0.2}
