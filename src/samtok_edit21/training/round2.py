@@ -308,9 +308,9 @@ def unit_change(changed, own):
     """The changed pixels that belong to one unit of a multi-object pair.  In 1,598 of the 4,066 pairs every unit
     carries the pair's whole changed region, so it is cut to the unit's own region grown by 1 % of the image
     diagonal; when nothing is left, the unit's own region stands in."""
-    import cv2
+    from scipy.ndimage import distance_transform_edt   # not cv2: it needs libxcb, which the cluster images lack
     radius = max(4, round(0.01 * float(np.hypot(*own.shape))))
-    grown = cv2.dilate(own.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))) > 0
+    grown = distance_transform_edt(~own) <= radius
     part = changed & grown if changed is not None else None
     return part if part is not None and part.any() else own
 
