@@ -27,3 +27,10 @@ def test_excerpt_selects_functions_methods_and_files():
     function = sync.excerpt("src/samtok_edit21/training/routing.py", "route_targets")
     assert function.startswith("def route_targets(")
     assert sync.excerpt("scripts/grounding/run_arnold.sh", None).startswith("#!/usr/bin/env bash")
+
+
+def test_composed_blocks_join_settings_and_entry_without_a_second_shebang():
+    sync = load_sync()
+    text = sync.compose("scripts/round2/settings/c2_4n.sh + scripts/round2/bootstrap_arnold.sh")
+    assert text.startswith("#!/usr/bin/env bash") and text.count("#!/usr/bin/env bash") == 1
+    assert text.index("export SAMTOK_RUN_ID=") < text.index("set -Eeuo pipefail")

@@ -10,7 +10,9 @@ A documented excerpt is fenced between two HTML comments (invisible when rendere
     <!-- /code -->
 
 ``python scripts/docs/sync_code_blocks.py`` rewrites every such block in ``docs/*.md`` from the current source: a
-function, a ``Class.method``, a class, or the whole file when there is no ``::symbol``.  ``--check`` changes nothing,
+function, a ``Class.method``, a class, or the whole file when there is no ``::symbol``.  Several sources joined with
+`` + `` are concatenated, a later file losing its ``#!`` line: a paste-ready script is its settings file followed by
+the entry it configures, e.g. ``<!-- code: scripts/round2/settings/c2_4n.sh + scripts/round2/bootstrap_arnold.sh -->``.  ``--check`` changes nothing,
 lists the blocks that are out of date and exits 1; the test suite runs it, so a code change that forgets the docs
 fails the tests.
 """
@@ -24,8 +26,9 @@ import textwrap
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+SOURCE = r"[^\s:]+(?:::[\w.]+)?"
 BLOCK = re.compile(
-    r"(?P<open><!-- code: (?P<path>[^\s:]+)(?:::(?P<symbol>[\w.]+))? -->\n)"
+    rf"(?P<open><!-- code: (?P<spec>{SOURCE}(?: \+ {SOURCE})*) -->\n)"
     r"```(?P<lang>\w*)\n(?P<body>.*?)\n?```\n(?P<close><!-- /code -->)", re.S)
 
 
@@ -45,14 +48,26 @@ def excerpt(path, symbol):
     return textwrap.dedent("\n".join(lines)).rstrip("\n")
 
 
+def compose(spec):
+    """The text a block stands for: one source, or several joined with " + " (later files without their shebang)."""
+    parts = []
+    for position, source in enumerate(spec.split(" + ")):
+        path, _, symbol = source.partition("::")
+        body = excerpt(path, symbol or None)
+        if position and body.startswith("#!"):
+            body = body.split("\n", 1)[1] if "\n" in body else ""
+        parts.append(body)
+    return "\n".join(parts)
+
+
 def sync(document, check):
     text = document.read_text(encoding="utf-8")
     stale = []
 
     def replace(match):
-        body = excerpt(match["path"], match["symbol"])
+        body = compose(match["spec"])
         if body != match["body"]:
-            stale.append(match["path"] + ("::" + match["symbol"] if match["symbol"] else ""))
+            stale.append(match["spec"])
         return f"{match['open']}```{match['lang']}\n{body}\n```\n{match['close']}"
 
     updated = BLOCK.sub(replace, text)
