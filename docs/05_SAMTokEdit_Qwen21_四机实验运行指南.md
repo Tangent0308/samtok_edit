@@ -1,6 +1,6 @@
 # SAMTokEdit（Qwen-Image-2.1）四机实验运行指南（v3）
 
-本页是 v3 实验在 ARNOLD 上的启动入口，以一次完整运行（E-A2b）为样例。之后的实验只需要改开头的"运行设置"。v2 的入口（Stage 1 / Stage 2 / MLLM 编辑核验）没有变，见 [archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md](archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
+本页是 v3 实验在 ARNOLD 上的启动入口，以一次完整运行（E-A2b）为样例。之后的实验只需要改开头的"运行设置"。第二轮（阶段 B，C2）用单独的入口，见第 7 节。v2 的入口（Stage 1 / Stage 2 / MLLM 编辑核验）没有变，见 [archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md](archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
 
 ## 1. 约定
 
@@ -237,3 +237,209 @@ ls $R/nodes/*/failure.json 2>/dev/null
 - 入口脚本以单机模式（`SAMTOK_NNODES=1`）从 GitHub 上的固定 commit `06e668d0` 完整跑通过（2026-10-13）：clone、装环境、训练、评测、出报告，脚本是按 ARNOLD 的方式从标准输入喂给 bash 的。见文档 03 的 5.4 节。
 - 多机的 torchrun 参数与 v2 四机入口用的完全相同（v2 的四机运行都是这样启动的）。
 - **v3 的训练和评测还没有在四机上实际跑过。** 第一次提交建议先跑第 4 节的冒烟测试。
+
+## 7. 第二轮（阶段 B，C2）的四机运行（2026-10-18）
+
+**与第一轮入口的区别**
+- 入口脚本是 `scripts/round2/bootstrap_arnold.sh`，它调用 `scripts/round2/run_arnold.sh`。训练、评测、报告分别用 `round2-train`、`round2-eval`、`round2-report`。
+- 数据目录变量是 `SAMTOK_ROUND2_DATA`，默认 `V3/data/round2_20261016`。clone 之前先检查这些都在：
+  - 训练行（`--rows`）、快速评测项（`--quick-items`）、评测项（`--items`，默认 `eval_c1.json`）；
+  - `edit_tokens.jsonl` 和 `pool/`；
+  - `--init-adapter` 指向的权重。
+- 报告 `analysis.txt` 由 `round2-report` 写出，与参考评测逐项配对比较，参考默认是原版、C1-1500、C1b-800。编辑一项看扣除背景漂移后"几乎没改"的比例、改动强度和区域外改动。
+- 其余约定与第 1、5 节相同：run ID、clone 指定 commit、各节点自装环境、一个节点失败其余停下、产物目录。
+
+### 7.1 运行设置（C2 正式运行）
+
+```bash
+# ===== 运行设置：C2 =====
+export SAMTOK_RUN_ID=c2_4n_001             # 每次提交换新的
+export SAMTOK_RUN_NAME=C2
+export SAMTOK_EDIT_COMMIT=e681f238122ef1e3dcbd0d58c4f0a7cb7479688a   # 代码 commit，四个 worker 必须相同
+export SAMTOK_EXPERIMENT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3
+export SAMTOK_ROUND2_DATA=$SAMTOK_EXPERIMENT/data/round2_20261016
+# 32 卡 × accumulation 1 = batch 32，与 8 卡 × 4 每次更新用到的样本相同；3,522 次更新把 rows_c2.jsonl 的 112,704 行各用一次
+export SAMTOK_TRAIN_ARGS="--rows rows_c2.jsonl --quick-items eval_c2_quick_idx.json --init-adapter $SAMTOK_EXPERIMENT/runs/c1b_local8_001/train/adapter_800 --updates 3522 --accumulation 1 --warmup 20 --lr 1e-4 --lr-schedule cosine --lr-min 1e-5 --heavy-weight 8 --checkpoints 500,1000,1500,2000,2500,3000,3500,3522 --quick-eval 0,500,1000,1500,2000,2500,3000,3500,3522"
+export SAMTOK_EVAL_ARGS=""
+export SAMTOK_REPORT_REFERENCES="stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1=$SAMTOK_EXPERIMENT/runs/c1_local8_001/eval_1500 C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800"
+```
+
+实验设计见文档 08 第 9 节。
+
+### 7.2 入口脚本（原样粘贴，不用改）
+
+和 2.2 一样：把 7.1 和下面这段依次粘贴成 ARNOLD 的 worker 启动命令。
+
+<!-- code: scripts/round2/bootstrap_arnold.sh -->
+```bash
+#!/usr/bin/env bash
+# Round-2 run (stage B, C2 by default): pre-clone ARNOLD entry.  Paste this whole file as the start command of every
+# worker (4 workers x 8 GPUs), after editing the "run settings" block.  Each worker clones the repository at the pinned
+# commit into node-local /tmp, builds the environment, then trains, evaluates and (worker 0) writes the report.
+set -Eeuo pipefail
+exec 2>&1  # ARNOLD's log page shows stdout; route every shell error there as well.
+
+# ===== run settings (edit these) =====
+# A fresh ID per attempt, identical on all workers.  A used ID is refused so a scheduler retry cannot overwrite logs.
+export SAMTOK_RUN_ID="${SAMTOK_RUN_ID:?Set one fresh common SAMTOK_RUN_ID on all workers}"
+# Label of this run in the report.
+export SAMTOK_RUN_NAME="${SAMTOK_RUN_NAME:-$SAMTOK_RUN_ID}"
+# Shared experiment root: runs go to $SAMTOK_EXPERIMENT/runs/<run id>.
+export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3}"
+# Data directory written by `samtok-edit round2-data` (rows, evaluation items, tokens, mask pool).
+export SAMTOK_ROUND2_DATA="${SAMTOK_ROUND2_DATA:-$SAMTOK_EXPERIMENT/data/round2_20261016}"
+# Trainer / evaluator arguments (see `samtok-edit round2-train --help`, `round2-eval --help`).  Default: C2 (docs/08
+# section 9), every row once: 3,522 updates x (32 GPUs x accumulation 1) = the 112,704 rows of rows_c2.jsonl.
+export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---rows rows_c2.jsonl --quick-items eval_c2_quick_idx.json --init-adapter $SAMTOK_EXPERIMENT/runs/c1b_local8_001/train/adapter_800 --updates 3522 --accumulation 1 --warmup 20 --lr 1e-4 --lr-schedule cosine --lr-min 1e-5 --heavy-weight 8 --checkpoints 500,1000,1500,2000,2500,3000,3500,3522 --quick-eval 0,500,1000,1500,2000,2500,3000,3500,3522}"
+export SAMTOK_EVAL_ARGS="${SAMTOK_EVAL_ARGS:-}"
+# Reference evaluations for the paired report, "LABEL=PATH ..." with the base model first.
+export SAMTOK_REPORT_REFERENCES="${SAMTOK_REPORT_REFERENCES:-stock=$SAMTOK_EXPERIMENT/baselines/round2_stock_eval C1=$SAMTOK_EXPERIMENT/runs/c1_local8_001/eval_1500 C1b=$SAMTOK_EXPERIMENT/runs/c1b_local8_001/eval_800}"
+# Phases to run: train,eval,report.  Without "train", set SAMTOK_ADAPTER to the adapter directory to evaluate.
+export SAMTOK_PHASES="${SAMTOK_PHASES:-train,eval,report}"
+export SAMTOK_ADAPTER="${SAMTOK_ADAPTER:-}"
+# Code: branch and (recommended) the exact commit, so all workers and any later rerun use the same code.
+export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-v3}"
+export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"
+# Number of workers; 1 runs the same pipeline on a single 8-GPU machine (then use --accumulation 4).
+export SAMTOK_NNODES="${SAMTOK_NNODES:-4}"
+
+# ===== ARNOLD and input checks (before anything is cloned or installed) =====
+: "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the worker host list}"
+: "${ARNOLD_WORKER_NUM:?ARNOLD must inject ARNOLD_WORKER_NUM}"
+: "${ARNOLD_WORKER_GPU:?ARNOLD must inject ARNOLD_WORKER_GPU}"
+: "${ARNOLD_ID:?ARNOLD must inject ARNOLD_ID for this worker}"
+[[ "$ARNOLD_WORKER_NUM" == "$SAMTOK_NNODES" ]] || { echo "Expected $SAMTOK_NNODES workers, ARNOLD reports $ARNOLD_WORKER_NUM" >&2; exit 2; }
+[[ "$ARNOLD_WORKER_GPU" =~ ^[1-9][0-9]*$ ]] || { echo 'ARNOLD_WORKER_GPU must be a positive integer' >&2; exit 2; }
+[[ "$ARNOLD_ID" =~ ^[0-9]+$ && "$ARNOLD_ID" -lt "$SAMTOK_NNODES" ]] || { echo "ARNOLD_ID must be 0..$((SAMTOK_NNODES - 1))" >&2; exit 2; }
+[[ "$SAMTOK_RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo 'Invalid SAMTOK_RUN_ID' >&2; exit 2; }
+option() {  # option() NAME DEFAULT ARGS...: the value given to --NAME in ARGS, else DEFAULT
+  local name="$1" default="$2" previous="" word
+  shift 2
+  for word in "$@"; do
+    [[ "$previous" == "--$name" ]] && { echo "$word"; return; }
+    previous="$word"
+  done
+  echo "$default"
+}
+# shellcheck disable=SC2086  # the argument strings are lists of options
+ITEMS="$(option items eval_c1.json $SAMTOK_EVAL_ARGS)"
+[[ -f "$SAMTOK_ROUND2_DATA/$ITEMS" && -f "$SAMTOK_ROUND2_DATA/edit_tokens.jsonl" && -d "$SAMTOK_ROUND2_DATA/pool" ]] || {
+  echo "Missing $ITEMS, edit_tokens.jsonl or pool/ in $SAMTOK_ROUND2_DATA" >&2; exit 2; }
+if [[ ",$SAMTOK_PHASES," == *,train,* ]]; then
+  # shellcheck disable=SC2086
+  for needed in "$(option rows rows_c1.jsonl $SAMTOK_TRAIN_ARGS)" "$(option quick-items eval_c1_quick_idx.json $SAMTOK_TRAIN_ARGS)"; do
+    [[ -f "$SAMTOK_ROUND2_DATA/$needed" ]] || { echo "No $needed in $SAMTOK_ROUND2_DATA" >&2; exit 2; }
+  done
+  # shellcheck disable=SC2086
+  INIT="$(option init-adapter "" $SAMTOK_TRAIN_ARGS)"
+  [[ -z "$INIT" || -f "$INIT/adapter.safetensors" ]] || { echo "No adapter.safetensors in --init-adapter $INIT" >&2; exit 2; }
+elif [[ ",$SAMTOK_PHASES," == *,eval,* && ! -f "$SAMTOK_ADAPTER/adapter.safetensors" ]]; then
+  echo 'Evaluation without training needs SAMTOK_ADAPTER=<adapter directory>' >&2; exit 2
+fi
+
+# ARNOLD_WORKER_HOSTS carries the common rendezvous port; generic PORT varies by worker.
+unset PORT MASTER_ADDR MASTER_PORT NODE_RANK NNODES GPUS_PER_NODE
+NODE="$ARNOLD_ID"
+RUN="$SAMTOK_EXPERIMENT/runs/$SAMTOK_RUN_ID"
+BOOTSTRAP="$RUN/bootstrap"
+REPO="/tmp/samtok-edit-${SAMTOK_RUN_ID}-node${NODE}"
+if [[ -e "$RUN/nodes/$NODE" || -e "$RUN/SUCCESS.json" ]]; then
+  echo "Run already used: $RUN. Set a NEW common SAMTOK_RUN_ID; old logs are preserved." >&2
+  exit 2
+fi
+# A full NAS directory quota rejects every new file while df still reports free space.
+PROBE="$SAMTOK_EXPERIMENT/runs/.write_probe_${SAMTOK_RUN_ID}_node${NODE}"
+if ! (mkdir -p "$SAMTOK_EXPERIMENT/runs" && printf 'probe\n' > "$PROBE" && rm -f "$PROBE"); then
+  echo "Cannot write under $SAMTOK_EXPERIMENT/runs (NAS quota exceeded?). Nothing was started." >&2
+  exit 3
+fi
+mkdir -p "$BOOTSTRAP"
+# Atomic per-node claim: reject scheduler retries BEFORE cloning/installing or appending logs.
+if ! mkdir "$BOOTSTRAP/node${NODE}.claimed"; then
+  echo "Worker $NODE already started this run. Use a NEW common SAMTOK_RUN_ID." >&2
+  exit 2
+fi
+mkdir -p "$RUN/nodes/$NODE"
+exec > >(tee -a "$BOOTSTRAP/node${NODE}.log") 2>&1
+export SAMTOK_PHASE_FILE="$RUN/nodes/$NODE/phase"
+echo checkout > "$SAMTOK_PHASE_FILE"
+bootstrap_failed() {
+  local result="${1:-$?}"
+  trap - ERR TERM INT
+  printf '{"error":"failed during %s; see bootstrap/node%s.log","exit_code":%d}\n' \
+    "$(cat "$SAMTOK_PHASE_FILE" 2>/dev/null || echo unknown)" "$NODE" "$result" > "$RUN/nodes/$NODE/failure.json"
+  exit "$result"
+}
+trap bootstrap_failed ERR
+trap 'bootstrap_failed 143' TERM
+trap 'bootstrap_failed 130' INT
+echo "[$(date -u +%FT%TZ)] node $NODE of $SAMTOK_NNODES: start, run $SAMTOK_RUN_ID"
+
+if [[ -e "$REPO" ]]; then
+  echo "Node-local checkout already exists: $REPO (choose a fresh SAMTOK_RUN_ID)" >&2
+  false
+fi
+export GIT_TERMINAL_PROMPT=0
+# Clone the exact requested branch into node-local /tmp; never execute an MNT source snapshot.
+git clone --branch "$SAMTOK_EDIT_BRANCH" --single-branch "$SAMTOK_EDIT_REPO_URL" "$REPO"
+if [[ -n "$SAMTOK_EDIT_COMMIT" ]]; then
+  [[ "$SAMTOK_EDIT_COMMIT" =~ ^[a-fA-F0-9]{40}$ ]] || { echo 'Use a full commit SHA' >&2; false; }
+  git -C "$REPO" checkout --detach "$SAMTOK_EDIT_COMMIT"
+fi
+git -C "$REPO" rev-parse HEAD > "$BOOTSTRAP/node${NODE}.commit.txt"
+export SAMTOK_RUN_ROOT="$RUN" SAMTOK_NODE="$NODE"
+bash "$REPO/scripts/round2/run_arnold.sh"
+echo "[$(date -u +%FT%TZ)] node $NODE: done"
+```
+<!-- /code -->
+
+### 7.3 冒烟测试（正式提交前，约 30 分钟）
+
+```bash
+# ===== 运行设置：四机冒烟 =====
+export SAMTOK_RUN_ID=c2_smoke_4n_001
+export SAMTOK_RUN_NAME=smoke
+export SAMTOK_EDIT_COMMIT=e681f238122ef1e3dcbd0d58c4f0a7cb7479688a
+export SAMTOK_TRAIN_ARGS="--rows rows_c2.jsonl --quick-items eval_c2_quick_idx.json --init-adapter /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/runs/c1b_local8_001/train/adapter_800 --updates 3 --accumulation 1 --warmup 1 --lr-schedule cosine --heavy-weight 8 --checkpoints 3 --quick-eval 3 --quick-limit 1"
+export SAMTOK_EVAL_ARGS="--limit 2"
+```
+
+- 后面接 7.2 的入口脚本。
+- 跑通的标志是 `runs/c2_smoke_4n_001/SUCCESS.json` 和 `analysis.txt` 都生成了。数值没有意义，只看流程。
+
+### 7.4 预计耗时
+
+| 环节 | 耗时 |
+|---|---|
+| 装环境、加载模型 | 约 10–20 分钟 |
+| 训练 | 每次更新每卡 1 行，约 8–9 秒（本机每卡 4 行约 28 秒；四机之间同步梯度约 350 MB，可忽略）；3,522 次约 8–9 小时 |
+| 快速评测 | 9 次，每次约 1 分钟 |
+| 完整评测 | 1,320 项分到 32 卡，约 15 分钟 |
+| 报告 | 1 分钟 |
+| **合计** | **约 9–10 小时** |
+
+本机 8 卡跑同样的配方约 30 小时。
+
+### 7.5 看进度
+
+```bash
+R=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/runs/c2_4n_001
+cat $R/nodes/*/phase; tail -n 2 $R/train/train_metrics.jsonl; cat $R/train/quick_summary.jsonl
+ls $R/nodes/*/failure.json 2>/dev/null
+```
+
+`train_metrics.jsonl` 每 10 次更新一行，要留意三项：
+- `skipped`：应当是 0 或极少；
+- `kinds`：七类训练行的数量；
+- 第一行的 `synced_init`：应当是 `true`。
+
+### 7.6 这份入口验证到了什么程度
+
+- **单机完整跑通（2026-10-18）。** 入口以单机模式（`SAMTOK_NNODES=1`，8 卡 × accumulation 4）从 GitHub 上的固定 commit `e681f238` 跑完了全流程：
+  - clone、装环境；
+  - 从 C1b 接续训练 2 次更新：64 个样本无跳过，七类训练行中出现了五类，两个路由校准与 C1b 相同；
+  - 快速评测、少量项的完整评测、对比报告、`SUCCESS.json` 都已生成；
+  - run 目录 `V3/runs/c2_entry_check_1n_001/`，续训状态文件已删除。
+- **多机。** torchrun 参数与第一轮入口相同。
+- **四机实测：没有。** 第二轮的训练和评测还没有在四机上跑过，7.4 的耗时是按单机速度推算的。第一次提交建议先跑 7.3 的冒烟测试。

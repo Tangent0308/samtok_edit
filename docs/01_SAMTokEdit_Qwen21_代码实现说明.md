@@ -148,12 +148,12 @@ DiT 是单流结构（32 个 block、宽度 4096、32 个头），把所有东�
 <!-- code: src/samtok_edit21/evaluation/grounding.py::generate -->
 ```python
 @torch.no_grad()
-def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0):
+def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_AREA):
     """Token-only inference: inline region tokens, raw text encoder, no binding, no blending, CFG 1."""
     from samtok_edit21.models.binding import BindingConfig
     from samtok_edit21.models.pipeline import edit
 
-    height, width = canvas(source_rgb)
+    height, width = canvas(source_rgb, area)
     image, _ = edit(pipe, prompt, [source_rgb.convert("RGBA")], mode="inline", height=height, width=width,
                     num_inference_steps=steps, cfg_scale=1.0, seed=seed, use_kv_cache=True, pass2_te="raw",
                     binding=BindingConfig("none"), codec=codec, blend_region=None)
@@ -360,15 +360,27 @@ def _hook(self, index):
         context = self._context
         if context is None:
             return
-        logits = span_attention_logits(
-            block, kwargs["hidden_states"], kwargs["modulation"], kwargs["target_token_mask"],
-            kwargs["rotary_emb"], context["n_target"], context["span"])
-        scale, bias = self.affine[index]
-        calibrated = scale * (logits - logits.mean()) * self.logit_scale + bias
-        term = F.binary_cross_entropy_with_logits(
-            calibrated, context["labels"], weight=context["weights"], reduction="sum")
-        if self._recording:
-            self._terms.append(term)
+        for entry in context["entries"]:
+            if entry.get("labels") is not None:
+                logits = span_attention_logits(
+                    block, kwargs["hidden_states"], kwargs["modulation"], kwargs["target_token_mask"],
+                    kwargs["rotary_emb"], context["n_target"], entry["span"])
+                scale, bias = self.affine[index]
+                calibrated = scale * (logits - logits.mean()) * self.logit_scale + bias
+                term = F.binary_cross_entropy_with_logits(
+                    calibrated, entry["labels"], weight=entry["weights"], reduction="sum")
+                if self._recording:
+                    self._terms.append(term)
+            if entry.get("source_labels") is not None and self.read_affine is not None:
+                logits = span_read_logits(
+                    block, kwargs["hidden_states"], kwargs["modulation"], kwargs["target_token_mask"],
+                    kwargs["rotary_emb"], entry["span"], entry["source_positions"])
+                scale, bias = self.read_affine[index]
+                calibrated = scale * (logits - logits.mean()) * self.logit_scale + bias
+                term = F.binary_cross_entropy_with_logits(
+                    calibrated, entry["source_labels"], weight=entry["source_weights"], reduction="sum")
+                if self._recording:
+                    self._read_terms.append(term)
 
     return before_block
 ```
