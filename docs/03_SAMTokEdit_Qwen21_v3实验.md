@@ -545,7 +545,7 @@ C2 − C1b 的显著差：
 | `V3/legacy_code/` | E-A1/E-A2 当时的脚本和等价核对 |
 | `V3/paper/related_work_refs_20261013/` | 相关工作的参考文献 |
 | `V3/tools/fonts/` | 画对比图用的中文字体 |
-| `V3/_trash_20261019/` | 等待确认删除：没有完整评测过的中间权重、`resume.pt`、失败和入口验证运行的权重，见其中的 `MANIFEST.tsv` |
+| （已删除） | 2026-10-19 经用户确认已删除：没有完整评测过的中间权重、`resume.pt`、失败和入口验证运行的权重、审阅草图（约 8.9 GB，快速评测结果仍在各 run 目录） |
 
 代码运行环境：`/tmp/samtok21-fixes-dUnbt5/venv`，并设 `PYTHONPATH=src:third_party/diffsynth:third_party`。
 

@@ -634,7 +634,7 @@ ls $R/nodes/*/failure.json 2>/dev/null
 ### 7.6 这份入口验证到了什么程度
 
 - **单机完整跑通（2026-10-18），共两次，都用单机模式（`SAMTOK_NNODES=1`，8 卡 × accumulation 4）从 GitHub 上的固定 commit 跑完全流程。**
-  - `e681f238`：clone、装环境；从 C1b 接续训练 2 次更新（64 个样本无跳过，两个路由校准与 C1b 相同）；快速评测、少量项的完整评测、对比报告、`SUCCESS.json` 都已生成。run 目录 `V3/runs/_aux/c2_entry_check_1n_001/`（10-19 整理时移入 `_aux/`，权重已移到待删目录）。
+  - `e681f238`：clone、装环境；从 C1b 接续训练 2 次更新（64 个样本无跳过，两个路由校准与 C1b 相同）；快速评测、少量项的完整评测、对比报告、`SUCCESS.json` 都已生成。run 目录 `V3/runs/_aux/c2_entry_check_1n_001/`（10-19 整理时移入 `_aux/`，只训练了 2 次的权重已删除）。
   - `d485ddb2`：同上，加 W&B online。
     - key 由入口从共享盘私有文件读取；
     - W&B 运行 `c2_entry_check_1n_002` 正常结束，没有上传错误；
