@@ -342,6 +342,12 @@ benchmark 在单独的仓库维护：`Tangent0308/samtok_edit_benchmark`，分�
 - **核对：**benchmark 的 ref/no-ref 文本和 v3 的协议渲染逐字一致（3,872 条全部一致）。
 - **case 清单：**`V3/analysis/bench_split_20261019/cases.json`。结果见文档 03 §5.5。
 
+**benchmark 2.6.0 的 101 例子集（10-19，用于快速比对）**
+- 从四个官方基线都判过分的 case 里，按每图单元数分层抽样（seed 20261019），去掉上面目测过的 13 张图。共 101 例、360 个单元。
+- 区域面积中位 0.43%；带物体名的单元占 57%。官方基线在子集上的分数和全集相差 3 个百分点以内。
+- 清单：`V3/analysis/bench_subset_20261019/case_ids.txt`。抽样脚本和统计：`V3/analysis/bench_subset_20261019/select_subset.py`、`V3/analysis/bench_subset_20261019/subset_stats.json`。
+- 结果见文档 03 §5.6。
+
 ### 3.4 训练数据与评测数据的关系
 - **来源：**v1 清洗数据来自 RefEdit/CrispEdit/ScaleEdit/GRES，与 SA-1B 的 benchmark 来源不同，用户决定不做泄漏检查。50k 和区域池与 benchmark 同属 SA-1B，已按源图 ID 和哈希排除，交集为 0；没有做近重复检索。
 - **分布差距：**
