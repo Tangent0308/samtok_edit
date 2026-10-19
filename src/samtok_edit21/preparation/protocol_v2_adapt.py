@@ -1,6 +1,6 @@
 """Adapt existing training records to instruction protocol 2.0 (no-ref names no target).
 
-Rules: docs/07_SAMTokEdit_Qwen21_指令协议2.0_noref改为盲指代.md.  The protocol module is the benchmark's
+Rules: docs/archive/v3_process/07_SAMTokEdit_Qwen21_指令协议2.0_noref改为盲指代.md.  The protocol module is the benchmark's
 canonical 2.0 file, vendored byte for byte as instruction_protocol_v2.py (tests pin the hash).
 
 Per record:

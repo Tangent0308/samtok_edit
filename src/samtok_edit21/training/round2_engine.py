@@ -1,4 +1,4 @@
-"""Round-2 trainer (docs/08 sections 5.3 and 7): stock Qwen-Image-2.1 DiT + LoRA + code injector, C1 or C1b rows.
+"""Round-2 trainer (docs/archive/v3_process/08 sections 5.3 and 7): stock Qwen-Image-2.1 DiT + LoRA + code injector, C1 or C1b rows.
 
 C1 starts a fresh LoRA; C1b warm-starts from a C1 adapter (``--init-adapter``) with the C1b rows, a cosine decay
 and heavier hard negatives::

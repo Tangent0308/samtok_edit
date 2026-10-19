@@ -1,6 +1,6 @@
 # SAMTokEdit（Qwen-Image-2.1）四机实验运行指南（v3）
 
-本页是 v3 实验在 ARNOLD 上的启动入口，以一次完整运行（E-A2b）为样例。之后的实验只需要改开头的"运行设置"。第二轮（阶段 B，C2）用单独的入口，见第 7 节。v2 的入口（Stage 1 / Stage 2 / MLLM 编辑核验）没有变，见 [archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md](archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
+本页是 v3 实验在 ARNOLD 上的启动入口。**当前使用的是第 7 节的第二轮入口**（C2 就是用它跑的，run `c2_4n_002`）。第 1–6 节是第一轮（`ground-*` 命令）的入口，以 E-A2b 为样例；E-A2b 实际没有运行过，这部分保留作第一轮配方的参考。各实验的设置和结果见[文档 03](03_SAMTokEdit_Qwen21_v3实验.md)。v2 的入口（Stage 1 / Stage 2 / MLLM 编辑核验）没有变，见 [archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md](archive/v2/03_SAMTokEdit_Qwen21_四机实验运行指南.md)。
 
 ## 1. 约定
 
@@ -13,7 +13,7 @@
 - **不需要 W&B key。** 训练指标写在共享盘的 `train_metrics.jsonl`、`quick_summary.jsonl` 里。
 - **存储**：一次运行约 2–3 GB（4 个保存点各 0.33 GB、评测图像约 0.3 GB、日志）。NAS 配额写满时 `df` 仍显示有空间但任何新文件都会失败，启动脚本一开始会做写入探测。
 
-## 2. 样例：E-A2b（按 E-A2 配方、用修正了初始化的代码复跑）
+## 2. 样例：E-A2b（按 E-A2 配方、用修正了初始化的代码复跑；未实际运行）
 
 把下面两段**依次粘贴**成 ARNOLD 的 worker 启动命令：先是"运行设置"，再是 2.2 的入口脚本全文。
 
@@ -34,7 +34,7 @@ export SAMTOK_REPORT_REFERENCES="stock=$SAMTOK_EXPERIMENT/baselines/stock_highli
 ```
 
 这次运行的目的和验收：
-- 配方、数据、每次更新的样本都与 E-A2 相同，差别只有各卡的 LoRA 初始化现在是一致的（文档 03 的 5.5 节），所以报告里 `E-A2b-E-A2` 那一列直接给出修正带来的变化。
+- 配方、数据、每次更新的样本都与 E-A2 相同，差别只有各卡的 LoRA 初始化现在是一致的（文档 03 §2.3），所以报告里 `E-A2b-E-A2` 那一列直接给出修正带来的变化。
 - 预期不低于 E-A2（预留集不带物体名 0.614、dev 0.621、成对跟随 0.738、remove 探针 0.758）。四条放行线与 E-A2 相同，报告末尾逐条给出 PASS / fail。
 - 预计耗时 3.5–4.5 小时（装环境 10–20 分钟，训练约 2.5–3.5 小时，评测约 20 分钟）。这是按单机实测速度推算的，四机上还没有实测过。
 
@@ -160,13 +160,13 @@ echo "[$(date -u +%FT%TZ)] node $NODE: done"
 | 换路由层或系数 | `--route-layers 6,10,14,18,22,26`、`--lambda-route 0.05` |
 | 只评测一个已有权重 | `export SAMTOK_PHASES=eval,report`，`export SAMTOK_ADAPTER=<权重目录>` |
 | 只训练不评测 | `export SAMTOK_PHASES=train` |
-| 评测原版模型（生成新的基线） | 不走这个入口，直接在任意一台 8 卡机器上运行 `ground-eval` 且不给 `--adapter`，见文档 01 第 4 节 |
+| 评测原版模型（生成新的基线） | 不走这个入口，直接在任意一台 8 卡机器上运行 `ground-eval` 且不给 `--adapter`，见文档 04 第 4 节 |
 | 换评测规模 | `SAMTOK_EVAL_ARGS`，例如 `"--remove-pairs 120 --edit-cases 48 --steps 20"`（这些是默认值） |
 | 换报告里的参考运行或放行线 | `SAMTOK_REPORT_REFERENCES="名字=评测目录 …"`；放行线改 `ground-report` 的 `--gate-*` 参数（事后在开发机上重出报告即可，不用重跑） |
 | 用别的 commit | 改 `SAMTOK_EDIT_COMMIT`，写完整的 40 位 SHA。留空则用分支当前的头（不建议，四台机器 clone 的时间不同可能拿到不同的代码） |
 | 机器数不是 4 | `export SAMTOK_NNODES=<机器数>`，并相应调整 `--accumulation` 以保持 batch |
 
-全部训练参数见 `samtok-edit ground-train --help`，说明在文档 01 的 3.5 节。
+全部训练参数见 `samtok-edit ground-train --help`，说明在文档 04 的 3.5 节。
 
 **在单机 8 卡上用同一个入口跑**（开发机上验证流程，或四机排队时先跑）：
 
@@ -274,13 +274,13 @@ ls $R/nodes/*/failure.json 2>/dev/null
   - 后面是入口脚本 `scripts/round2/bootstrap_arnold.sh`。它自带的设置都是默认值，已被开头的值覆盖，不用改。
 - 重新提交时，只把开头的 `SAMTOK_RUN_ID` 换成新的。
 
-实验设计见文档 08 第 9 节。
+实验设计见文档 02 §4.8–§4.10，设置和结果见文档 03 §5.1–§5.2；当时的计划见 `docs/archive/v3_process/08_SAMTokEdit_Qwen21_第二轮实验计划.md` 第 9 节。
 
 <!-- code: scripts/round2/settings/c2_4n.sh + scripts/round2/bootstrap_arnold.sh -->
 ```bash
 #!/usr/bin/env bash
 # C2（阶段 B，全部可用数据）四机正式运行的完整入口。整段原样粘贴成 ARNOLD 四个 worker（4 × 8 卡）的启动命令。
-# 开头是运行设置，后面接入口脚本 scripts/round2/bootstrap_arnold.sh。设计见 docs/08 第 9 节，说明见 docs/05 第 7 节。
+# 开头是运行设置，后面接入口脚本 scripts/round2/bootstrap_arnold.sh。方法见 docs/02 第 4.8–4.10 节，设置与结果见 docs/03 第 5 节，说明见 docs/05 第 7 节。
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
 export SAMTOK_RUN_ID=c2_4n_002       # 每次提交换新的，四个 worker 相同；用过的会被拒绝，调度器重试不会覆盖日志
 export SAMTOK_RUN_NAME=C2            # 报告里这次运行的名字
@@ -313,8 +313,8 @@ export SAMTOK_RUN_NAME="${SAMTOK_RUN_NAME:-$SAMTOK_RUN_ID}"
 export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3}"
 # Data directory written by `samtok-edit round2-data` (rows, evaluation items, tokens, mask pool).
 export SAMTOK_ROUND2_DATA="${SAMTOK_ROUND2_DATA:-$SAMTOK_EXPERIMENT/data/round2_20261016}"
-# Trainer / evaluator arguments (see `samtok-edit round2-train --help`, `round2-eval --help`).  Default: C2 (docs/08
-# section 9), every row once: 3,522 updates x (32 GPUs x accumulation 1) = the 112,704 rows of rows_c2.jsonl.
+# Trainer / evaluator arguments (see `samtok-edit round2-train --help`, `round2-eval --help`).  Default: C2 (docs/03
+# section 5.1), every row once: 3,522 updates x (32 GPUs x accumulation 1) = the 112,704 rows of rows_c2.jsonl.
 export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---rows rows_c2.jsonl --quick-items eval_c2_quick_idx.json --init-adapter $SAMTOK_EXPERIMENT/runs/c1b_local8_001/train/adapter_800 --updates 3522 --accumulation 1 --warmup 20 --lr 1e-4 --lr-schedule cosine --lr-min 1e-5 --heavy-weight 8 --checkpoints 500,1000,1500,2000,2500,3000,3500,3522 --quick-eval 0,500,1000,1500,2000,2500,3000,3500,3522}"
 export SAMTOK_EVAL_ARGS="${SAMTOK_EVAL_ARGS:-}"
 # Reference evaluations for the paired report, "LABEL=PATH ..." with the base model first.
@@ -476,8 +476,8 @@ export SAMTOK_RUN_NAME="${SAMTOK_RUN_NAME:-$SAMTOK_RUN_ID}"
 export SAMTOK_EXPERIMENT="${SAMTOK_EXPERIMENT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3}"
 # Data directory written by `samtok-edit round2-data` (rows, evaluation items, tokens, mask pool).
 export SAMTOK_ROUND2_DATA="${SAMTOK_ROUND2_DATA:-$SAMTOK_EXPERIMENT/data/round2_20261016}"
-# Trainer / evaluator arguments (see `samtok-edit round2-train --help`, `round2-eval --help`).  Default: C2 (docs/08
-# section 9), every row once: 3,522 updates x (32 GPUs x accumulation 1) = the 112,704 rows of rows_c2.jsonl.
+# Trainer / evaluator arguments (see `samtok-edit round2-train --help`, `round2-eval --help`).  Default: C2 (docs/03
+# section 5.1), every row once: 3,522 updates x (32 GPUs x accumulation 1) = the 112,704 rows of rows_c2.jsonl.
 export SAMTOK_TRAIN_ARGS="${SAMTOK_TRAIN_ARGS:---rows rows_c2.jsonl --quick-items eval_c2_quick_idx.json --init-adapter $SAMTOK_EXPERIMENT/runs/c1b_local8_001/train/adapter_800 --updates 3522 --accumulation 1 --warmup 20 --lr 1e-4 --lr-schedule cosine --lr-min 1e-5 --heavy-weight 8 --checkpoints 500,1000,1500,2000,2500,3000,3500,3522 --quick-eval 0,500,1000,1500,2000,2500,3000,3500,3522}"
 export SAMTOK_EVAL_ARGS="${SAMTOK_EVAL_ARGS:-}"
 # Reference evaluations for the paired report, "LABEL=PATH ..." with the base model first.
@@ -611,15 +611,17 @@ echo "[$(date -u +%FT%TZ)] node $NODE: done"
 | 装环境、加载模型 | 约 10–20 分钟 |
 | 训练 | 每次更新每卡 1 行，约 8–9 秒（本机每卡 4 行约 28 秒；四机之间同步梯度约 350 MB，可忽略）；3,522 次约 8–9 小时 |
 | 快速评测 | 9 次，每次约 1 分钟 |
-| **四机合计** | **约 9 小时** |
+| **四机合计** | **约 9 小时（估计）** |
+| **实测（c2_4n_002）** | **训练 4.47 小时，约 4.6 秒/次；含启动约 4.8 小时** |
 
-- 本机 8 卡跑同样的训练约 30 小时。
+- 估计偏保守：四机实测每次更新约 4.6 秒，不到估计的一半。
+- 本机 8 卡跑同样的训练约 30 小时（估计）。
 - 训练结束后在开发机上做完整评测（1,320 项），约 1.7 小时。
 
 ### 7.5 看进度
 
 ```bash
-R=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/runs/c2_4n_001
+R=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/runs/c2_4n_002   # 换成要看的 run ID
 cat $R/nodes/*/phase; tail -n 2 $R/train/train_metrics.jsonl; cat $R/train/quick_summary.jsonl
 ls $R/nodes/*/failure.json 2>/dev/null
 ```
@@ -632,25 +634,27 @@ ls $R/nodes/*/failure.json 2>/dev/null
 ### 7.6 这份入口验证到了什么程度
 
 - **单机完整跑通（2026-10-18），共两次，都用单机模式（`SAMTOK_NNODES=1`，8 卡 × accumulation 4）从 GitHub 上的固定 commit 跑完全流程。**
-  - `e681f238`：clone、装环境；从 C1b 接续训练 2 次更新（64 个样本无跳过，两个路由校准与 C1b 相同）；快速评测、少量项的完整评测、对比报告、`SUCCESS.json` 都已生成。run 目录 `V3/runs/c2_entry_check_1n_001/`。
+  - `e681f238`：clone、装环境；从 C1b 接续训练 2 次更新（64 个样本无跳过，两个路由校准与 C1b 相同）；快速评测、少量项的完整评测、对比报告、`SUCCESS.json` 都已生成。run 目录 `V3/runs/_aux/c2_entry_check_1n_001/`（10-19 整理时移入 `_aux/`，权重已移到待删目录）。
   - `d485ddb2`：同上，加 W&B online。
     - key 由入口从共享盘私有文件读取；
     - W&B 运行 `c2_entry_check_1n_002` 正常结束，没有上传错误；
     - 报告把开发集结果写进了它的 summary。
 
-    run 目录 `V3/runs/c2_entry_check_1n_002/`，续训状态文件已删除。
+    run 目录 `V3/runs/_aux/c2_entry_check_1n_002/`，续训状态文件已删除。
   - `d485ddb2`，只训练（`SAMTOK_PHASES=train`，与 7.1 相同）：
     - 训练 2 次更新：64 个样本无跳过，两个路由校准与 C1b 相同；
     - W&B 运行 `c2_entry_check_1n_003` 正常结束；
     - 0 号机写出 `SUCCESS.json`（含最终权重路径），没有跑评测和报告。
 
-    run 目录 `V3/runs/c2_entry_check_1n_003/`。
+    run 目录 `V3/runs/_aux/c2_entry_check_1n_003/`。
 - **多机。** torchrun 参数与第一轮入口相同。
 - **四机第一次提交（`c2_4n_001`，`d485ddb2`，2026-10-18 10:07）。**
   - 正常的部分：clone、装环境、模型加载（约 20 分钟，32 个进程同时从共享盘读）、W&B、第 0 次快速评测、训练都正常。
-  - 问题：D4 多目标样本全部被跳过，前 20 次更新共 15 个。原因是集群镜像缺 `libxcb.so.1`，`import cv2` 失败；本机有这个库，所以单机验证没有发现。
+  - 问题：D4 多目标样本全部被跳过（前 20 次更新共 15 个；停止前跑到第 630 次，累计跳过 650 个）。原因是集群镜像缺 `libxcb.so.1`，`import cv2` 失败；本机有这个库，所以单机验证没有发现。
   - 修复：`50ffa0ce` 改用 SciPy，不再在训练里用 OpenCV。7.1 已改为 `c2_4n_002` 和这个 commit，需要停掉 `c2_4n_001` 后重新提交。
   - 速度与耗时：第 10–20 次更新约 5.8 秒一次，按此估计训练约 6 小时。
+  - run 目录现在在 `V3/runs/_aux/c2_4n_001/`，只留日志。
+- **四机正式运行（`c2_4n_002`，`50ffa0ce`）。**2026-10-18 11:20 启动，16:07 写出 `SUCCESS.json`；3,522 次更新、0 个样本被跳过、D4 全部用上；W&B 运行正常结束。结果见文档 03 §5。
 
 - 7.1、7.2 的完整脚本 = 设置文件 + 上面验证过的入口脚本，由 `scripts/docs/sync_code_blocks.py` 拼接生成，测试会检查它们与仓库里的文件一致。
 

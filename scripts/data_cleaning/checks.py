@@ -1,4 +1,4 @@
-"""Pixel checks used by the Stage 2 pair cleaning (docs/09, section 6.7).
+"""Pixel checks used by the Stage 2 pair cleaning (docs/archive/v2/09, section 6.7).
 
 coherent_outside: is there a solid block of real change far outside the region?
 alignment:        is an unregistered target geometrically aligned with its source?

@@ -1,4 +1,4 @@
-"""Round 2 (docs/08 section 5): read-side routing, several spans per prompt, row building, loss and read-back.
+"""Round 2 (docs/archive/v3_process/08 section 5): read-side routing, several spans per prompt, row building, loss and read-back.
 
 CPU only.  The routing tests reuse the tiny instance of the real Qwen-Image-2.1 DiT class from test_grounding, so
 they exercise the actual block code (modulation, projections, RoPE, block-causal prefix attention).

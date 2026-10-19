@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # C2（阶段 B，全部可用数据）四机正式运行的完整入口。整段原样粘贴成 ARNOLD 四个 worker（4 × 8 卡）的启动命令。
-# 开头是运行设置，后面接入口脚本 scripts/round2/bootstrap_arnold.sh。设计见 docs/08 第 9 节，说明见 docs/05 第 7 节。
+# 开头是运行设置，后面接入口脚本 scripts/round2/bootstrap_arnold.sh。方法见 docs/02 第 4.8–4.10 节，设置与结果见 docs/03 第 5 节，说明见 docs/05 第 7 节。
 # ===== 运行设置（重新提交时只改 SAMTOK_RUN_ID）=====
 export SAMTOK_RUN_ID=c2_4n_002       # 每次提交换新的，四个 worker 相同；用过的会被拒绝，调度器重试不会覆盖日志
 export SAMTOK_RUN_NAME=C2            # 报告里这次运行的名字

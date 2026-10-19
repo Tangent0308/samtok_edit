@@ -1,0 +1,383 @@
+# SAMTokEdit Qwen-Image-2.1 v3：数据
+
+本文是 v3 的数据侧总结，内容包括：
+- 统一的指令协议；
+- 训练数据的清洗和协议适配；
+- 新的数据管线和产出的数据；
+- 第二轮训练行的构成；
+- 开发评测集和 benchmark 的要点；
+- 每份数据的路径。
+
+方法见[文档 02](02_SAMTokEdit_Qwen21_v3方法.md)，实验见[文档 03](03_SAMTokEdit_Qwen21_v3实验.md)。截至 2026-10-19。
+
+路径记号（`scripts/docs/check_paths.py` 会逐一检查）：`datasets/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/datasets/…`，`V3/…` 指 v3 实验根 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`。
+
+## 0. 总览
+
+| 代号 | 数据 | 规模 | 用在哪里 | 路径 |
+|---|---|---|---|---|
+| — | v1 原始编辑对（四个打标子集） | 98,574 对 | 清洗的输入；v1/v2 模型 | §2.1 |
+| — | 清洗后编辑对 | 46,482 对 | 协议适配的输入 | `datasets/SAMTokEdit_Cleaned_20261009/` |
+| D3 | v1 单目标，协议 2.0 | 39,615 条 | C2（`edit_v1`） | `datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1/protocol_v2_blind/manifest_protocol_v2.jsonl` |
+| D4 | v1 多目标召回，协议 2.0 | 4,066 对 / 9,964 单元 | C2（`edit_multi_v1`） | `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/protocol_v2_blind/manifest_multi_protocol_v2.jsonl` |
+| D1 | SA-1B 50k 自蒸馏编辑，协议 2.0 | 50,000 条 / 1,132 张源图 | C1、C1b（编辑 15%）；C2 主体；开发集 | `datasets/sa1b_samtok_edit_50k_20261014/release/annotations/train_protocol_v2.jsonl` |
+| D2 | SA-1B dense mask 区域池 | 1,132 张图，训练可用 62,873 个区域 | C1、C1b、C2 的指认；开发集 | `V3/data/round2_20261016/pool/` |
+| D5 | 50k 同图拼合多目标 | 训练时生成 | C2（`edit_multi`） | `V3/data/round2_20261016/support_cache.jsonl` |
+| D6 | 数据侧构造的孪生与链式多目标 | 计划孪生 1.5 万组 + 多目标 5,000 组 | 尚未交付，未使用 | `datasets/sa1b_samtok_group_train_20k_20261016/README.md` |
+| — | 第一轮指认数据（E-A1、E-A2） | 42,000 行 / 每轮 82,000 行 | E-A1、E-A2 | `V3/data/stageA_ea1_20261011/`、`V3/data/stageA_ea2_20261012/` |
+| — | 第二轮开发评测集 | 1,320 项 | C1、C1b、C2 及基线 | `V3/data/round2_20261016/eval_c1.json` |
+| — | benchmark v2，release 2.6.0 | 1,084 张图 / 3,872 单元 | 最终测试（未正式跑）；10-19 拆分 36 例 | `datasets/samtok_edit_benchmark_v2/` |
+
+**时间线**
+
+| 日期 | 事项 |
+|---|---|
+| 10-08 | v1 98,574 对逐对审计 |
+| 10-09 | 四个子集归位，全量像素清洗 → 70,956 |
+| 10-11 | Qwen3.8-27B 编辑核验 → 48,437 |
+| 10-12 | 去掉 text/action → 46,482；benchmark 2.3.0 引入协议 1.0 |
+| 10-14 | 协议 1.0 单目标适配全量（四机）→ 39,615；50k 生成启动 |
+| 10-15 | 多目标召回 4,066 对；50k 发布；协议 2.0 定稿；D3、D1 适配到 2.0；benchmark 2.5.0 |
+| 10-16 | 50k 补 `edited_region`；第二轮数据（开发划分、区域池、C1 行、开发集）；benchmark 2.6.0 |
+| 10-17 | C1b 行；训练图诊断集 |
+| 10-18 | D4 适配到 2.0；v1/D4 token 缓存；C2 行 |
+| 10-19 | 从 benchmark 2.6.0 拆出 36 个单指令 case |
+
+## 1. 统一的指令协议
+
+训练数据和 benchmark 用同一套指令协议。共享模块是 benchmark 仓库的 `samtok_benchmark/v2/instruction_protocol.py`，v3 仓库逐字节复制成 `src/samtok_edit21/preparation/instruction_protocol_v2.py`（sha256 `fe192e8d…`，与 benchmark 2.6.0 一致）。
+
+### 1.1 协议 1.0（benchmark 2.3.0 引入，2.4.0 补充 mask 语义 1.1）
+- **一个单元一条语义记录 `instruction_spec`：**字段有 `operation`、`ref`、`scope`、`payload`、`target_part`、`remove_mode`、`attributes`、`placement`、`qualifier`。ref 句和 no-ref 句都由模块从 spec 渲染，不手写。
+- **S 和 T：**S 是区域选中的源实例，定位信息总指向 S；T 是实际被编辑的东西，可以是 S 本身，也可以是 S 的部件（`target_part`）。
+- **四类操作：**
+  - add：`Add <item> <relation> [<site> of] <S>`。区域标锚点（新物体直接站、放、挂、附着的物体或表面），不标新物体本身。
+  - replace：必须有结构或品类变化；只换颜色、材质、图案的归 attribute。
+  - remove：六种模式 whole、part、contents、contents_only、lowerlegs、hem；删文字或 logo 也归 remove。
+  - attribute：color、material、finish、pattern、texture、text、tint、opacity，可同时改多项。
+  - 翻转、移动、重新摆姿势不在协议内。
+- **单元：**一个源实例（或其部件）+ 一种操作。target_part、contents 类 remove 和参照式 add 必须给出显式执行区域。
+- **训练侧补充规则**（用户 10-12/13 决定）：
+  - 一堆或一串同类物算一个对象；
+  - 改字归 `attribute.text`，删字归 remove，加字归 add；
+  - add 的锚点要裁到落点，不能盖住整个大物体。
+
+### 1.2 协议 2.0：no-ref 改为盲指代（用户 10-15 定稿）
+- **为什么改：**方法的理想输入是"用户只给区域和编辑要求"，不会说出对象类别。1.0 的 no-ref 写成 `the selected <scope>`（如 `the selected sleeve`），只看文字就能分辨目标，DiT 就不去读 token（v2 同图同句换 token 的跟随率只有 0.06）。
+- **三条决定：**
+  1. no-ref 一律写成 `the selected region`，不出现类别、部件、宿主、site、方位、序数，也不出现源物体现状的特征。
+  2. 被编辑的部分就是定位区域：部件、宿主的描述并入 `the selected region`，源 mask 改为选中被编辑的部分本身（mask 语义 2.0）。
+  3. 编辑结果里的类别信息（payload、属性值、结果说明）原样保留，如 `Replace the selected region with a flared bell sleeve.`。
+- **mask 语义 2.0 相对 1.0 的变化：**
+
+  | 情形 | 1.0 的 mask | 2.0 的 mask |
+  |---|---|---|
+  | attribute/replace 带 target_part | 宿主 | 部件本身 |
+  | remove part | 宿主 | 被删部件 |
+  | remove lowerlegs / hem | 整件衣物 | 被剪掉的那段 |
+  | remove contents / contents_only | 容器 | 容器 ∪ 内容物 / 内容物 |
+  | add 带 site | 宿主 + 文字 site | site 本身（附着部位） |
+  | 整物体、不带 site 的 add、参照式 add | — | 不变 |
+
+- **句式：**
+  - `Change the <property> of the selected region to <value>.`
+  - `Replace the selected region with <payload>.`
+  - `Remove the selected region.`；按 remove 模式在句末加说明，如 `, including its contents.`。
+  - `Add <payload> <relation> the selected region.`
+- **token 的位置：**训练和本方法推理时，⟨M⟩ 紧跟在 `the selected region` 之后。
+- **qualifier 的三种处理：**
+  - 用来区分目标的限定并入 `the selected region`；
+  - 只描述编辑要求的保留；
+  - 提到图中其他物体的保护说明整句去掉。
+
+## 2. 训练数据
+
+### 2.1 v1 原始数据：四个打标子集
+
+| 子集 | 上游 | 最终集 | 行数 | 进入合并源对 |
+|---|---|---|---:|---:|
+| RefEdit | HF `bpathir1/RefEdit` | `datasets/RefEdit_Labeling/final/RefEdit-mask-prefiltered-qwen38-self-contained/` | 7,804 | 7,804 |
+| CrispEdit | HF `WeiChow/CrispEdit-2M` | `datasets/CrispEdit_Labeling/final_dataset_39k/` | 38,971 | 37,728 |
+| ScaleEdit | `QingyuShi/scaleedit-filtered-6m` + `InternVL-U/ScaleEdit-12M` | `datasets/ScaleEdit_Labeling/final/scaleedit_25k/` | 25,664 | 25,085 |
+| SAMTok Derived | 自建：GRES/VER 实例 mask + Qwen-Image-2.1 生成目标图 | `datasets/SAMTok_Derived_Edit_Labeling/combined/manifest.jsonl` | 27,957 | 27,957 |
+| 合计 | | | 100,396 | **98,574** |
+
+- **合并源对：**`experiments/SAMTokEdit/qwen21_full4_20260928/data/sources.jsonl`。CrispEdit、ScaleEdit 只收 mask 质检通过的行。
+- **打标流程：**Qwen3.8-27B 质量预筛 → 场景难度筛 → grounding → SAM3 分割。add 在目标图上标新物体，其余类型标在源图上。
+- **v1/v2 训练实际用的是未清洗的转换版：**`experiments2/SAMTokEdit/qwen21_v2/data/train_v2_box_001/`（stage1 110,079 行、stage2 290,006 行）。no-ref 当时由 Qwen3.5-9B 改写成 `this region ⟨M⟩`。
+
+### 2.2 v1/v2 数据的问题
+来源：2026-10-08 逐对审计（`docs/archive/v2/09_SAMTokEdit_Qwen21_训练数据诊断与改进.md`）。
+
+| 问题 | 证据 |
+|---|---|
+| 源图与目标图不对齐（主要根因） | 主四类只有 48% 可直接用，10% 贴回可修，35% 改动扩散，8% 空操作或过弱。四个打标流程都没做对齐检查 |
+| ScaleEdit 整体缩放漂移 | 同尺寸样本缩放中位 1.075、平移 42 px；v2 模型输出漂移率 17%–20% |
+| 贴回造成"软补丁" | 贴回后编辑区锐度只有周围的 0.62–0.70 |
+| add 的区域标的是新物体本身 | 8,718 对 add 中 7,825 对只有目标图实例；token 往返 IoU add 0.38，remove 0.88 |
+| 任务不对口 | Derived 的 add 多是"小贴纸"（6,269 条中 5,371 条含 small/tiny） |
+| 空操作、平涂 remove、指令与区域不一致 | Derived attribute 444 条改动 < 10%；250 个 remove 抽样中 17 个是平涂 |
+| 区域偏大 | 清洗后 attribute 区域中位 6.3%，评测 0.49% |
+| 同一张图以多个路径出现 | 82,585 个源图路径中 3,139 组字节相同；E-A2 起用 16×16 均值哈希排除评测图 |
+
+### 2.3 清洗流水线（输出 46,482 对）
+
+```
+98,574 源对
+ → 像素清洗（CPU，10-09）                                   70,956
+ → Qwen3.8-27B 编辑核验（四机 32 卡，约 66 分钟，10-11）       48,437
+ → 去掉 text、action（10-12）                                 46,482
+```
+
+- **像素清洗**，依次判断：
+  1. 区域内明显改动 < 10%：丢。
+  2. 颜色校正后，离区域较远处有大于全图 1% 的连通改动：丢。
+  3. 远区域外的改动 ≤ 2%：保留。
+  4. 否则做 SIFT + RANSAC 仿射配准后贴回，配准后的区域外改动必须明显下降。
+  5. 不配准的做纹理块对齐检查。
+  6. 贴回后再检查：区域外改动、区域内改动、边界环。
+- **像素清洗的判定计数：**保留 42,154，贴回 5,528，配准后贴回 23,274；丢弃 27,618。更正坐标的实例 6,307 个。
+- **MLLM 核验**（方案 2）：Qwen3.8-27B 看三张图（原图红轮廓、编辑后、区域放大），用两种问法：
+  - 按类型的问题清单（思考模式）；
+  - 先盲描述改动，再对照指令。
+
+  任一判坏即丢。人工子集上抓到 86% 的坏例，误判 8.1%。
+- **按来源（源对 → 像素 → 核验）：**
+  - RefEdit 7,804 → 7,108 → 4,570；
+  - CrispEdit 37,728 → 22,806 → 12,444；
+  - ScaleEdit 25,085 → 19,368 → 13,519；
+  - Derived 27,957 → 21,674 → 17,904。
+- **路径**（`datasets/SAMTokEdit_Cleaned_20261009/`，README 在 `datasets/SAMTokEdit_Cleaned_20261009/README.md`）：
+  - `manifest.jsonl`：像素保留 70,956；
+  - `decisions.jsonl`：全部判定；
+  - `edit_check_qwen38_27b_v1/manifest_kept_no_text_action.jsonl`：46,482。
+- **代码：**v2 分支（数据侧会话在那里开发），即 `scripts/data_cleaning/clean_pairs.py`、`src/samtok_edit21/preparation/edit_check.py`。v3 仓库里有同名副本。
+- **已知局限：**像素规则判断不了编辑做得对不对；add 区域只盖住物体一部分时，贴回会切掉其余部分（约占贴回 add 的 5%）。
+
+### 2.4 单目标协议适配（D3：39,615 条）
+- **协议 1.0 适配**（10-14，ARNOLD 4×8 卡，约 2.5 小时，代码 v2 分支 fff8ca5 + f90d54d）：
+  - **输入：**清洗后的 47,402 行，即 48,437 去掉 action 和"无单一类型"的行，text 行按改字、删字、加字分流。
+  - **每行的流程：**
+    1. Qwen3.8-27B 看前后图、编号描边图和特写，输出受约束的 JSON，确定 S；
+    2. 需要时用 SAM3 重新分割，add 先分割承载物再裁到落点；
+    3. 渲染 ref/no-ref 句，做几何把关，算 `edited_region`（Lab ΔE 双阈值 6/12）；
+    4. 27B 两票审核，不过的带着意见修一次。
+  - **结果：**接受 39,615（修复前 39,661），另有多目标 5,724、拒收 2,063。
+    - 接受的按操作：attribute 12,846、remove 12,207、replace 7,315、add 7,247；
+    - 按来源：Derived 17,095 占 43%。
+  - **抽查：**60 条约 86% 对、9% 小瑕疵、5% 错。S 中位面积约 4%。
+  - **路径：**`datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1/`。
+- **协议 2.0 适配**（10-15，v3 仓库 `scripts/data_cleaning/protocol_v2_adapt.py v1`，规则驱动，不调用 MLLM）：
+  - `instruction_noref` 改为盲指代 39,356 条；259 条无法分类的 qualifier 留空，只能作 ref 行。
+  - 换 mask：带 site 的 add 裁到附着处 25 条，remove contents 与执行区域取并集 22 条。315 条带 site 的 add 锚点已经贴合，不改。原值存在 `selection_v1`。
+  - 结果文件即 D3：`datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1/protocol_v2_blind/manifest_protocol_v2.jsonl`。
+
+### 2.5 多目标召回（D4：4,066 对 / 9,964 单元）
+- **来源：**单目标适配时判为多目标的 5,724 对，改写成 benchmark 式的多单元 case。每对 2–5 个单元，每个单元有自己的 spec、ref/no-ref、S、执行区域和 `edited_region`。
+- **构造：**10-15，本机 8 卡 3 小时，Qwen3.8-27B + SAM3。
+- **规则：**
+  - 一个单元一个物体；
+  - 衣物而非整个人；
+  - S 之间不共享、不嵌套；
+  - 未解释的改动 ≤ 10%；
+  - 整对两票审核。
+- **结果：**接受 4,066 对。
+  - 2/3/4/5 单元的对数：2,820 / 782 / 342 / 122。
+  - 单元操作：remove 4,837、attribute 3,927、replace 885、add 315，以删除和改属性为主。
+  - 抽查约 88% 对。
+- **协议 2.0 版**（10-18，`scripts/data_cleaning/protocol_v2_adapt.py multi`）：盲指代 9,893 个单元，71 个留空。结果文件即 D4：`datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/protocol_v2_blind/manifest_multi_protocol_v2.jsonl`，README 在同目录。
+- **合计：**单目标 39,615 + 多目标 4,066 = 43,681 对，占 v1 98,574 的 44.3%。
+
+### 2.6 SA-1B 50k 自蒸馏数据（D1：新管线，50,000 条）
+这是用户另一条线的新数据管线：仓库 `sam3-crispedit` 的分支 `sa1b-samtok-edit-data`，本机没有 clone。10-14 启动，10-15 发布，4 机 × 8 卡，墙钟约 20 小时。
+
+1. **规划：**Qwen3.8-Flash-Next-FP8 在 SA-1B dense mask 上逐个 mask 规划一种编辑（协议 1.0），按缺额补齐类型。
+2. **生成（教师）：**用 Qwen-Image-2.1 原版（40 步，seed 0）。
+   - 围绕支持区域裁图，提示 = ref 指令 + 保持说明 + "目标在裁图中的位置"；
+   - 编辑后按支持区域羽化贴回，所以**支持区域外与源图逐像素相同**。
+   - 这是"特权自蒸馏"：教师看得到区域和局部放大，学生只看 token 和整图。
+   - 支持区域策略：add 取锚点 + 附着处，attribute 只取目标，remove/replace 取目标 + 一圈。
+3. **审核：**确定性检查 + Qwen3.8-27B 语义审核（操作对、目标做到、非目标保持、自然）。
+4. **规模：**
+   - 生成 79,821 条，自动通过率 62.6%（remove 最低，42.1%）；
+   - 按四类各 12,500 补齐到 50,000 条；
+   - 只覆盖 **1,132 张源图**，每张平均 44 条。
+5. **与 benchmark 隔离：**按源图 ID 和字节哈希排除，和 benchmark 1,084 个 case 的交集为 0。没有做近重复检索。没有人工验收。
+6. **协议 2.0 适配与补充字段**（10-15/16，原文件不动，另写 `train_protocol_v2.jsonl`）：
+   - 盲指代 49,753 条，247 条留空。
+   - 带 site 的 add 有 6,754 条，其中 3,606 条把 mask 裁到附着处（新 mask 在 `datasets/sa1b_samtok_edit_50k_20261014/release/masks/region_v2/`）。
+   - 补 `edited_region`（实际改动像素，ΔE 双阈值，只取支持区域内），RLE 写在记录里，PNG 在 `datasets/sa1b_samtok_edit_50k_20261014/release/masks/edited/`。168 条为空。
+   - **面积中位：add 0.023%、remove 0.12%、replace 0.16%、attribute 0.11%。**区域非常小，这是第二轮"不执行"问题的背景之一（文档 03 §5.4）。
+7. **路径：**
+   - 说明：`datasets/sa1b_samtok_edit_50k_20261014/release/README.md`；
+   - 协议 2.0 版即 D1：`datasets/sa1b_samtok_edit_50k_20261014/release/annotations/train_protocol_v2.jsonl`；
+   - 原始版：`datasets/sa1b_samtok_edit_50k_20261014/release/annotations/train.jsonl`。
+
+### 2.7 SA-1B dense mask 区域池（D2）与指认数据
+- **来源：**50k 同批源图的 SA-1B dense 标注，`datasets/sa1b_samtok_edit_50k_20261014/sources/`（每张图一个 `dense.json`）。
+- **区域池**（`V3/data/round2_20261016/pool/`，1,132 个文件，`samtok-edit round2-data` 生成）：
+  - 保留面积 0.05%–30% 的 mask；
+  - 每个 mask 记录 SAMTok token、token 再解码出的区域（作为监督目标）、往返 IoU、类别词，以及同图关系：同类、宿主/部件、接触、重复标注。
+  - 往返 IoU ≥ 0.5 才算可用。训练图 1,072 张，可用区域 62,873 个。
+- **面积分桶抽样**（单 token 指认）：
+
+  | 面积 | <0.1% | 0.1–0.25% | 0.25–0.5% | 0.5–1% | 1–2% | 2–5% | ≥5% |
+  |---|---|---|---|---|---|---|---|
+  | 份额 | 5% | 20% | 20% | 20% | 15% | 12% | 8% |
+
+  < 0.5% 的合计 45%，贴近 benchmark。
+- **指认的写法与目标：**
+  - 单 token：`Apply a red semi-transparent mask to the selected region ⟨M⟩ and keep everything else unchanged.` 等 4 个模板；带名版用类别词替换 `the selected region`。
+  - 多 token：一句话列出 2–5 个区域，各配一种颜色。
+  - 颜色 6 种。目标图 = 源图在区域上叠 50% 颜色。
+
+### 2.8 天然孪生与拼合多目标（D5），以及数据侧的 D6
+- **天然孪生：**同一源图上，盲指代 no-ref 逐字相同的多条 50k 记录（例如同一张图上的多条 `Remove the selected region.`），只有 token 能区分。
+  - 10-17 统计：3,610 组、103,157 对（组内两两组合），93% 是 remove，86% 相距较远。
+  - C2 实际使用：组内按框距最近两两配对，6,590 对、13,180 行。
+- **拼合多目标（D5）：**同一源图上执行区域不相交的 2–4 条 50k 编辑。50k 的目标在支持区域外与源图逐像素相同，可以直接合成联合目标，不需要新数据。C2 中 11,270 行。
+- **D6：**数据侧按需求单（旧文档 06）构造的孪生（训练 1.5 万组 + 评测 200 组）和链式多目标（训练 5,000 组 + 评测 100 组）。正式任务还没交付，C2 没有使用。说明见 `datasets/sa1b_samtok_group_train_20k_20261016/README.md`。
+
+### 2.9 第一轮数据（E-A1、E-A2）
+- 单元来自 v2 训练清单 `train_v2_box_001` 的 `edit_umt` 行（去掉 add，恰好一个 mask）。真实编辑取像素清洗判 `keep` 的 RefEdit/Derived 对。按源图路径哈希的 10% 留出。
+- **E-A1**（`V3/data/stageA_ea1_20261011/`，20 MB）：
+  - 训练 42,000 行 = 指认 30,000（不带物体名 17,029、带名 12,971）+ 程序化局部编辑 8,000 + 真实编辑 4,000；
+  - 评测 1,930 项 = 留出 ref 393 / noref 607，dev ref 122 / noref 122，反事实对 686；
+  - 快速评测 96 项。
+- **E-A2**（`V3/data/stageA_ea2_20261012/`，3.9 GB，含 GRES 图 6,962 张）：
+  - 每轮 82,000 行 × 2 轮 = 指认 62,000（含 GRES 多实例 12,000）+ 程序化 12,000 + 真实 8,000；
+  - 同图干扰实例 27,624 行；
+  - 按均值哈希去掉了 529 个与评测图相同的源；
+  - 评测同 E-A1 的 1,930 项，快速评测 160 项。
+
+### 2.10 第二轮训练数据（`V3/data/round2_20261016/`，313 MB）
+
+| 文件 | 内容 |
+|---|---|
+| `README.md` | 目录说明 |
+| `dev_split.json` | 留出的 60 张 SA-1B 源图和 40 条 v1 记录，这些图的编辑和 dense mask 不进任何训练 |
+| `pool/` | D2 区域池 |
+| `edit_tokens.jsonl` | 50k 每条记录源 mask 的 token、解码区域、往返 IoU（与 D1 同序） |
+| `v1_tokens.jsonl`、`d4_tokens.jsonl` | D3、D4 的 token 缓存，另记目标图在区域外改了多少（判断漂移） |
+| `support_cache.jsonl` | 50k 每条的支持区域（32 px 网格），用来挑不相交的拼合单元 |
+| `rows_c1.jsonl`、`rows_c1b.jsonl`、`rows_c2.jsonl`（各带 `_stats.json`） | 三次训练的训练行 |
+| `eval_c1.json`、`eval_c1_quick_idx.json`、`eval_c2_quick_idx.json`、`eval_train_diag.json` | 开发评测集、训练中快速评测子集（各 112 项）、C1 的"训练图 vs 新图"诊断集 |
+
+**token 往返过滤：**往返 IoU < 0.5 的 token 指不到要编辑的区域，用来训练会教模型不看 token，因此不用。
+
+| 数据 | 总数 | 开发集 | 往返 < 0.5 | 可用 |
+|---|---:|---:|---:|---:|
+| D1 50k 单条 | 50,000 | 2,804（60 张图） | 8,971（add 3,346） | **38,225** |
+| D3 v1 单条 | 39,615 | 40 | 4,111 | **35,464** |
+| D4 多目标 | 4,066 对 | — | 385 对 | **3,681 对** |
+
+**各次训练的行构成：**每次更新 32 行，行号决定由哪张卡在哪一步处理，见文档 02 §4.12。
+
+| 训练 | 总行数 | 构成 |
+|---|---:|---|
+| C1（从原版起训，2,000 次更新） | 64,000 | 单 token 指认 25,600、带名 9,600；多 token 指认 19,200；50k 编辑 9,600（盲指代 + token 6,256、物体名 + token 1,944、只有物体名 1,400） |
+| C1b（从 C1@1500 起训，800 次更新） | 25,600 | 同 C1 的比例（10,240 / 3,840 / 7,680 / 3,840）；近邻反例（99.9% 的单 token 行有，平均 5.93 个）；2,112 对反事实成对；40% 多 token 行围绕相邻对 |
+| C2（从 C1b@800 起训，3,522 次更新） | 112,704 | 见下表 |
+
+C2 的行（"可用数据全部用一次，add 用两次"）：
+
+| 种类 | 行数 | 说明 |
+|---|---:|---|
+| `edit`（D1） | 46,690 | 38,225 条全用，add ×2；add 16,930 / remove 9,680 / replace 10,066 / attribute 10,014；天然孪生 13,180 行（remove 的 92% 是孪生） |
+| `edit_v1`（D3） | 39,768 | 35,464 条全用，add ×2；add 8,608 / remove 11,956 / replace 7,174 / attribute 12,030；9,786 行目标有区域外改动，只算局部损失 |
+| `edit_multi_v1`（D4） | 3,681 | 2/3/4/5 单元 = 2,592 / 686 / 302 / 101；1,576 对用局部损失 |
+| `edit_multi`（D5） | 11,270 | 2/3/4 单元 = 4,539 / 3,894 / 2,837，单元操作互不相同 |
+| 指认 | 11,295 | 单 token 4,955、带名 1,832、多 token 4,508；含 1,018 对反事实成对 |
+
+- **写法：**单条编辑盲指代 + token 60,607 行（70%）、物体名 + token 25,851 行（30%）。没有不带 token 的行，这是用户 10-18 的决定：方法始终带 token。
+- **区域大小：**D1 的 token 区域中位 0.16%（73% < 0.5%），D3 中位 4.1%。两者之间（0.2%–5%）缺档，见文档 03 §5.4。
+- **生成命令：**`python -m samtok_edit21 round2-data rows-c2 --out <dir>`，代码 `src/samtok_edit21/preparation/round2_data.py`。
+
+## 3. 评测数据
+
+### 3.1 第二轮开发评测集（`V3/data/round2_20261016/eval_c1.json`，1,320 项）
+全部在 60 张留出的开发图上，只给 token。C1、C1b、C2、原版和 E-A2 基线都用这一份。
+
+| 子集 | 项数 | 构造 | 主要指标 |
+|---|---:|---|---|
+| single | 600 | 按面积分布抽 600 个区域；盲指代 400、带类别名 200 | 指认读回区域与 token 解码区域的 IoU |
+| multi | 100 | 2/3/4 个 token 各约 1/3，各一种颜色 | 全部区域 IoU ≥ 0.5 的比例、串色 |
+| pair | 400（200 对） | 同类实例 150 对（面积比 ≤ 3）+ 部件对宿主 50 对；同句只换 token | 两次都跟对自己 token 的比例 |
+| edit | 100 | 开发图上的 50k 编辑，四类各 25；要求有盲指代、往返 ≥ 0.5、改动区域非空 | 执行率、强度、区域外改动、与参考目标的误差 |
+| remove | 120（60 对） | 同类实例对做 `Remove the selected region <M>.` 换 token 探针 | 两次都删对自己区域的比例 |
+
+### 3.2 benchmark v2，release 2.6.0（当前版本）
+benchmark 在单独的仓库维护：`Tangent0308/samtok_edit_benchmark`，分支 `v2branch`，2.6.0 对应 commit 98f918d。说明以那里的 README.md、docs/BENCHMARK_OVERVIEW_2_6_0_ZH.md、docs/CONSTRUCTION_2_6_0_ZH.md 为准，下面只摘要点。数据根是 `datasets/samtok_edit_benchmark_v2/`。
+
+> 本机的 `/opt/tiger/tanyue/samtok_edit_benchmark` 是旧的 dev 分支，不是 2.6.0。
+
+- **规模：**1,084 张 SA-1B 源图，每张一个 case；共 3,872 个编辑单元，每图 2–5 个。
+  - 2/3/4/5 个单元的 case 数：147 / 255 / 597 / 85。
+  - 操作：replace 969、attribute 1,002、remove 921、add 980。add 全部是直接锚点。
+- **交互形式：**7 种组合，基本均衡（约 553 个/种）：盲指代 + point/box/mask，物体名 + 无定位/box/mask/point。每图至少两种。
+- **区域面积：**中位 0.47%，68% < 1%，最小 0.003%。
+- **协议：**指令协议 2.0、mask 语义 2.0，no-ref 自动渲染为 `the selected region`。
+- **输入方式：**
+  - 源图 + 定位图（只画 point/box/mask）；
+  - 源图 + 原生 point/box/mask；
+  - 诊断用的灰度标签图。
+  - 主评测为 `mixed`，每个单元保留原来的组合。
+- **评分：**本地 Qwen3.8-Flash-Next-FP8，每个 case 一次联合判全部单元。
+  - 每个单元打 E（编辑）、P（保持）、Q（质量）三项 0–4 分，另有全图的 P、Q；
+  - 全部单元和全图都过线才算 JointPass。
+- **状态：**构建、资产、几何、协议校验通过；独立人工终审未完成；正式全量模型 judge 结果尚未发布。
+- **版本历史：**
+
+  | 版本 | 日期 | 规模 | 主要变化 |
+  |---|---|---|---|
+  | 2.3.0 | 10-12 | 200 图 / 785 单元 | 引入指令协议 1.0 |
+  | 2.4.0 | 10-13 | 同上 | 共享协议模块和写作风格，mask 语义 1.1；add 全部改为直接锚点 |
+  | 2.5.0 | 10-15 | 1,084 图 / 3,872 单元 | 新增 884 张图（视觉审核 964 个候选） |
+  | 2.6.0 | 10-16 | 1,084 图 / 3,872 单元 | 协议 2.0 盲指代：重渲染全部 no-ref，改写 1,552 条 ref，708 张新 mask，24 个单元改了操作类型；2.5.0 及以前的 no-ref 结果不可直接比较 |
+
+- **更早的 v0 benchmark：**656 例，来自 CompBench/HumanEdit/MIRAGE，路径 `datasets/samtok_edit_benchmark/benchmark.jsonl`。只在 C1b 的纯文字诊断里用过（文档 03 §4.4），评分模型是 Qwen3.8-27B，与 2.6.0 不是同一套评分。
+
+### 3.3 从 benchmark 2.6.0 拆出的单指令 case（10-19）
+- **抽样：**固定种子打乱图片，把每张图的多条编辑拆成一条指令一个 case，每张图最多取 3 条。四类各 9 条，共 36 条，来自 13 张图。
+- **核对：**benchmark 的 ref/no-ref 文本和 v3 的协议渲染逐字一致（3,872 条全部一致）。
+- **case 清单：**`V3/analysis/bench_split_20261019/cases.json`。结果见文档 03 §5.5。
+
+### 3.4 训练数据与评测数据的关系
+- **来源：**v1 清洗数据来自 RefEdit/CrispEdit/ScaleEdit/GRES，与 SA-1B 的 benchmark 来源不同，用户决定不做泄漏检查。50k 和区域池与 benchmark 同属 SA-1B，已按源图 ID 和哈希排除，交集为 0；没有做近重复检索。
+- **分布差距：**
+  - 区域大小：D1 中位 0.16%，D3 中位 4.1%，benchmark 中位 0.47%。
+  - 多目标：benchmark 每图 2–5 条一起执行，C2 训练中多目标行约 13%（D4 + D5）。
+  - 定位方式：benchmark 有 point/box/mask/无定位四种，本方法只覆盖 mask→token。用 point/box 时需要先由 SAM 一类模型得到 mask。
+
+## 4. 路径总表
+
+| 路径 | 内容 | 用在哪里 |
+|---|---|---|
+| `datasets/SAMTokEdit_Cleaned_20261009/README.md` | 清洗数据总说明 | — |
+| `datasets/SAMTokEdit_Cleaned_20261009/edit_check_qwen38_27b_v1/` | MLLM 核验结果，含 46,482 对清单 | 协议适配的输入 |
+| `datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1/` | 协议 1.0 单目标适配（39,615） | 2.0 适配的输入 |
+| `datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1/protocol_v2_blind/` | **D3**，含 README、summary | C2；开发集 40 条 |
+| `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/` | 协议 1.0 多目标召回 | 2.0 适配的输入 |
+| `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/protocol_v2_blind/` | **D4**，含 README、summary | C2 |
+| `datasets/sa1b_samtok_edit_50k_20261014/release/` | **D1** 全部：说明、标注、源图 1,132 张、目标图 50,000 张、mask、支持区域、`edited` 和 `region_v2` mask | C1、C1b、C2；开发集 |
+| `datasets/sa1b_samtok_edit_50k_20261014/sources/` | SA-1B dense 标注 | D2 区域池 |
+| `datasets/SAMTok_Training_Data/mix_gres8k_ver4k_train.parquet` | GRES/VER | Derived 子集来源；E-A2 的 GRES 指认 |
+| `datasets/sa1b_samtok_group_train_20k_20261016/README.md` | D6 构造说明（未交付） | 以后 |
+| `datasets/samtok_edit_benchmark_v2/` | benchmark 2.6.0 数据根 | 最终测试；拆分 case |
+| `datasets/samtok_edit_benchmark/benchmark.jsonl` | 旧 v0 benchmark（656 例） | C1b 纯文字诊断 |
+| `experiments2/SAMTokEdit/qwen21_v2/data/train_v2_box_001/` | v2 训练清单（未清洗） | v2 模型；E-A1/E-A2 的单元来源 |
+| `V3/data/stageA_ea1_20261011/`、`V3/data/stageA_ea2_20261012/` | 第一轮数据 | E-A1、E-A2 |
+| `V3/data/round2_20261016/` | 第二轮全部数据，见 §2.10 | C1、C1b、C2 |
+| `V3/analysis/bench_split_20261019/cases.json` | benchmark 拆分 36 例 | 10-19 对比 |
+
+## 5. 勘误：和旧文档不一致的地方
+
+旧文档已移到 `docs/archive/v3_process/`。
+
+1. 旧文档 04（10-13）整体过时：它写协议 1.0 全量还没跑，benchmark 是 200 图版本，也没有 50k、D4、协议 2.0 和第二轮数据。以本文为准。
+2. 旧文档 07 §6.1 预计 v1 数据要换 mask 的是 remove contents 123 条、带 site 的 add 363 条。实际只换了 22 条和 25 条，另 315 条 site add 锚点已贴合、不改。
+3. 区域池规模：旧文档 08 先后写过约 7.3 万、约 8 万，实际训练可用 62,873。开发图上的 50k 编辑是 2,804 条，不是约 2,600 条。C1 快速评测 112 项，不是 160 项（160 是 E-A2 的）。
+4. C1/C1b 的编辑行并不全是"盲指代 + token"：两轮都是 65% / 20% / 15%（盲指代 + token / 物体名 + token / 只有物体名）。C2 去掉了只有物体名的行。
+5. "1.6 万张源图"是 50k 管线源池的容量，正式 50k 只覆盖 1,132 张。
+6. 天然孪生的两个数字口径不同：3,610 组 / 103,157 对是组内两两组合，6,590 对是 C2 实际使用的最近配对。
+7. 协议模块版本：协议 1.0 全量、多目标召回和 50k 生成用的是 benchmark 2.4.0 的模块（`ed8c5d7b…`）；v3 仓库里的 `instruction_protocol.py` 是 2.3.0 版（`e93d7d90…`），不再使用；2.0 适配和第二轮都用 `instruction_protocol_v2.py`（`fe192e8d…`）。

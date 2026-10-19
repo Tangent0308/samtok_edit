@@ -1,4 +1,4 @@
-"""Round-2 data (docs/08 section 5): the mask pool, C1 training rows and the C1 evaluation set.
+"""Round-2 data (docs/archive/v3_process/08 section 5): the mask pool, C1 training rows and the C1 evaluation set.
 
 Sources (protocol 2.0, read only):
 * the SA-1B 50k release: ``annotations/train_protocol_v2.jsonl`` (edits, support and changed regions);
@@ -9,7 +9,7 @@ Steps (outputs go to one data directory; nothing is written next to the sources)
     python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-data pool --out <dir>
     python -m samtok_edit21 round2-data rows --out <dir>
     python -m samtok_edit21 round2-data eval --out <dir>
-    python -m samtok_edit21 round2-data rows-c2 --out <dir>     # stage B (docs/08 section 9)
+    python -m samtok_edit21 round2-data rows-c2 --out <dir>     # stage B (docs/archive/v3_process/08 section 9)
 
 ``pool`` encodes every usable dense mask (and every 50k source mask) with SAMTok and decodes the token again; the
 decoded region is what the token means and is the supervision target, exactly as in round 1.  ``rows`` writes the
@@ -85,7 +85,7 @@ def stable_order(keys, salt):
 
 
 def dev_split(release_rows, v1_rows):
-    """60 SA-1B source images and 40 v1 records held out of all training (docs/08 section 2)."""
+    """60 SA-1B source images and 40 v1 records held out of all training (docs/archive/v3_process/08 section 2)."""
     sources = stable_order({r["source_id"] for r in release_rows}, "round2-dev-50k")[:DEV_IMAGES_50K]
     v1 = stable_order({r["id"] for r in v1_rows}, "round2-dev-v1")[:DEV_RECORDS_V1]
     return {"sa1b_sources": sorted(sources), "v1_ids": sorted(v1)}
@@ -415,7 +415,7 @@ def build_rows(out, seed=20261016, updates=2000, batch=32):
 # no heavy negatives.  C1's near misses landed on a different-category neighbour (37 %), the host of a part
 # (29 %) or a same-category neighbour (24 %).  C1b therefore takes as negatives the nearest annotated regions of
 # any category plus the hosts, adds counterfactual pairs of adjacent regions (and of a part and its host), and builds
-# part of the multi-token rows around an adjacent pair (docs/08 section 6.3).
+# part of the multi-token rows around an adjacent pair (docs/archive/v3_process/08 section 6.3).
 
 NEAR_GAP = 0.05            # a neighbour: box gap at most 5 % of the image diagonal
 MAX_NEAR, MAX_HOSTS = 6, 2
@@ -650,7 +650,7 @@ def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
 
 # ---------------------------------------------------------------- C2 rows: stage B, editing with tokens (CPU)
 #
-# Stage B (docs/08 section 9): editing becomes the main task, starting from C1b, and every usable edit is used.
+# Stage B (docs/archive/v3_process/08 section 9): editing becomes the main task, starting from C1b, and every usable edit is used.
 # * every 50k record whose token names its region, and every cleaned v1 record likewise, appears once; add records
 #   (the weakest operation after stage A) appear twice;
 # * v1 targets that also change the image outside the edit are kept, with the loss restricted to the edit's

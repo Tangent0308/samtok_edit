@@ -97,10 +97,13 @@ The previous flat compatibility modules have been removed. Current code paths an
 
 ## Documentation
 
-1. [Implementation](docs/01_SAMTokEdit_Qwen21_代码实现说明.md): how the method is built on the official DiffSynth and SAMTok code, with code paths and excerpts kept in sync with the source.
-2. [v2 analysis](docs/02_SAMTokEdit_Qwen21_v2分析.md): why v2 fell behind the stock model and whether its DiT used the mask tokens; evidence and artifact paths.
-3. [v3 plan and progress](docs/03_SAMTokEdit_Qwen21_v3优化计划与进度.md): related work, the method, the experiment plan and every result so far.
-4. [Data](docs/04_SAMTokEdit_Qwen21_数据工作.md): training data and benchmark inventory, data problems, cleaning and protocol adaptation, and which paths are in use.
-5. [Four-node runs](docs/05_SAMTokEdit_Qwen21_四机实验运行指南.md): the ARNOLD entry for v3 runs with one worked example.
+1. [Data](docs/01_SAMTokEdit_Qwen21_v3数据.md): the unified instruction protocol, cleaning and protocol adaptation of the training data, the new data pipelines and their output, the round-2 training rows, the dev set and the benchmark, with every path.
+2. [Method](docs/02_SAMTokEdit_Qwen21_v3方法.md): the v2 problems and every v3 component: what it is, why it was added, when and where in the code; related work and known limits.
+3. [Experiments](docs/03_SAMTokEdit_Qwen21_v3实验.md): every training and evaluation (E-A1, E-A2, C1, C1b, C2), the analyses and conclusions, and the artifact layout.
+4. [Implementation](docs/04_SAMTokEdit_Qwen21_代码实现说明.md): how the method is built on the official DiffSynth and SAMTok code, with code paths and excerpts kept in sync with the source.
+5. [Four-node runs](docs/05_SAMTokEdit_Qwen21_四机实验运行指南.md): the ARNOLD entries, including the paste-ready round-2 scripts.
+6. [v2 analysis](docs/06_SAMTokEdit_Qwen21_v2分析.md): why v2 fell behind the stock model and whether its DiT used the mask tokens; evidence and artifact paths.
+
+The v3 planning and progress documents written along the way are kept in [docs/archive/v3_process/](docs/archive/v3_process/).
 
 The v2-era documents, including the v2 four-node guide for Stage 1 / Stage 2 / the MLLM edit check, are in [docs/archive/v2/](docs/archive/v2/).

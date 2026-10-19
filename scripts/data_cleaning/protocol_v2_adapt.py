@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Adapt the existing training data to instruction protocol 2.0 (docs/07).  Writes new files only.
+"""Adapt the existing training data to instruction protocol 2.0 (docs/archive/v3_process/07).  Writes new files only.
 
   python scripts/data_cleaning/protocol_v2_adapt.py v1     # cleaned v1 pairs -> protocol_v2_blind/
   python scripts/data_cleaning/protocol_v2_adapt.py sa1b   # SA-1B 50k release -> train_protocol_v2.jsonl

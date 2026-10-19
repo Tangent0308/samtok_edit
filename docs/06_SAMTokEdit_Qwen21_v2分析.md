@@ -1,5 +1,7 @@
 # SAMTokEdit v2 分析：代码复核、退化原因与 mask token 的使用情况
 
+> 编号说明（2026-10-19 文档重排）：本文原为文档 02，内容未改。文中"文档 02"指本文；"文档 03"指当时的 v3 计划，现在是 `docs/archive/v3_process/03_SAMTokEdit_Qwen21_v3优化计划与进度.md`；"文档 07、08"指 `docs/archive/v2/` 下的 v2 文档。v3 的方法如何回应这里的问题，见文档 02（方法）§1。
+
 - **范围**：Qwen-Image-2.1 v2（E5、B0 两个模型）的代码、编辑效果、DiT 对 mask token 的使用情况。分析完成于 2026-10-11，本文档 2026-10-13 从原复核文档整理而来。
 - **写法**：每一节先写证据来源（读代码、看 case、评测结果、对照实验、可解释性实验、原理分析），再写由证据得出的结论。
 - **产物位置**（下文简称 `REVIEW/`）：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/eval/protocol_v2_001/review_v2_20261011/`
@@ -9,7 +11,7 @@
   - E5：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/runs/qwen21_v2_4n_S2_bias_clause_001/stage2/adapter/`
   - B0：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/runs/qwen21_v2_4n_A2_s2_b0_001/stage2/adapter/`
   - Stage 1 定位 LoRA（两者共用）：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/runs/qwen21_v2_4n_A_s1_b0_001/stage1/adapter/`
-- **评测数据**：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/eval/protocol_v2_001/`（`cases.jsonl`、`compiled.jsonl`；dev 183 例、test 532 例）。数据侧的说明见 [04_SAMTokEdit_Qwen21_数据工作.md](04_SAMTokEdit_Qwen21_数据工作.md)。
+- **评测数据**：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/eval/protocol_v2_001/`（`cases.jsonl`、`compiled.jsonl`；dev 183 例、test 532 例）。数据侧的说明见 [04_SAMTokEdit_Qwen21_数据工作.md](archive/v3_process/04_SAMTokEdit_Qwen21_数据工作.md)。
 - **代码版本**：分析用的代码与 v2 分支 commit `7a0a16f` 到 `676b5e0` 的 `src/`、`third_party/diffsynth` 逐文件一致。分析过程没有修改仓库和数据。
 - **与其他文档的关系**：更早的 v1 分析、v2 计划和 v2 阶段分析在 `docs/archive/v2/`（原 07、08 号文档）；本文是对 v2 的独立复核，其中 2.7 节列出了对旧文档结论的修正。由此得出的 v3 方案和进展在文档 03。
 
@@ -40,7 +42,7 @@
 7. **原理层面**（§5）：
    - TE 用原始 SAMTok TE、只训 DiT 时，只在编辑对上做 FM 教不会 token 的含义：信号弱、有捷径、区域边界脏（B0 0.20）。v1 同样只用编辑对，但同时训练了 TE，remove 上学会了按 token 选实例，代价是普通文本条件被改坏。
    - 把 mask 当作输入（偏置、融合），模型就没有动力去读 token。
-8. **这些结论引出的优化方向**：保持"编辑区域编码成 mask token、放进 prompt 注入 DiT"不变，把 mask 只用作训练监督，让模型学会 token 的含义。方案、实验计划和进展记在 [03_SAMTokEdit_Qwen21_v3优化计划与进度.md](03_SAMTokEdit_Qwen21_v3优化计划与进度.md)。
+8. **这些结论引出的优化方向**：保持"编辑区域编码成 mask token、放进 prompt 注入 DiT"不变，把 mask 只用作训练监督，让模型学会 token 的含义。方案、实验计划和进展记在 [03_SAMTokEdit_Qwen21_v3优化计划与进度.md](archive/v3_process/03_SAMTokEdit_Qwen21_v3优化计划与进度.md)。
 
 **各版本的 DiT 能不能按 mask token 编辑（汇总，2026-10-15 补充）**
 

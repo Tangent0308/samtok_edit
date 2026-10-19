@@ -1,4 +1,4 @@
-"""Round-2 evaluation (docs/08 section 5.1): token-only probes on the held-out source images.
+"""Round-2 evaluation (docs/archive/v3_process/08 section 5.1): token-only probes on the held-out source images.
 
 Every probe feeds the model what inference feeds it - the source image and a prompt with the token(s) - and scores
 the output afterwards against masks the model never saw:

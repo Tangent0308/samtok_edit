@@ -11,7 +11,7 @@ from PIL import Image  # noqa: E402
 from samtok_edit21.distributed import edit_check as dist  # noqa: E402
 from samtok_edit21.preparation import edit_check as ec  # noqa: E402
 
-# Prompts, views and sampling validated in the pilot (docs/09 section 6.11).  A change here
+# Prompts, views and sampling validated in the pilot (docs/archive/v2/09 section 6.11).  A change here
 # invalidates the pilot's recall / false-alarm numbers: re-validate before updating the hash.
 PROTOCOL_SHA256 = "24057dee1266da843f6a4074fd47f8ce1c4df977c27d8bdaf4932c059c2f511c"
 

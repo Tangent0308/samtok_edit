@@ -1,4 +1,4 @@
-"""Round-2 paired report (docs/08 sections 8.4 and 9): one evaluation against reference evaluations of the same items.
+"""Round-2 paired report (docs/archive/v3_process/08 sections 8.4 and 9): one evaluation against reference evaluations of the same items.
 
     python -m samtok_edit21 round2-report --eval <run>/eval --name C2 \\
         --reference stock=<stock eval> --reference C1b=<C1b eval> [--train <run>/train] --output <run>/analysis.txt

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drop some edit types from a pair manifest to make a training selection (docs/09, section 6.15).
+"""Drop some edit types from a pair manifest to make a training selection (docs/archive/v2/09, section 6.15).
 
 Kept lines are copied byte for byte and in order, so the output is a subset of the input in the same format and
 its image paths stay relative to the same dataset root.  A summary next to the output records the input and output

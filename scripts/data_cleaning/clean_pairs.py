@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean the Stage 2 source pairs and write a self-contained dataset (docs/09, sections 6.1 and 6.7).
+"""Clean the Stage 2 source pairs and write a self-contained dataset (docs/archive/v2/09, sections 6.1 and 6.7).
 
 Decision per pair of sources.jsonl, in this order:
   drop_D     the region barely changes (fill < 0.10): no-op or too weak an edit

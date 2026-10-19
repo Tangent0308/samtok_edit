@@ -2,8 +2,8 @@
 
 - **更新**：2026-10-13。
 - **一句话**：创新点保持不变——编辑区域由 SAMTok 编码成 mask token，写进 prompt，和文字一起注入 DiT，推理时不使用任何像素 mask。v3 改的是训练方式：mask 只用作训练监督，让 DiT 学会"这个 token 指的是哪里"。
-- **依据**：对 v2 的分析见 [02_SAMTokEdit_Qwen21_v2分析.md](02_SAMTokEdit_Qwen21_v2分析.md)。
-- **代码**：分支 `qwen-image-2.1-v3`，本地 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3`。实现说明见 [01_SAMTokEdit_Qwen21_代码实现说明.md](01_SAMTokEdit_Qwen21_代码实现说明.md)，四机入口见 [05_SAMTokEdit_Qwen21_四机实验运行指南.md](05_SAMTokEdit_Qwen21_四机实验运行指南.md)。
+- **依据**：对 v2 的分析见 [02_SAMTokEdit_Qwen21_v2分析.md](../../06_SAMTokEdit_Qwen21_v2分析.md)。
+- **代码**：分支 `qwen-image-2.1-v3`，本地 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3`。实现说明见 [01_SAMTokEdit_Qwen21_代码实现说明.md](../../04_SAMTokEdit_Qwen21_代码实现说明.md)，四机入口见 [05_SAMTokEdit_Qwen21_四机实验运行指南.md](../../05_SAMTokEdit_Qwen21_四机实验运行指南.md)。
 - **实验产物根目录**（下文简称 `V3/`）：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/`，索引见第 7 节。v2 复核的产物仍在 `REVIEW/` = `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/eval/protocol_v2_001/review_v2_20261011/`。
 
 ## 0. 当前状态一览
@@ -298,14 +298,14 @@ A1–A3 的损失在阶段 B 继续保留，只是权重调低，防止忘掉已
 - 区域外平均改动：LoRA 3.7，原版 6.0；区域内：LoRA 59，原版 46。
 - 这说明在真实编辑里，token 对实例的约束还不够，和 B0 的"同类全删"是同一类问题。
 
-![图 1](assets/v3_progress/fig_ea1_examples.jpg)
+![图 1](../../assets/v3_progress/fig_ea1_examples.jpg)
 
 **图 1**　E-A1 的指认输出（按"E-A1 对、原版错"挑选的例子，不代表平均水平）。
 - 前 3 行：只给 token 时，原版高亮到别的物体，E-A1 高亮到 token 指的那个。
 - 第 4 行：小部件，两者都失败。
 - 后 2 行：同图同句只换 token，E-A1 跟着 token 换了被高亮的实例；原版两次都高亮同一个。
 
-![图 2](assets/v3_progress/fig_ea1_leak_check.jpg)
+![图 2](../../assets/v3_progress/fig_ea1_leak_check.jpg)
 
 **图 2**　普通 remove 指令（带 token、不加偏置），列依次是源图、E-A1 LoRA、原版。没有着色渗漏，但 LoRA 常把同类全删。
 
@@ -456,7 +456,7 @@ E-A1 的主要错误是选错实例。E-A2 在 E-A1 的基础上加了三样东�
 
 E-A1 在 dev 上几乎没有提升、带物体名还退了 0.07；E-A2 在 dev 两项上都明显提升。这说明之前的判断是对的：E-A1 的瓶颈是"选错实例"，三项身份监督直接补上了这一块，而且没有压过原版按短语定位的能力。
 
-![图 3](assets/v3_progress/fig_ea2_results.png)
+![图 3](../../assets/v3_progress/fig_ea2_results.png)
 
 **图 3**：左，只给 token 的评测，原版、E-A1、E-A2 在五项指标上的对比（数值见上表）。右，remove 探针的成对跟随率：蓝色是只给 token 的推理，灰色是 v2 的 E5 在推理时额外使用 codec 解码出的像素区域。
 
@@ -484,7 +484,7 @@ remove 反事实测试——同一张图、同一句 "Remove the object in this 
 
 E-A2 在区域内改得比原版多、区域外改得比原版少 58%，方向正确。
 
-![图 4](assets/v3_progress/fig_ea2_remove_probe.jpg)
+![图 4](../../assets/v3_progress/fig_ea2_remove_probe.jpg)
 
 **图 4**：remove 探针的例子。同一张图、同一句 "Remove the object in this region ⟨M⟩."，只换 token，不给模型任何区域。原版的两个输出几乎一样；E-A2 的改动落在各自 token 所指的实例上。也能看到遗留问题：被删的位置常常是一块发白的剪影，而不是补回的背景。
 
@@ -523,7 +523,7 @@ token 直接写在指令里，和普通文字一起过文本编码器进 DiT。*
 - **attribute 的区域内改动变小**（dev 40 → 29，预留集 43 → 34）。看图确认存在**漏改**：例如"把右上角的小番茄变色"，原版改了，E-A2 几乎没动。属性类编辑偏弱，是阶段 B 要补的第二个点（第一个是 remove 的填补质量）。
 - **add 用的是框 token，E-A2 训练时排除了这类样本**，区域内改动从 14 掉到 6，即基本不加东西。属于预期的能力范围之外，列出来是为了说明边界。
 
-![图 6](assets/v3_progress/fig_ea2_highlight.jpg)
+![图 6](../../assets/v3_progress/fig_ea2_highlight.jpg)
 
 **图 6**：指认任务的随机样本（预留集，不带物体名）。每行依次是源图加 token 所指区域（粉色轮廓，仅供查看）、原版、E-A1、E-A2 的输出。
 
@@ -597,7 +597,7 @@ E-A1、E-A2 当时是用仓库外的实验脚本跑的（留档在 `V3/legacy_co
 5. **影响的大小目前不知道。** 方向上是不利的，所以修正后同样的配方应当不差于、很可能好于 E-A2；要靠 E-A2b 复跑来量化。E-A2 的学习曲线前 1 万样本几乎不动、之后突然上升（图 5），可能与此有关，也可能是任务本身的学习过程，现在不能区分。
 6. **四机会更严重。** 卡数越多，每张卡自己的有效信号占比越小。之前准备的四机入口（现留档在 `V3/legacy_code/ea2/launch_arnold_ea2.sh`）用的正是这份有缺陷的脚本，**请不要再用它**（它依赖的目录已经迁走，即使排到也会在启动检查处退出）。
 
-![图 5](assets/v3_progress/fig_ea2_training.png)
+![图 5](../../assets/v3_progress/fig_ea2_training.png)
 
 **图 5**：E-A2 训练过程中的快速评测（160 条，样本少，只看趋势）。
 

@@ -1,4 +1,4 @@
-"""Round-2 objective (docs/08 section 5.3): one prompt may carry several mask tokens; supervision only in the loss.
+"""Round-2 objective (docs/archive/v3_process/08 section 5.3): one prompt may carry several mask tokens; supervision only in the loss.
 
 A row is a highlight with one token (``hl``, ``hl_ref``), a highlight with several tokens (``hlm``, one colour each)
 or an edit: an SA-1B 50k edit (``edit``: blind no-ref + token, ref + token, or ref without a token), a cleaned v1 edit

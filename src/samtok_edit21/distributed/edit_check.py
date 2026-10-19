@@ -2,7 +2,7 @@
 
 Every node copies Qwen3.8-27B to local disk, serves it data-parallel over its
 eight GPUs and checks every 4th pair of the cleaned manifest (scheme 2 of
-docs/09 section 6.11, see samtok_edit21.preparation.edit_check).  Results are
+docs/archive/v2/09 section 6.11, see samtok_edit21.preparation.edit_check).  Results are
 appended per pair, so a failed run resumes with --resume-from.  Node 0 merges
 the shards into the output folder next to the dataset.  No DDP and no W&B.
 """

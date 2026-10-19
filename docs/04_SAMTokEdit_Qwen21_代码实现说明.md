@@ -1,7 +1,7 @@
 # SAMTokEdit（Qwen-Image-2.1）代码实现说明（v3）
 
 - **分支**：`qwen-image-2.1-v3`，本地 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3`。
-- **本文档讲什么**：当前方法是怎样在官方 DiffSynth 和官方 SAMTok 代码之上实现的，每一块在哪个文件、关键代码是什么。方法为什么这样设计、实验结果如何，见 [03_SAMTokEdit_Qwen21_v3优化计划与进度.md](03_SAMTokEdit_Qwen21_v3优化计划与进度.md)。
+- **本文档讲什么**：当前方法是怎样在官方 DiffSynth 和官方 SAMTok 代码之上实现的，每一块在哪个文件、关键代码是什么。方法为什么这样设计见[文档 02](02_SAMTokEdit_Qwen21_v3方法.md)，实验和结果见[文档 03](03_SAMTokEdit_Qwen21_v3实验.md)，数据见[文档 01](01_SAMTokEdit_Qwen21_v3数据.md)。第 1–3.8 节写的是第一轮（`ground-*`，E-A2）的实现，第二轮（`round2-*`，C1/C1b/C2）见 3.9 节。
 - **维护约定**：代码有改动时同步改本文档。文中的代码块不是手抄的，而是由 `scripts/docs/sync_code_blocks.py` 从源码生成；改完代码后运行一次该脚本即可更新，测试 `tests/test_docs.py` 会检查两者是否一致。文末有更新记录。
 - **v2 的实现说明**：v2 独有的部分（Stage 1 定位、结构性绑定、缓存、v2 训练引擎）仍在代码里，本文第 7 节只列出它们的位置，细节见 [archive/v2/01_SAMTokEdit_Qwen21_代码实现说明.md](archive/v2/01_SAMTokEdit_Qwen21_代码实现说明.md)。
 
@@ -477,7 +477,7 @@ def broadcast_parameters(parameters, dist):
 ```
 <!-- /code -->
 
-（E-A1、E-A2 当时的脚本没有这一步，各卡的初始化不一致，见文档 03 的 5.5 节。`--unsynced-init` 能重现当时的行为，只用于回归核对。）
+（E-A1、E-A2 当时的脚本没有这一步，各卡的初始化不一致，见文档 03 §2.3。`--unsynced-init` 能重现当时的行为，只用于回归核对。）
 
 **优化设置。** AdamW，学习率线性预热后保持不变；LoRA 用权重衰减，注入模块和路由仿射不用。每 10 次更新往 `train_metrics.jsonl` 写一行各项损失的平均值；在 `--quick-eval` 指定的更新次数上，用数据目录里的 160 条快速评测项跑一次指认评测，写进 `quick_summary.jsonl`。
 
@@ -508,7 +508,7 @@ def broadcast_parameters(parameters, dist):
 
 ### 3.6 训练数据与评测集的构建
 
-文件：`src/samtok_edit21/preparation/grounding_data.py`，命令 `samtok-edit ground-data train` 和 `samtok-edit ground-data eval-set`。数据来源和各文件的清单见 [04_SAMTokEdit_Qwen21_数据工作.md](04_SAMTokEdit_Qwen21_数据工作.md)。
+文件：`src/samtok_edit21/preparation/grounding_data.py`，命令 `samtok-edit ground-data train` 和 `samtok-edit ground-data eval-set`。数据来源和各文件的清单见 [04_SAMTokEdit_Qwen21_数据工作.md](archive/v3_process/04_SAMTokEdit_Qwen21_数据工作.md)。
 
 **基本单位是"一张图上的一个 token"（unit）。** 来源有两处：
 - v2 的 stage-2 清单里只带一个 mask 片段、不带框的行（`single_token_rows`）。add 行选的是"新物体放哪里"，不是一个已有的实例，所以不用。
@@ -597,6 +597,41 @@ samtok-edit infer --mode interactive --image source.png --mask mask.png \
 
 ---
 
+### 3.9 第二轮代码（`round2-*`，C1、C1b、C2）
+
+第二轮在第一轮的基础层、码本注入和路由代码上，新增了一套数据、训练、评测和报告模块。方法和设计理由见[文档 02](02_SAMTokEdit_Qwen21_v3方法.md) §4，设置和结果见[文档 03](03_SAMTokEdit_Qwen21_v3实验.md) §3、§5。
+
+| 文件 | 内容 |
+|---|---|
+| `src/samtok_edit21/preparation/round2_data.py` | 开发划分、SA-1B dense mask 区域池、token 缓存；C1/C1b/C2 训练行（指认、近邻反例、反事实成对、天然孪生、50k 拼合多目标、v1/D4 编辑行与漂移判断）；开发评测集 `eval_c1.json` |
+| `src/samtok_edit21/training/round2.py` | 每类训练行的样本准备（`_prepare_*`）、多 span 的位置查找、路由标签（`token_labels`，无 token 覆盖率 > 0.5 时取最大者）、`round2_loss`（FM + 区域 + 邻居 + 写/读路由）、`unit_change`、局部损失 `loss_mask` |
+| `src/samtok_edit21/training/round2_engine.py` | 训练循环：`--init-adapter` 热启动、余弦学习率、`--heavy-weight`、按行号的确定性分片、快速评测、W&B |
+| `src/samtok_edit21/training/routing.py` | 第一轮的写方向路由，加上读方向（⟨M⟩→源图）和读方向仿射 `read_affine`；两个方向都是带权 BCE |
+| `src/samtok_edit21/training/tracking.py` | 多卡下的 W&B 记录（`DistributedTracker`） |
+| `src/samtok_edit21/evaluation/round2_eval.py` | 开发集五类探针：单 token、多 token、换 token 成对、编辑、remove 探针 |
+| `src/samtok_edit21/evaluation/round2_report.py` | 配对报告：bootstrap 区间、扣漂移的不执行率（`NOOP_MARGIN = 5`）、按面积分桶；`--wandb` 把开发集结果写进训练运行的 summary |
+| `src/samtok_edit21/preparation/instruction_protocol_v2.py` | 协议 2.0 共享模块（与 benchmark 2.6.0 逐字节相同）；`render(spec, has_ref, selector_token=span)` 把 ⟨M⟩ 写进句子 |
+| `scripts/round2/` | 四机入口 `bootstrap_arnold.sh`、`run_arnold.sh`、运行设置 `settings/`（见文档 05 第 7 节） |
+
+命令：
+
+| 命令 | 作用 | 是否多卡 |
+|---|---|---|
+| `round2-data <step>` | 建第二轮数据：`pool`（开发划分、区域池、token 缓存，多卡）、`rows`（C1）、`rows-c1b`、`rows-c2`、`quick-c2`、`eval`（开发评测集） | `pool` 多卡 |
+| `round2-train` | 训练 | 是 |
+| `round2-eval` | 在开发集上评测一个权重，或不给权重时评测原版 | 是 |
+| `round2-report` | 配对报告 | 否 |
+
+与第一轮默认值的差别：
+- 可训练参数多读方向仿射 12 个，共 87,044,120；
+- 学习率可选余弦（`--lr-schedule cosine --lr-min 1e-5`）；
+- 重反例权重用 `--heavy-weight` 设置（C1 为 3，C1b/C2 为 8）；
+- 默认 2,000 次更新、预热 50 次。
+
+C2 实际用的完整参数见 `scripts/round2/settings/c2_4n.sh`。
+
+---
+
 ## 4. 命令一览
 
 所有命令既可以写成 `samtok-edit <命令>`，也可以写成 `python -m samtok_edit21 <命令>`；需要多卡的命令放在 `python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 <命令>` 里。
@@ -628,7 +663,7 @@ samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 -
 
 ---
 
-## 5. 默认超参数（E-A2 的配方）
+## 5. 默认超参数（第一轮，E-A2 的配方；第二轮见 3.9 节和文档 03）
 
 | 项 | 值 |
 |---|---|
@@ -650,8 +685,9 @@ samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 -
 - `tests/test_grounding.py`（17 项，全部在 CPU 上跑）：指认任务的读回精度、注入模块各位置的行为与保存加载、路由 logit 与 block 真实注意力 logit 的一致性、检查点下的梯度、热启动时路由标定的恢复、损失各项的合成、片段位置（用真实分词器）、数据构建的泄漏防护与确定性、报告的配对与放行逻辑。路由相关的测试用的是真实 DiT 类的一个小号实例，走的是真实的 block 代码。
 - `tests/test_docs.py`：文档代码块与源码一致。
 - 运行：`pytest tests`（当前共 113 项，含数据侧的测试）。
-- `python scripts/docs/check_paths.py`：检查五份文档里引用的路径是否都存在（需要挂着共享盘）。
-- 与 E-A2 当时脚本的等价性核对（逐位一致的数值与梯度、逐字节相同的数据文件、逐数字相同的报告）和 GPU 端到端回归（训练记录逐位复现、重跑评测差值为 0、四机入口单机跑通）的结果，记在文档 03 的 5.4 节。
+- `python scripts/docs/check_paths.py`：检查 `docs/` 下各文档引用的路径是否都存在（需要挂着共享盘）。
+- `tests/test_round2.py`：第二轮的读方向路由、多 span、训练行构建、损失和读回。
+- 与 E-A2 当时脚本的等价性核对（逐位一致的数值与梯度、逐字节相同的数据文件、逐数字相同的报告）和 GPU 端到端回归（训练记录逐位复现、重跑评测差值为 0、四机入口单机跑通）的结果，见文档 03 §2.3 和 `V3/legacy_code/`。
 
 ---
 
@@ -667,7 +703,7 @@ samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 -
 | `training/tracking.py`、`training/gradient_audit.py` | W&B 记录、梯度审计（v2 引擎用） |
 | `distributed/training.py` 与 `scripts/training/` | v2 的四机编排。其中 `scripts/training/setup_env.sh`（装环境、检查 CUDA）**v3 复用** |
 | `evaluation/cases.py`、`compile.py`、`localize.py`、`manifest.py`、`run.py`、`score.py` | 评测协议 v2（benchmark 的 case 编译、生成、judge 清单与打分） |
-| `preparation/`（除 `grounding_data.py`）、`scripts/data_cleaning/`、`scripts/edit_check/`、`scripts/annotation/` | 数据侧：来源转换、v1→v2 转换、清洗、MLLM 编辑核验、指令协议 1.0 适配。见文档 04 |
+| `preparation/`（除 `grounding_data.py`）、`scripts/data_cleaning/`、`scripts/edit_check/`、`scripts/annotation/` | 数据侧：来源转换、v1→v2 转换、清洗、MLLM 编辑核验、指令协议 1.0/2.0 适配。见文档 01 |
 | `regions/selection.py` | 用 SAM2 从点或框得到候选 mask |
 
 ---
@@ -680,7 +716,7 @@ samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 -
 | Qwen-Image-2.1 权重 | `/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1` |
 | SAMTok 文本编码器与 codec 权重 | `/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok` |
 | v3 实验产物 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/`（索引见文档 03 第 7 节） |
-| 当前可用的 v3 权重 | `…/qwen21_v3/runs/ea2_local8_001/train/adapter_1300/` |
+| 当前最好的 v3 权重 | C2：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/runs/c2_4n_002/train/adapter_3522`（第一轮最好的是 E-A2 `…/runs/ea2_local8_001/train/adapter_1300`） |
 | v2 实验产物 | `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v2/` |
 
 ---
@@ -689,4 +725,5 @@ samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 -
 
 | 日期 | 内容 |
 |---|---|
+| 2026-10-19 | 文档重排：本文由 01 改为 04；补 3.9 节第二轮代码；路径与引用改到新的文档 01–03 |
 | 2026-10-13 | v3 首版。把 E-A2 的方法（码本向量注入、注意力路由损失、干扰实例项、指认任务、数据构建与泄漏防护、三种评测探针、报告、对比页）写进仓库；训练循环加入各卡权重同步；新增四机入口和文档代码块同步工具 |

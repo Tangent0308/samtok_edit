@@ -1,11 +1,11 @@
-"""MLLM edit check of cleaned training pairs (scheme 2 of docs/09 section 6.11).
+"""MLLM edit check of cleaned training pairs (scheme 2 of docs/archive/v2/09 section 6.11).
 
 Qwen3.8-27B behind a vLLM OpenAI-compatible server runs two independent checks:
   q2   one thinking call answering short per-type questions;
   dn2  a blind description of the change (no thinking, instruction withheld),
        then a thinking call that compares the instruction with the description.
 A pair is kept only when both checks return "pass".  Views, prompts and sampling
-are the ones validated in the pilot (docs/09 section 6.11); any change to them
+are the ones validated in the pilot (docs/archive/v2/09 section 6.11); any change to them
 invalidates the pilot's recall / false-alarm numbers, so tests pin their hashes.
 """
 from __future__ import annotations
