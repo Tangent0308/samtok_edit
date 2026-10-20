@@ -1,6 +1,11 @@
 # SAMTokEdit Qwen-Image-2.1 v3：外部编辑数据统一打标管线（CrispEdit、ScaleEdit）
 
-本文是一条新数据管线的完整计划，状态为**设计、待用户确认，代码尚未实现**，截至 2026-10-20。
+本文是一条新数据管线的完整计划。截至 2026-10-20 的状态：
+- **已实现**，在 labeling 仓库 `Tangent0308/sam3-crispedit` 的新分支 `extedit-protocol2-labeling`（本地 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling`）；
+- 两轮小批量验证完成，结果见 §10；
+- 量产待用户确认。
+
+实现的说明、规则细节和命令以该分支的 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/docs/EXTEDIT_PROTOCOL2.md` 为准，本文保留计划和依据。
 
 **目标：**用 CrispEdit、ScaleEdit 上还没处理过的原始编辑对，打标出符合当前标准（指令协议 2.0、mask 语义 2.0、区域外逐像素不变、token 往返合格）的训练数据。数据格式与现有 D3（单目标）、D4（多目标）相同。
 
@@ -26,10 +31,14 @@
   3. 便宜的像素检查排在最后。
   4. add 的 mask 语义和现在的标准不一致，后面要重做。
 - **新管线：**六步，27B 只调用 2 次（规划 + 审核），SAM3 一次，像素预检排在最前面，直接产出协议 2.0 数据。
-- **估算：**每 10 万个原始对出 2–3 万条，约 150–250 GPU 小时，四机约 5–8 小时。数字待校准验证。
-- **还能用的原始数据：**
-  - **本地已下载的数据都被旧流程判过，但约九成只是被场景难度筛丢掉的（§1.4）。**在范围内、质量预筛已通过、从没打过标的，CrispEdit 有 35.4 万对，ScaleEdit 有 17.5 万对（核心五类 12.1 万 + 文字 5.4 万）。第一批可以全部取自本地，不用下载。
-  - 上游未下载的：CrispEdit 约 112 万对，ScaleEdit 至少约 88 万对可用候选。
+- **用户 10-20 确认：**去掉场景难度筛；27B 调用尽量合并；ScaleEdit 的许可可以接受。
+- **验证结果（§10）：**360 个原始对收下 140 条（38.9%），看图抽查语义全部正确。
+- **算力：**实测在打满并发后估计每 10 万个原始对约 220–330 GPU 小时，比原估算（150–250）高，以单机打满并发的实测为准。
+- **原始数据：**
+  - 旧的本地数据已按用户要求删除，换成新下载的数据（§1.4）：
+    - CrispEdit 298,963 行；
+    - ScaleEdit 核心五类约 24 万行，文字两类约 6 万行（下载中）。
+  - 上游未下载的：CrispEdit 约 82 万对，ScaleEdit 仍有大量候选。
 
 ## 1. 源数据：怎么得到
 
@@ -118,36 +127,22 @@
 4. 来源内部的重复图：多个 id 指向同一张源图时，每张源图每个子集最多保留 3 条。
 5. 尺寸：短边 < 512 px 的不要。
 
-### 1.4 本地已下载的数据用到了多少（10-20 核查）
-- **核查方式：**逐行对照打标仓库的质量预筛和场景难度筛清单。脚本 `V3/analysis/ext_pipeline_20261020/local_usage.py`，结果 `local_usage.txt`。
-  - CrispEdit 的 529,020 行全部做过质量预筛，质量通过的 460,518 行全部做过场景难度筛；
-  - ScaleEdit 的 299,633 行同样全部做过两道筛。
-- **结论：**本地没有"从没处理过"的行。但两道筛都过、往下打标的只有 CrispEdit 38,971、ScaleEdit 25,664，约九成只是被场景难度筛丢掉的。按新管线的标准（去掉场景难度筛），它们都还能用。
-- **质量通过、只被场景难度筛丢掉的行（在范围内）：**
-
-  | 来源 | 类型 | 行数 |
-  |---|---|---:|
-  | CrispEdit | add | 95,887 |
-  | CrispEdit | color（改属性） | 87,716 |
-  | CrispEdit | remove | 81,363 |
-  | CrispEdit | replace | 88,835 |
-  | CrispEdit 小计 | | **353,801** |
-  | ScaleEdit | 物体删除 | 22,486 |
-  | ScaleEdit | 物体添加 | 22,044 |
-  | ScaleEdit | 物体替换 | 25,248 |
-  | ScaleEdit | 改色 | 25,288 |
-  | ScaleEdit | 改材质 | 26,110 |
-  | ScaleEdit 核心五类小计 | | **121,176** |
-  | ScaleEdit | 物体表面文字 + 建筑表面文字 | 54,039 |
-  | ScaleEdit（可选） | GUI、海报文字 | 43,718 |
-  | ScaleEdit（可选） | 组合编辑（多处改动） | 9,880 |
-
-  不在范围内的不计：CrispEdit 的 motion 26,098、background 20,633、style 21,015；ScaleEdit 的动作和推理类。
-- **对计划的影响：**
-  - 第 1 步取数先用这个本地池，用完再下载。第一批（§6）全部取自本地，存储和下载的风险推后。
-  - 这些行已有质量预筛 PASS，规划时仍重新判断。由于质量不合格的约 12% 已经去掉，预计产量比 §5 高：CrispEdit 约 24%，ScaleEdit 约 35%。
-  - 只算本地池：CrispEdit 约 8.5 万条，ScaleEdit 约 4.2 万条（核心五类）加约 1.5 万条（文字），合计约 14 万条。这是估计，待校准。
-  - 已走完旧流程的 38,971、25,664 行不再重复处理。
+### 1.4 源数据换成新下载的数据（10-20）
+- **为什么换：**10-20 核查发现，本地已下载的 CrispEdit 529,020 行、ScaleEdit 299,633 行都已被旧流程判过（核查脚本和结果在 `V3/analysis/ext_pipeline_20261020/local_usage.py`、`local_usage.txt`）。
+- **用户的决定：**删除这批源数据，在原文件夹里各重新下载约 30 万行旧流程没用过的数据，并尽量只下需要的编辑类型。
+- **删除前留下的排除清单：**
+  - `datasets/CrispEdit_Labeling/source/USED_SHARDS_before_20261020.json`：2,078 个分片名；
+  - `datasets/ScaleEdit_Labeling/source/USED_ROWS_before_20261020.parquet`：299,633 行的 `sample_id` 等。
+  - 新管线取数时按这两份清单排除。
+- **CrispEdit：**
+  - 1,172 个新分片，298,963 行，570 GB，同一 revision；
+  - 只下 add 256、color 330、remove 256、replace 330 个分片；
+  - 运行目录 `datasets/CrispEdit_Labeling/iterations/experiments/download_300k_20261020/`。
+- **ScaleEdit：**
+  - 先下核心五类（添加、删除、替换、改色、改材质）24 万行，再下物体表面文字和建筑表面文字 6 万行；
+  - 运行目录 `datasets/ScaleEdit_Labeling/runs/download_300k_20261020/`，10-20 晚仍在下载。
+- 两个文件夹都有 `README_20261020.md`。
+- 原先"第一批全部取自本地 35.4 万 + 17.5 万对"的计划作废。
 
 ## 2. 现有流程：从源数据到 D3/D4
 
@@ -303,19 +298,21 @@
 - **设备：**GPU（审核，每条约 3 GPU 秒），CPU（导出）。
 
 ## 4. 输出与目录
-- **新数据集目录：**`datasets/ExtEdit_Protocol2_<日期>/`，原有的 `CrispEdit_Labeling`、`ScaleEdit_Labeling` 不动。
+- **正式数据目录：**`datasets/ExtEdit_Protocol2_<日期>/`（尚不存在），原有的 `CrispEdit_Labeling`、`ScaleEdit_Labeling` 不动。实验与验证产物放在 `experiments2/SAMTokEdit/data_pipeline/04_current_validation/extedit_protocol2_20261020/`，只有正式结果进 `datasets/`（用户 10-20 的要求）。
 
   | 子目录 | 内容 |
   |---|---|
   | `crispedit/`、`scaleedit/` | 各自的 `ingest/`、`stages/`（每步分片结果）、`final/` |
   | `final/` | `manifest_protocol_v2.jsonl`（单目标）、`manifest_multi_protocol_v2.jsonl`（多目标）、`tokens.jsonl`、`rejected.jsonl`、`summary.json`、`README.md` |
 
-- **代码（v3 仓库，计划）：**
-  - `src/samtok_edit21/preparation/ext_pipeline.py`：各步逻辑（尚不存在，待实现）；
-  - `scripts/data_pipeline/ext_label.py`（尚不存在，待实现）：命令行，子命令 `ingest`、`precheck`、`plan`、`segment`、`gate`、`audit`、`repair`、`export`、`report`；
-  - `src/samtok_edit21/distributed/ext_label.py`（尚不存在，待实现）：四机运行器，写法同现有的 `src/samtok_edit21/distributed/edit_check.py`。
+- **代码（已实现，按用户 10-20 的要求放在 labeling 仓库新分支，不在 v3 仓库）：**
+  - 分支 `extedit-protocol2-labeling`，本地 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling`；
+  - 包 `extedit/`：`sources`、`pixels`、`plan`、`segment`、`gate`、`audit`、`export` 等；
+  - 命令行 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/scripts/extedit_pipeline.py`，子命令 `ingest`、`precheck`、`plan`、`segment`、`gate`、`audit`、`export`、`review`；
+  - 协议与写作规则文件从 benchmark 2.6.0 逐字节复制，像素、区域、槽位规则从生成 D3 / D4 的代码移植；SAMTok codec 从本仓库 `samtok_edit21.models.codec` 导入。
+  - 四机运行器尚未写。
 - **环境：**
-  - 27B 用 vLLM 0.31；SAM3 用打标仓库的依赖，打标仓库只读导入，设 `PYTHONDONTWRITEBYTECODE=1`；
+  - 27B 用 vLLM 0.31；其余步骤一个 Python 3.11 环境（torch 2.13.0+cu129），依赖清单在该分支 `requirements/`；
   - 四机脚本按文档 05 的写法提供可直接粘贴的入口，由用户在 ARNOLD 上提交。
 
 ## 5. 产量与算力估算
@@ -333,8 +330,10 @@
   - ScaleEdit 每片约 31 GB，按需整片下载、处理完删缓存；
   - 解出的图片约每对 5 MB。
 
-## 6. 第一批的类型配比（建议）
+## 6. 第一批的类型配比（建议，待按新下载的数据重排）
 目标是补 C3 的差距（文档 01 §2.11）：替换、大目标改属性、写字。
+
+> 下表的"本地"来源已作废（§1.4）。新下载的数据按 §10 的产量，配比与规模待用户确认。
 
 | 子集 | 来源 | 原始对 | 预计产出 | 说明 |
 |---|---|---:|---:|---|
@@ -355,18 +354,49 @@
 3. **正式**（四机）：按 §6 分批，每批写 README 和计数，抽查 100 条后再交给训练。
 
 ## 8. 风险与待确认
-1. **去掉场景难度筛（产量约 ×10 的主要来源）：**会多出目标唯一的简单编辑。好处是协议 2.0 盲指代下仍需读 token，区域大小也更接近 benchmark；`comparable_instances` 标签保留，可按需提高有近邻的行的比例。
-2. **27B 合并成两次调用：**一次调用要同时做判断和填槽位，可能比分开时差。用校准结果判断，必要时把编辑核验单独留一次。
+1. **去掉场景难度筛（产量约 ×10 的主要来源；用户 10-20 已确认去掉）：**会多出目标唯一的简单编辑。好处是协议 2.0 盲指代下仍需读 token，区域大小也更接近 benchmark；`comparable_instances` 标签保留，可按需提高有近邻的行的比例。
+2. **27B 合并成两次调用（用户 10-20：尽量合并）：**一次调用要同时做判断和填槽位，可能比分开时差。用校准结果判断，必要时把编辑核验单独留一次。
 3. **CrispEdit 高产区间是模板句：**指令最终由协议 2.0 重新渲染，原句只作参考，影响有限。
-4. **ScaleEdit 许可：**CC BY-NC-SA 4.0，只能非商业使用，训练出的模型和数据的使用范围要确认。
-5. **存储与下载：**第一批取自本地，不用下载（§1.4）。之后若要上游的新数据：ScaleEdit 必须整片下载，CrispEdit 剩余部分约 2.4 TB。
-6. **两个打标仓库：**只读引用，不修改；CrispEdit 仓库本地未推送的提交与新管线无关。
+4. **ScaleEdit 许可：**CC BY-NC-SA 4.0，只能非商业使用（用户 10-20 已同意）。
+5. **存储与下载：**源数据已换成新下载的数据（§1.4）。之后若要上游的新数据：ScaleEdit 必须整片下载，CrispEdit 剩余约 3,200 个分片。
+6. **两个打标仓库：**原有的两个 clone 只读，不修改；新管线在同一 GitHub 仓库的新分支上开发。
 
-## 9. 时间表（确认后）
+## 9. 时间表
 | 日期 | 事项 |
 |---|---|
-| 10-21 | 写管线代码，单元测试，小样本自测 |
-| 10-22 | 校准（§7.1），根据结果调整 |
-| 10-23 | 冒烟；给出四机入口脚本 |
-| 10-23～10-24 | 四机第一批（§6），用户提交 |
-| 10-25 | 抽查、转成训练行，与数据线的新数据（D7–D9）一起进入 C3b |
+| 10-20 | 写管线代码与单元测试；两轮小批量验证（§10）；根据验证修正贴回和门限 |
+| 待定 | ScaleEdit 文字两类下载完后补一轮文字验证；单机打满并发测速；写四机运行器 |
+| 待定 | 用户确认规模和配比后，四机正式跑（用户提交），抽查后交给训练 |
+
+## 10. 小批量验证结果（10-20）
+- **设置：**两轮共 360 个原始对，取自新下载的数据（CrispEdit 四类、ScaleEdit 核心五类），单机 27B 6 卡、SAM3 2 卡。
+- **记录位置：**
+  - 运行目录、迭代记录与审阅图：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/data_pipeline/04_current_validation/extedit_protocol2_20261020/`；
+  - 详细数字：分支文档 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/docs/EXTEDIT_PROTOCOL2.md` §6。
+- **产量：**收下 140 条（38.9%），共 155 个单元。
+
+  | 来源 | 产量 |
+  |---|---:|
+  | CrispEdit | 38% |
+  | ScaleEdit | 40% |
+
+  | 类型 | 产量 |
+  |---|---:|
+  | 替换 | 47%–49% |
+  | 改材质 | 56% |
+  | 改色 | 33%–42% |
+  | 删除 | 36%–38% |
+  | 添加 | 17%–33% |
+
+  旧流程约 2%，§5 的估计是 20%–30%。
+- **准确率：**看图抽查约 30 条收下的样本，语义全部正确，有两处措辞小问题；两票一致率 90%。
+- **主要淘汰原因：**
+  1. 预检：整张重画、换了构图，配准不上（约 14%）；
+  2. token 往返 < 0.5：很小的物体，以及天空、墙面、水面上的 add；
+  3. 审核：描边、目标不对，或编辑不完整。
+- **验证中改掉的问题：**
+  1. 生成器整体偏色，贴回后出现亮边：贴回前先做色调匹配；
+  2. 替换的贴回区域里有孤立噪点：只贴与 S 相连的改动块；
+  3. 覆盖率门槛误挡完整的改色：车的轮胎、镀铬，标志的白底本来不变色，门槛降到只挡大部分没改的；
+  4. "Add the …" 写法：新物体不得以 "the" 开头。
+- **算力：**本机 GPU 有其他进程占用，并发也没打满，实测不能直接外推。按打满并发估计每个原始对 8–12 GPU 秒，即每 10 万个原始对 220–330 GPU 小时，待单机实测。
