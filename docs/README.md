@@ -10,6 +10,7 @@
 | [04 代码实现说明](04_SAMTokEdit_Qwen21_代码实现说明.md) | 方法在官方 DiffSynth 和 SAMTok 代码之上怎样实现：每一块在哪个文件、关键代码（自动同步）、命令、默认超参数、测试 |
 | [05 四机实验运行指南](05_SAMTokEdit_Qwen21_四机实验运行指南.md) | 在 ARNOLD 上怎样启动实验（第 7 节是当前使用的第二轮入口，含可直接粘贴的完整脚本）；改设置、看进度、失败处理 |
 | [06 v2 分析](06_SAMTokEdit_Qwen21_v2分析.md) | v2 为什么不如原版、v2 的 DiT 有没有用 mask token；证据、图和产物路径（v3 设计的出发点） |
+| [07 外部编辑数据打标管线](07_SAMTokEdit_Qwen21_外部编辑数据打标管线.md) | CrispEdit、ScaleEdit 的源数据怎么得到、现有流程每一步留下多少；新的统一打标管线（六步）每一步的输入、规则、输出和复用代码；产量与算力估算、校准与上线（设计，待确认） |
 
 维护约定：
 - 代码有改动时同步改文档 04。它的代码块和文档 05 的完整脚本由 `python scripts/docs/sync_code_blocks.py` 从源码生成，`pytest tests/test_docs.py` 检查两者是否一致。
