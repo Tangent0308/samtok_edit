@@ -208,7 +208,13 @@
    - 带 site 的 add 有 6,754 条，其中 3,606 条把 mask 裁到附着处（新 mask 在 `datasets/sa1b_samtok_edit_50k_20261014/release/masks/region_v2/`）。
    - 补 `edited_region`（实际改动像素，ΔE 双阈值，只取支持区域内），RLE 写在记录里，PNG 在 `datasets/sa1b_samtok_edit_50k_20261014/release/masks/edited/`。168 条为空。
    - **面积中位：add 0.023%、remove 0.12%、replace 0.16%、attribute 0.11%。**区域非常小，这是第二轮"不执行"问题的背景之一（文档 03 §5.4）。
-7. **路径：**
+7. **训练目标的完成度（10-20 核查，`V3/analysis/c3_plan_20261020/`）：**C2 用到的 38,225 条里，按 `edited_region` 统计目标区域被改动的比例：
+   - replace 有 1,153 条（11.5%）、attribute 有 1,126 条（11.2%）改动不到目标的一半；
+   - add 有 861 条（10.2%）的锚点或附着处被改动超过 60%；
+   - remove 改动不到一半的只有 1.0%。
+
+   这些行对应 C2 在 benchmark 上"叠加、只改一部分、改坏附着物"的失败。C3 计划不再使用它们（文档 03 §6，待确认）。
+8. **路径：**
    - 说明：`datasets/sa1b_samtok_edit_50k_20261014/release/README.md`；
    - 协议 2.0 版即 D1：`datasets/sa1b_samtok_edit_50k_20261014/release/annotations/train_protocol_v2.jsonl`；
    - 原始版：`datasets/sa1b_samtok_edit_50k_20261014/release/annotations/train.jsonl`。
@@ -290,7 +296,7 @@ C2 的行（"可用数据全部用一次，add 用两次"）：
 | 指认 | 11,295 | 单 token 4,955、带名 1,832、多 token 4,508；含 1,018 对反事实成对 |
 
 - **写法：**单条编辑盲指代 + token 60,607 行（70%）、物体名 + token 25,851 行（30%）。没有不带 token 的行，这是用户 10-18 的决定：方法始终带 token。
-- **区域大小：**D1 的 token 区域中位 0.16%（73% < 0.5%），D3 中位 4.1%。两者之间（0.2%–5%）缺档，见文档 03 §5.4。
+- **区域大小：**D1 的 token 区域中位 0.16%（73% < 0.5%），D3 中位 4.1%。D1 偏小，但中等尺度并不缺：C2 用到的 50k 编辑里，remove/replace/attribute 有 28%–33% 改动 ≥ 0.5%。这是 10-20 的核查（`V3/analysis/c3_plan_20261020/`）；旧版这里写的"0.2%–5% 缺档"不对。
 - **生成命令：**`python -m samtok_edit21 round2-data rows-c2 --out <dir>`，代码 `src/samtok_edit21/preparation/round2_data.py`。
 
 ## 3. 评测数据
