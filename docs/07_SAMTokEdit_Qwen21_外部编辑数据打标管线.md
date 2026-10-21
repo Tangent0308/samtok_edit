@@ -408,7 +408,7 @@
   - 实测：720 个原始对全流程 13 分钟，约为分步跑的 6 倍，每个原始对约 8.7 GPU 秒（8 卡，本机有其他进程占约 40% 算力）。
   - 同一批行上做了布局对比，框的质量不变。
   - 折算到 4 台 8 卡：每小时约 1.3 万个原始对，10 万对约 7.5 小时，全部约 60 万对约 45 小时。
-  - 多机入口 `scripts/extedit_node.sh` 与合并命令 `publish` 已写好，还没在 ARNOLD 上实测。
+  - 多机入口 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/scripts/extedit_node.sh` 与合并命令 `publish` 已写好，还没在 ARNOLD 上实测。
 - **新数据的可用量（10-21 下载完成）：**
   - CrispEdit 298,963 行；
   - ScaleEdit 298,748 行：核心五类 238,748，物体表面文字、建筑表面文字各 30,000。
