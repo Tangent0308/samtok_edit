@@ -27,6 +27,7 @@
 | D7 | 写字编辑（数据线新产） | 计划 3,000 条 | C3b（计划，§2.11） | 待交付 |
 | D8 | 结构替换（数据线新产） | 计划 4,000 条 | C3b（计划，§2.11） | 待交付 |
 | D9 | 整体改属性（数据线新产） | 计划 2,000 条 | C3b（计划，§2.11） | 待交付 |
+| D10 | CrispEdit、ScaleEdit 新数据，协议 2.0（extedit 第一批，§2.12） | 38,435 条（单目标 36,516、多目标 1,919）/ 40,884 单元 | 尚未接入训练 | `datasets/ExtEdit_Protocol2_20261021/` |
 | — | 第一轮指认数据（E-A1、E-A2） | 42,000 行 / 每轮 82,000 行 | E-A1、E-A2 | `V3/data/stageA_ea1_20261011/`、`V3/data/stageA_ea2_20261012/` |
 | — | 第二轮开发评测集 | 1,320 项 | C1、C1b、C2 及基线 | `V3/data/round2_20261016/eval_c1.json` |
 | — | benchmark v2，release 2.6.0 | 1,084 张图 / 3,872 单元 | 最终测试（未正式跑）；10-19 拆分 36 例 | `datasets/samtok_edit_benchmark_v2/` |
@@ -392,7 +393,14 @@ Pico-Banana-400K 文字子集：
 - **验收**（C3b 在决策子集上，见文档 03 §6）：写字 ≥ 0.55、替换 ≥ 0.80、大目标改属性 ≥ 0.90，保持不低于 0.87。
 - **兜底：**写字补了数据仍明显落后，剩下的原因是文本编码器本身，再考虑双路条件。
 
-### 2.12 CrispEdit、ScaleEdit：现有流程与统一打标管线（设计，10-20，待确认）
+### 2.12 CrispEdit、ScaleEdit：现有流程与统一打标管线（10-20 设计；10-22 第一批已发布）
+> **10-22 更新：**
+> - 新管线已实现（labeling 仓库分支 `extedit-protocol2-labeling`）；
+> - 第一批 10 万个原始对已跑完，发布为 **D10 = `datasets/ExtEdit_Protocol2_20261021/`**：38,435 条，单目标 36,516、多目标 1,919，共 40,884 个单元；
+> - 按单元：改字 12,247、替换 12,396、其他改属性 10,989、删除 3,861、添加 1,391；
+> - 详见文档 07 §10–§11 和该目录的 README。
+> - 下面是 10-20 的流程核查与设计。
+
 用户 10-20 要求：
 - 把 v1 里来自 CrispEdit、ScaleEdit 的数据，从源数据到现在清洗后的数据，一步一步讲清楚；
 - 把这个流程整理、合并成一条新管线，用更多的源数据打标出符合当前标准（协议 2.0）的数据。
@@ -513,6 +521,7 @@ benchmark 在单独的仓库维护：`Tangent0308/samtok_edit_benchmark`，分�
 | `datasets/SAMTokEdit_Cleaned_20261009/protocol_adapt_qwen38_27b_v1/protocol_v2_blind/` | **D3**，含 README、summary | C2；开发集 40 条 |
 | `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/` | 协议 1.0 多目标召回 | 2.0 适配的输入 |
 | `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/protocol_v2_blind/` | **D4**，含 README、summary | C2 |
+| `datasets/ExtEdit_Protocol2_20261021/` | **D10**：CrispEdit、ScaleEdit 新数据按协议 2.0 打标的第一批（38,435 条，含 README、token 缓存） | C3（尚未接入训练） |
 | `datasets/sa1b_samtok_edit_50k_20261014/release/` | **D1** 全部：说明、标注、源图 1,132 张、目标图 50,000 张、mask、支持区域、`edited` 和 `region_v2` mask | C1、C1b、C2；开发集 |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/sa1b_samtok_edit_50k_20261014/sources/` | SA-1B dense 标注 | D2 区域池 |
 | `datasets/SAMTok_Training_Data/mix_gres8k_ver4k_train.parquet` | GRES/VER | Derived 子集来源；E-A2 的 GRES 指认 |
