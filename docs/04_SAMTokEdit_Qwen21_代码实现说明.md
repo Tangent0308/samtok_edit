@@ -148,15 +148,17 @@ DiT 是单流结构（32 个 block、宽度 4096、32 个头），把所有东�
 <!-- code: src/samtok_edit21/evaluation/grounding.py::generate -->
 ```python
 @torch.no_grad()
-def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_AREA):
-    """Token-only inference: inline region tokens, raw text encoder, no binding, no blending, CFG 1."""
+def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_AREA, cfg_scale=1.0, negative_prompt=None):
+    """Token-only inference: inline region tokens, raw text encoder, no binding, no blending, CFG 1 (or token guidance:
+    ``cfg_scale`` with a token-free ``negative_prompt``)."""
     from samtok_edit21.models.binding import BindingConfig
     from samtok_edit21.models.pipeline import edit
 
     height, width = canvas(source_rgb, area)
+    extra = {} if negative_prompt is None else {"negative_prompt": negative_prompt}
     image, _ = edit(pipe, prompt, [source_rgb.convert("RGBA")], mode="inline", height=height, width=width,
-                    num_inference_steps=steps, cfg_scale=1.0, seed=seed, use_kv_cache=True, pass2_te="raw",
-                    binding=BindingConfig("none"), codec=codec, blend_region=None)
+                    num_inference_steps=steps, cfg_scale=cfg_scale, seed=seed, use_kv_cache=True, pass2_te="raw",
+                    binding=BindingConfig("none"), codec=codec, blend_region=None, **extra)
     return export(image, source_rgb.size), (height, width)
 ```
 <!-- /code -->
@@ -603,9 +605,9 @@ samtok-edit infer --mode interactive --image source.png --mask mask.png \
 
 | 文件 | 内容 |
 |---|---|
-| `src/samtok_edit21/preparation/round2_data.py` | 开发划分、SA-1B dense mask 区域池、token 缓存；C1/C1b/C2 训练行（指认、近邻反例、反事实成对、天然孪生、50k 拼合多目标、v1/D4 编辑行与漂移判断）；开发评测集 `eval_c1.json` |
-| `src/samtok_edit21/training/round2.py` | 每类训练行的样本准备（`_prepare_*`）、多 span 的位置查找、路由标签（`token_labels`，无 token 覆盖率 > 0.5 时取最大者）、`round2_loss`（FM + 区域 + 邻居 + 写/读路由）、`unit_change`、局部损失 `loss_mask` |
-| `src/samtok_edit21/training/round2_engine.py` | 训练循环：`--init-adapter` 热启动、余弦学习率、`--heavy-weight`、按行号的确定性分片、快速评测、W&B |
+| `src/samtok_edit21/preparation/round2_data.py` | 开发划分、SA-1B dense mask 区域池、token 缓存；C1/C1b/C2 训练行（指认、近邻反例、反事实成对、天然孪生、50k 拼合多目标、v1/D4 编辑行与漂移判断）；C3 训练行（`build_rows_c3`：按 C2 比例抽行、去掉做了一半的样本、D10 定向子集）；开发评测集 `eval_c1.json` |
+| `src/samtok_edit21/training/round2.py` | 每类训练行的样本准备（`_prepare_*`；D3/D4 格式的单条与多目标记录共用 `_prepare_record`、`_prepare_multi_record`，C3 起也读 D10 的 `edit_ext`、`edit_multi_ext`）、多 span 的位置查找、路由标签（`token_labels`，无 token 覆盖率 > 0.5 时取最大者）、`round2_loss`（FM + 区域 + 邻居 + 写/读路由；`edit_region_dilate=False` 时编辑行的区域项不外扩）、`unit_change`、局部损失 `loss_mask` |
+| `src/samtok_edit21/training/round2_engine.py` | 训练循环：`--init-adapter` 热启动、余弦学习率、`--heavy-weight`、`--edit-region-dilate`（C3-M）、按行号的确定性分片、快速评测、W&B |
 | `src/samtok_edit21/training/routing.py` | 第一轮的写方向路由，加上读方向（⟨M⟩→源图）和读方向仿射 `read_affine`；两个方向都是带权 BCE |
 | `src/samtok_edit21/training/tracking.py` | 多卡下的 W&B 记录（`DistributedTracker`） |
 | `src/samtok_edit21/evaluation/round2_eval.py` | 开发集五类探针：单 token、多 token、换 token 成对、编辑、remove 探针 |

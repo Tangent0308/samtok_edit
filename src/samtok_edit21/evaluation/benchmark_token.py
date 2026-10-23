@@ -23,6 +23,9 @@ Config keys:
   are then read as name + token (the region never leaves the token);
 * ``ground``: units without a locator (ref + none) first get a token from the raw SAMTok text encoder, which segments
   the unit's selector phrase (pass 1); the unit then reads as ref + token, and stays text only if no valid token comes;
+* ``token_guidance`` (default 1, off): a second prediction per step from the same prompt with every region token
+  removed, and the difference amplified (CFG with that token-free prompt as the negative branch); only prompts that
+  carry a token, the rest run as before;
 * ``steps``, ``qwen``, ``samtok``;
 * ``manifest``: the release ``cases.jsonl``; only the instruction specs are read, to place the token and (with
   ``ground``) to take the selector phrase, which is part of the given instruction;
@@ -44,6 +47,7 @@ from PIL import Image
 GRAY = {"U1": 51, "U2": 102, "U3": 153, "U4": 204, "U5": 255}
 DESCRIBE = "What object is {span}? Answer in at most five words."
 GROUND = "Can you segment {ref}?"
+TOKEN_SPAN = re.compile(r"\s*<\|mt_start\|>(?:<\|mt_\d+\|>)*<\|mt_end\|>")
 HEAD_END = re.compile(r"\s(?:with|featuring|that|which|having|showing|is|are|on|in)\s|[.;:(]")
 _STATE = {}
 
@@ -162,12 +166,21 @@ def unit_sentence(spec, unit, span, name=None):
     return p2.render(spec, unit["has_ref"], selector_token=span)
 
 
-def generate_any(pipe, codec, prompt, image, *, steps, seed):
-    """Token-only generation; a prompt without any region token (ref + none units only) runs as plain text."""
+def strip_tokens(prompt):
+    """The prompt with every region token removed: the negative branch of token guidance."""
+    return re.sub(r"[ \t]+([.,;:])", r"\1", TOKEN_SPAN.sub("", prompt))
+
+
+def generate_any(pipe, codec, prompt, image, *, steps, seed, guidance=1.0):
+    """Token-only generation; a prompt without any region token (ref + none units only) runs as plain text.  With
+    ``guidance`` > 1 a prompt with tokens is also predicted without them, and the difference is amplified."""
     from samtok_edit21.evaluation.grounding import canvas, export, generate
     from samtok_edit21.models.pipeline import edit as pipeline_edit
 
     if "<|mt_start|>" in prompt:
+        if guidance != 1.0:
+            return generate(pipe, codec, prompt, image, steps=steps, seed=seed, cfg_scale=guidance,
+                            negative_prompt=strip_tokens(prompt))[0]
         return generate(pipe, codec, prompt, image, steps=steps, seed=seed)[0]
     height, width = canvas(image)
     output, _ = pipeline_edit(pipe, prompt, [image.convert("RGBA")], mode="direct", height=height, width=width,
@@ -182,7 +195,8 @@ def edit(*, job, seed, config):
     specs = _specs(config["manifest"])[job["case_id"]]
     image = Image.open(job["images"][0]).convert("RGB")
     masks, how = unit_masks(job, codec, image)
-    log = {"job_id": job["job_id"], "units": []}
+    guidance = float(config.get("token_guidance", 1.0))
+    log = {"job_id": job["job_id"], "units": [], "token_guidance": guidance}
 
     def token(current, uid):
         mask = masks[uid]
@@ -208,10 +222,11 @@ def edit(*, job, seed, config):
 
     if config["mode"] == "joint":
         prompt = multi_edit_prompt([sentence(image, u) for u in job["units"]])
-        image = generate_any(pipe, codec, prompt, image, steps=config["steps"], seed=seed)
+        image = generate_any(pipe, codec, prompt, image, steps=config["steps"], seed=seed, guidance=guidance)
     elif config["mode"] == "sequential":
         for unit in job["units"]:
-            image = generate_any(pipe, codec, sentence(image, unit), image, steps=config["steps"], seed=seed)
+            image = generate_any(pipe, codec, sentence(image, unit), image, steps=config["steps"], seed=seed,
+                                 guidance=guidance)
     else:
         raise ValueError(f"unknown mode {config['mode']}")
     if config.get("log"):

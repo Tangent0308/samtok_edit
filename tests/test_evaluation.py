@@ -117,3 +117,12 @@ def test_pass1_scoring_counts_kind_and_overlap(tmp_path):
     assert box_iou((0, 0, 2, 2), (1, 1, 3, 3)) == pytest.approx(1 / 7)
     rows = summary_rows([record, missed])
     assert rows["dev/add"]["n"] == 2 and rows["all/all"]["acc50"] == 0.5 and rows["dev/add"]["parse_rate"] == 0.5
+
+
+def test_token_guidance_negative_prompt_drops_every_region_token():
+    from samtok_edit21.evaluation.benchmark_token import strip_tokens
+    tok = "<|mt_start|><|mt_0012|><|mt_0345|><|mt_end|>"
+    prompt = f"Execute all numbered instructions.\nU1: Remove the selected region {tok}.\nU2: Change the cup {tok} to red."
+    assert strip_tokens(prompt) == ("Execute all numbered instructions.\nU1: Remove the selected region.\n"
+                                    "U2: Change the cup to red.")
+    assert "<|mt_" not in strip_tokens(prompt) and strip_tokens("Make it blue.") == "Make it blue."
