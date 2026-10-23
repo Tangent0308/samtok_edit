@@ -525,3 +525,12 @@ benchmark 2.6.0 的 3,872 个单元：添加、删除、替换、改属性各约
   - 各类型产量与第一批相近；与第一批没有重叠；自然度复查拒收 8/74；
   - 发布测试：限 50 次时拒掉 3 条重复的模板描述。
 - **启动：**10-22 18:38 UTC 本机启动，18:44 进入流水线。处理过的问题：27B 服务首次启动缺 `ninja`，把环境的 bin 目录加入 PATH 后正常，量产入口本来就这样设。
+- **10-23 转四机：**用户嫌本机太慢（规划每分钟约 80 次，全程约 3.4 天），要求改 ARNOLD 四机，在现有进度上续跑。
+  - 06:12 UTC 停下本机。本机跑了 11.5 小时，没有报错，CrispEdit replace 的产量约 39%（第一批 37%）。
+  - 用新加的 `handoff`（代码 `7bd00f9`）交接：
+    - 已取数 316,709 行；
+    - 已定 163,853 行，收下 27,866 条，留在本机运行；
+    - 待处理 152,856 行，连同没取数的原始对，交给四台，每台约 9.5 万个原始对。
+  - 四台不取本机已定的行；最后两处一起发布，同一行出现两次会报错。
+  - 入口：`/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/docs/EXTEDIT_4NODE.md` §0。预计约 18 小时，另加约 30 分钟启动。
+  - 运行目录：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/data_pipeline/02_production_runs/extedit_protocol2_batch2_4n_20261023/`。
