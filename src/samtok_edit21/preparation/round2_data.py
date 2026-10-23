@@ -10,6 +10,8 @@ Steps (outputs go to one data directory; nothing is written next to the sources)
     python -m samtok_edit21 round2-data rows --out <dir>
     python -m samtok_edit21 round2-data eval --out <dir>
     python -m samtok_edit21 round2-data rows-c2 --out <dir>     # stage B (docs/archive/v3_process/08 section 9)
+    python -m samtok_edit21 round2-data rows-c3m --out <dir>    # stage C without new data (docs/03 section 6)
+    python -m samtok_edit21 round2-data rows-c3d --out <dir>    # stage C with the extedit batch-1 data (D10)
 
 ``pool`` encodes every usable dense mask (and every 50k source mask) with SAMTok and decodes the token again; the
 decoded region is what the token means and is the supervision target, exactly as in round 1.  ``rows`` writes the
@@ -887,6 +889,165 @@ def build_rows_c2(out, seed=20261019, world=8, accumulation=4):
     return stats
 
 
+# Stage C (docs/03 section 6): 1,500 updates continued from C2.  The C2 mix is kept by drawing its rows (pairs stay
+# pairs); "half done" targets are left out first; the data variant replaces a quarter of the rows by extedit batch 1.
+EXT_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/ExtEdit_Protocol2_20261021")
+EXT_MANIFEST = EXT_ROOT / "manifest_protocol_v2.jsonl"
+EXT_MULTI_MANIFEST = EXT_ROOT / "manifest_multi_protocol_v2.jsonl"
+C3_UPDATES = 1500
+C3_NEW_SHARE = 0.25
+# extedit rows of the data variant, aimed at what C2 loses (docs/03 section 5.7): replacements whose old object is
+# fully gone, whole-object attribute changes, text changes, real multi-unit pairs
+C3_EXT = {"replace": 5000, "attribute": 4000, "text": 1500, "multi": 1500}
+C3_EXT_REPLACE_COVERED = 0.85
+C3_EXT_ATTRIBUTE_COVERED, C3_EXT_ATTRIBUTE_AREA = 0.90, 0.01
+HALF_DONE, ANCHOR_DAMAGED = 0.5, 0.6     # replace / attribute changing < half the target; add changing the anchor
+C2_CATEGORIES = {"edit": "edit_50k", "edit_v1": "edit_v1", "edit_multi_v1": "edit_multi_v1", "edit_multi": "edit_multi",
+                 "hl": "highlight", "hl_ref": "highlight", "hlm": "highlight"}
+
+
+def spec_op(spec):
+    """add / remove / replace / attribute, with text changes (attribute.text) as "text"."""
+    if spec["operation"] == "attribute" and spec["attributes"] and spec["attributes"][0].get("property") == "text":
+        return "text"
+    return spec["operation"]
+
+
+def half_done(op, covered):
+    """A target that did only part of its edit (docs/03 section 6, analysis/c3_plan_20261020): a replace or attribute
+    change covering less than half of the target, or an add that changed most of its anchor."""
+    if covered is None:
+        return False
+    return (op in ("replace", "attribute") and covered < HALF_DONE) or (op == "add" and covered > ANCHOR_DAMAGED)
+
+
+def c2_units(rows):
+    """The units of a rows file: the two rows of a pair (same ``pair_key``) together, every other row alone."""
+    units, pairs = [], {}
+    for row in rows:
+        key = row.get("pair_key")
+        if key is None:
+            units.append([row])
+        elif key in pairs:
+            pairs[key].append(row)
+        else:
+            pairs[key] = [row]
+            units.append(pairs[key])
+    if any(len(u) > 2 for u in units):
+        raise ValueError("a pair key is used by more than two rows")
+    return units
+
+
+def draw_units(units, need, rng):
+    """Units in random order until their rows reach ``need`` (a pair that would overshoot is skipped)."""
+    order = list(units)
+    rng.shuffle(order)
+    out, count = [], 0
+    for unit in order:
+        if count + len(unit) <= need:
+            out.append(unit)
+            count += len(unit)
+        if count == need:
+            break
+    if count != need:
+        raise ValueError(f"cannot draw {need} rows from {sum(map(len, units))}")
+    return out
+
+
+def ext_rows(rng, need=C3_EXT):
+    """Rows of the extedit batch-1 data (D10) for the data variant: drawn per group, forms as in C2."""
+    tokens = {t["id"]: t for t in map(json.loads, open(EXT_ROOT / "tokens.jsonl"))}
+    multi_tokens = {t["id"]: t for t in map(json.loads, open(EXT_ROOT / "multi_tokens.jsonl"))}
+    groups = defaultdict(list)
+    for r in map(json.loads, open(EXT_MANIFEST)):
+        t = tokens.get(r["id"])
+        if not t or not t.get("size_ok") or t["roundtrip"] < MIN_ROUNDTRIP:
+            continue
+        op, region = spec_op(r["instruction_spec"]), r["edited_region"]
+        covered = region["stats"]["s_covered"]
+        if op == "replace" and covered >= C3_EXT_REPLACE_COVERED:
+            groups["replace"].append(r)
+        elif op == "attribute" and covered >= C3_EXT_ATTRIBUTE_COVERED and region["area_frac"] >= C3_EXT_ATTRIBUTE_AREA:
+            groups["attribute"].append(r)
+        elif op == "text":
+            groups["text"].append(r)
+    groups["multi"] = [p for p in map(json.loads, open(EXT_MULTI_MANIFEST))
+                       if p["id"] in multi_tokens and multi_tokens[p["id"]].get("size_ok")
+                       and all(u["roundtrip"] >= MIN_ROUNDTRIP for u in multi_tokens[p["id"]]["units"])]
+
+    def form(noref):
+        return rng.choices(list(C2_FORMS), weights=list(C2_FORMS.values()))[0] if noref else "ref_token"
+
+    units, available = [], {g: len(v) for g, v in groups.items()}
+    for group, n in need.items():
+        for r in rng.sample(groups[group], n):
+            if group == "multi":
+                order = list(range(len(r["units"])))
+                rng.shuffle(order)
+                units.append([{"kind": "edit_multi_ext", "id": r["id"], "order": order,
+                               "forms": [form(r["units"][i]["instruction_noref"]) for i in order], "ext_group": group}])
+            else:
+                units.append([{"kind": "edit_ext", "form": form(r["instruction_noref"]), "id": r["id"], "ext_group": group}])
+    return units, available
+
+
+def build_rows_c3(out, variant, seed=20261023, world=8, accumulation=4):
+    """Stage-C rows (``variant`` "m": the C2 mix only; "d": a quarter replaced by extedit batch 1) and their
+    statistics: C2's rows without the half-done targets, drawn per category in C2's proportions."""
+    rng = random.Random(f"{seed}:{variant}")
+    total = C3_UPDATES * world * accumulation
+    release = {r["sample_id"]: r for r in map(json.loads, open(RELEASE / "annotations/train_protocol_v2.jsonl"))}
+    v1 = {r["id"]: r for r in map(json.loads, open(V1_MANIFEST))}
+    dropped_50k = {i for i, r in release.items()
+                   if half_done(r["operation"], (r.get("edited_region") or {}).get("stats", {}).get("s_covered"))}
+    # v1 adds are kept: their selection is sometimes the surface the new object stands on (analysis/c3_plan_20261020)
+    dropped_v1 = {i for i, r in v1.items() if spec_op(r["instruction_spec"]) in ("replace", "attribute")
+                  and half_done(r["instruction_spec"]["operation"], (r.get("edited_region") or {}).get("stats", {}).get("s_covered"))}
+    c2 = [json.loads(line) for line in open(out / "rows_c2.jsonl")]
+    shares = Counter(C2_CATEGORIES[r["kind"]] for r in c2)
+
+    def clean(unit):
+        for row in unit:
+            if row.get("sample_id") in dropped_50k or row.get("id") in dropped_v1 \
+                    or any(s in dropped_50k for s in row.get("sample_ids", ())):
+                return False
+        return True
+
+    units = [u for u in c2_units(c2) if clean(u)]
+    by_category = defaultdict(list)
+    for unit in units:
+        by_category[C2_CATEGORIES[unit[0]["kind"]]].append(unit)
+    new_units, ext_available = ext_rows(rng) if variant == "d" else ([], {})
+    base = total - sum(len(u) for u in new_units)
+    need = {c: round(base * n / len(c2)) for c, n in shares.items()}
+    need["edit_50k"] += base - sum(need.values())          # rounding goes to the largest category
+    drawn = [u for c in sorted(need) for u in draw_units(by_category[c], need[c], rng)] + new_units
+    rows = place_in_slots(drawn, rng, C3_UPDATES, world, accumulation)   # the total is even, so are the singles
+    name = f"rows_c3{variant}"
+    with open(out / f"{name}.jsonl", "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    (out / f"{name}_dropped.json").write_text(json.dumps({"50k": sorted(dropped_50k), "v1": sorted(dropped_v1)}))
+    ops = Counter()
+    for row in rows:
+        if row["kind"] == "edit":
+            ops[f"50k:{release[row['sample_id']]['operation']}"] += 1
+        elif row["kind"] == "edit_v1":
+            ops[f"v1:{spec_op(v1[row['id']]['instruction_spec'])}"] += 1
+        elif row["kind"] == "edit_ext":
+            ops[f"ext:{row['ext_group']}"] += 1
+    stats = {"variant": variant, "rows": len(rows), "updates": C3_UPDATES, "world": world, "accumulation": accumulation,
+             "kinds": dict(Counter(r["kind"] for r in rows)),
+             "categories": dict(Counter(C2_CATEGORIES.get(r["kind"], "ext") for r in rows)),
+             "single_edit_operations": dict(sorted(ops.items())),
+             "dropped_half_done": {"50k_records": len(dropped_50k), "v1_records": len(dropped_v1),
+                                   "c2_units_left_out": len(c2_units(c2)) - len(units)},
+             "ext_available": ext_available, "ext_rows": dict(C3_EXT) if variant == "d" else {},
+             "pairs": sum(1 for u in drawn if len(u) == 2)}
+    (out / f"{name}_stats.json").write_text(json.dumps(stats, indent=1))
+    return stats
+
+
 def build_quick_c2(out, seed=20261019):
     """Items checked during stage-B training: 40 edits (10 per operation), 10 remove pairs, 24 + 8 single
     highlights, 8 multi-token highlights, 4 instance pairs and 2 part/host pairs (112 items)."""
@@ -977,7 +1138,7 @@ def build_eval(out, seed=20261017):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="samtok-edit round2-data", description=__doc__.split("\n\n")[0])
-    p.add_argument("step", choices=["pool", "rows", "rows-c1b", "rows-c2", "quick-c2", "eval"])
+    p.add_argument("step", choices=["pool", "rows", "rows-c1b", "rows-c2", "rows-c3m", "rows-c3d", "quick-c2", "eval"])
     p.add_argument("--out", required=True)
     args = p.parse_args(argv)
     out = Path(args.out)
@@ -989,6 +1150,8 @@ def main(argv=None):
         print(json.dumps(build_rows_c1b(out), indent=1))
     elif args.step == "rows-c2":
         print(json.dumps(build_rows_c2(out), indent=1))
+    elif args.step in ("rows-c3m", "rows-c3d"):
+        print(json.dumps(build_rows_c3(out, args.step[-1]), indent=1))
     elif args.step == "quick-c2":
         print(json.dumps(build_quick_c2(out), indent=1))
     else:

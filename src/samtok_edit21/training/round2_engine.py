@@ -33,7 +33,8 @@ import torch
 from samtok_edit21.training.grounding_engine import average_gradients, broadcast_parameters, rank_divergence
 from samtok_edit21.training.routing import DEFAULT_LAYERS
 
-KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5, "edit_multi_v1": 6}
+KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5, "edit_multi_v1": 6,
+              "edit_ext": 7, "edit_multi_ext": 8}
 
 
 def parser():
@@ -64,6 +65,8 @@ def parser():
     p.add_argument("--lambda-read", type=float, default=0.05, help="Read-side routing weight; 0 disables it")
     p.add_argument("--lambda-region", type=float, default=1.0)
     p.add_argument("--lambda-distractor", type=float, default=1.0)
+    p.add_argument("--edit-region-dilate", type=int, choices=(0, 1), default=1,
+                   help="1: edit rows' FM_region keeps one token of context (C2); 0: only the changed tokens (C3-M)")
     p.add_argument("--route-layers", type=integers, default=DEFAULT_LAYERS)
     p.add_argument("--checkpoints", type=integers, default=(500, 1000, 1500, 2000))
     p.add_argument("--quick-eval", type=integers, default=(0, 500, 1000, 1500, 2000))
@@ -227,6 +230,7 @@ def main(argv=None):
                 sample = prepare_round2(pipe, ctx, row, max_pixels=args.max_pixels)
                 flow, write, read, metrics = round2_loss(pipe, sample, router, lambda_region=args.lambda_region,
                                                          lambda_distractor=args.lambda_distractor,
+                                                         edit_region_dilate=bool(args.edit_region_dilate),
                                                          heavy_weight=args.heavy_weight)
                 loss = flow
                 if write is not None:

@@ -3,8 +3,9 @@
 A row is a highlight with one token (``hl``, ``hl_ref``), a highlight with several tokens (``hlm``, one colour each)
 or an edit: an SA-1B 50k edit (``edit``: blind no-ref + token, ref + token, or ref without a token), a cleaned v1 edit
 (``edit_v1``), a cleaned v1 multi-object pair (``edit_multi_v1``, its real joint target) or 2-4 non-overlapping 50k
-edits of one image joined into one multi-target edit (``edit_multi``); a multi-target prompt has one numbered line and
-one token per unit.  The model input is what inference gives it: the source image and the prompt.
+edits of one image joined into one multi-target edit (``edit_multi``); stage C adds the extedit batch-1 records and
+pairs (``edit_ext``, ``edit_multi_ext``: same format as the cleaned v1 ones).  A multi-target prompt has one numbered
+line and one token per unit.  The model input is what inference gives it: the source image and the prompt.
 Regions enter only through targets and loss weights:
 
     loss = w(t) * (FM + lambda_region * FM_region + lambda_distractor * FM_distractor)
@@ -13,6 +14,7 @@ Regions enter only through targets and loss weights:
 * FM_region      highlight: the error inside each token's region (one token of context), averaged per region and
                  then over the regions, so a small region counts as much as a large one; edit: inside the support,
                  or (stage-B rows, ``region: changed``) inside the pixels that really changed, one token of context.
+                 ``edit_region_dilate=False`` (stage C, method variant) drops that context for every edit row.
   Rows whose target also changes the image outside the edit (``loss_region: local``) take FM only near the edit.
 * FM_distractor  the error on regions that must not change: other instances of the same category and the host of
                  a part (minus every highlighted region).
@@ -43,6 +45,7 @@ from samtok_edit21.training.objectives import validate_conditioning
 from samtok_edit21.training.routing import DISTRACTOR_WEIGHT
 
 MAX_PIXELS = 1024 * 1024
+EDIT_KINDS = ("edit", "edit_v1", "edit_multi", "edit_multi_v1", "edit_ext", "edit_multi_ext")
 
 
 @dataclass
@@ -68,7 +71,7 @@ class Context:
         self.release = {r["sample_id"]: r for r in map(json.loads, open(rd.RELEASE / "annotations/train_protocol_v2.jsonl"))}
         self.tokens = {t["sample_id"]: t for t in map(json.loads, open(self.data / "edit_tokens.jsonl"))}
         self._pool = lru_cache(maxsize=256)(self._load)
-        self._v1 = self._d4 = None
+        self._v1 = self._d4 = self._ext = self._ext_multi = None
 
     def d4(self, pair_id):
         """A cleaned v1 multi-object pair and its units' tokens (loaded on first use)."""
@@ -83,6 +86,21 @@ class Context:
             tokens = {t["id"]: t for t in map(json.loads, open(self.data / "v1_tokens.jsonl"))}
             self._v1 = {r["id"]: (r, tokens[r["id"]]) for r in map(json.loads, open(rd.V1_MANIFEST)) if r["id"] in tokens}
         return self._v1[record_id]
+
+    def ext(self, record_id):
+        """An extedit batch-1 record and its token (the cache ships with the dataset; loaded on first use)."""
+        if self._ext is None:
+            tokens = {t["id"]: t for t in map(json.loads, open(rd.EXT_ROOT / "tokens.jsonl"))}
+            self._ext = {r["id"]: (r, tokens[r["id"]]) for r in map(json.loads, open(rd.EXT_MANIFEST)) if r["id"] in tokens}
+        return self._ext[record_id]
+
+    def ext_multi(self, pair_id):
+        """An extedit batch-1 multi-unit pair and its units' tokens (loaded on first use)."""
+        if self._ext_multi is None:
+            tokens = {t["id"]: t for t in map(json.loads, open(rd.EXT_ROOT / "multi_tokens.jsonl"))}
+            self._ext_multi = {p["id"]: (p, tokens[p["id"]]) for p in map(json.loads, open(rd.EXT_MULTI_MANIFEST))
+                               if p["id"] in tokens}
+        return self._ext_multi[pair_id]
 
     def _load(self, source_id):
         return json.load(open(self.data / "pool" / f"{source_id}.json"))
@@ -160,11 +178,15 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
     if row["kind"] == "edit":
         return _prepare_edit(pipe, ctx, row, max_pixels)
     if row["kind"] == "edit_v1":
-        return _prepare_edit_v1(pipe, ctx, row, max_pixels)
+        return _prepare_record(pipe, "edit_v1", rd.V1_ROOT, *ctx.v1(row["id"]), row, max_pixels)
+    if row["kind"] == "edit_ext":
+        return _prepare_record(pipe, "edit_ext", rd.EXT_ROOT, *ctx.ext(row["id"]), row, max_pixels)
     if row["kind"] == "edit_multi":
         return _prepare_edit_multi(pipe, ctx, row, max_pixels)
     if row["kind"] == "edit_multi_v1":
-        return _prepare_edit_multi_v1(pipe, ctx, row, max_pixels)
+        return _prepare_multi_record(pipe, "edit_multi_v1", rd.V1_ROOT, *ctx.d4(row["id"]), row, max_pixels)
+    if row["kind"] == "edit_multi_ext":
+        return _prepare_multi_record(pipe, "edit_multi_ext", rd.EXT_ROOT, *ctx.ext_multi(row["id"]), row, max_pixels)
     entry = ctx.pool(row["source_id"])
     with Image.open(entry["image"]) as im:
         source = im.convert("RGBA")
@@ -280,11 +302,12 @@ def _prepare_edit(pipe, ctx, row, max_pixels):
                         max_pixels=max_pixels, dilate=True if row.get("region") == "changed" else None)
 
 
-def _prepare_edit_v1(pipe, ctx, row, max_pixels):
-    record, token = ctx.v1(row["id"])
-    with Image.open(rd.V1_ROOT / record["source_image"]) as im:
+def _prepare_record(pipe, kind, root, record, token, row, max_pixels):
+    """A single-unit record in the D3 format (cleaned v1 ``edit_v1``, extedit ``edit_ext``); image paths relative to
+    ``root``."""
+    with Image.open(root / record["source_image"]) as im:
         source = im.convert("RGBA")
-    with Image.open(rd.V1_ROOT / record["target_image"]) as im:
+    with Image.open(root / record["target_image"]) as im:
         target = im.convert("RGBA")
     shape = (source.height, source.width)
     s_px = rle_region(record["selection"], shape)
@@ -299,7 +322,7 @@ def _prepare_edit_v1(pipe, ctx, row, max_pixels):
         for m in (changed_px, execution_px):
             if m is not None:
                 local_px |= m
-    return _edit_sample(pipe, "edit_v1", source, target, prompt, loss_px=[loss_px], route_px=[route_px],
+    return _edit_sample(pipe, kind, source, target, prompt, loss_px=[loss_px], route_px=[route_px],
                         token_px=[rd.decode_rle(token["dec"])], negative_px=np.zeros(shape, bool), read_negatives=False,
                         max_pixels=max_pixels, dilate=True, local_px=local_px)
 
@@ -315,20 +338,20 @@ def unit_change(changed, own):
     return part if part is not None and part.any() else own
 
 
-def _prepare_edit_multi_v1(pipe, ctx, row, max_pixels):
-    """A cleaned v1 multi-object pair: the target already holds every unit's edit."""
-    pair, tokens = ctx.d4(row["id"])
-    with Image.open(rd.V1_ROOT / pair["source_image"]) as im:
+def _prepare_multi_record(pipe, kind, root, pair, tokens, row, max_pixels):
+    """A multi-unit pair in the D4 format (cleaned v1 ``edit_multi_v1``, extedit ``edit_multi_ext``): the target
+    already holds every unit's edit."""
+    with Image.open(root / pair["source_image"]) as im:
         source = im.convert("RGBA")
-    with Image.open(rd.V1_ROOT / pair["target_image"]) as im:
+    with Image.open(root / pair["target_image"]) as im:
         target = im.convert("RGBA")
     shape = (source.height, source.width)
     sentences, loss_px, route_px, token_px = [], [], [], []
     near = np.zeros(shape, bool)
     for index, form in zip(row["order"], row["forms"]):
         unit, token = pair["units"][index], tokens["units"][index]
-        if token["uid"] != unit["id"]:
-            raise ValueError("D4 token file does not match the manifest")
+        if token["uid"] != unit["id"].rsplit("#", 1)[-1]:    # D4 units are "U1"..., extedit units "<pair>#U1"...
+            raise ValueError("multi-unit token file does not match the manifest")
         s_px = rle_region(unit["selection"], shape)
         execution_px = rle_region(unit.get("execution_region"), shape)
         own = s_px | execution_px if execution_px is not None else s_px
@@ -340,7 +363,7 @@ def _prepare_edit_multi_v1(pipe, ctx, row, max_pixels):
         for m in (s_px, changed_px, execution_px):
             if m is not None:
                 near |= m
-    return _edit_sample(pipe, "edit_multi_v1", source, target, rd.multi_edit_prompt(sentences), loss_px=loss_px,
+    return _edit_sample(pipe, kind, source, target, rd.multi_edit_prompt(sentences), loss_px=loss_px,
                         route_px=route_px, token_px=token_px, negative_px=np.zeros(shape, bool), read_negatives=False,
                         max_pixels=max_pixels, dilate=True, local_px=near if row.get("loss_region") == "local" else None)
 
@@ -442,7 +465,7 @@ def region_error(squared_error, regions, dilate=True):
 
 
 def round2_loss(pipe, sample, router=None, *, lambda_region=1.0, lambda_distractor=1.0, timestep_index=None,
-                noise=None, checkpointing=True, heavy_weight=DISTRACTOR_WEIGHT):
+                noise=None, checkpointing=True, heavy_weight=DISTRACTOR_WEIGHT, edit_region_dilate=True):
     """Returns ``(flow, write, read, metrics)``; the caller adds ``lambda_route * write + lambda_read * read``.
     With a router, call ``router.disarm()`` after backward (gradient checkpointing re-runs the hooks)."""
     inputs = sample.inputs
@@ -472,6 +495,8 @@ def round2_loss(pipe, sample, router=None, *, lambda_region=1.0, lambda_distract
     mean = squared_error.mean() if sample.loss_mask is None else \
         (squared_error * sample.loss_mask).sum() / sample.loss_mask.sum().clamp(min=1.0)
     dilate = sample.region_dilate if sample.region_dilate is not None else sample.kind != "edit"
+    if not edit_region_dilate and sample.kind in EDIT_KINDS:   # stage C: only the tokens that really change
+        dilate = False
     in_region = region_error(squared_error, sample.regions, dilate=dilate)
     other = (sample.distractors > DISTRACTOR_COVERAGE).float()
     on_distractors = (squared_error * other).sum() / other.sum() if float(other.sum()) > 0 else mean.detach() * 0
