@@ -8,7 +8,7 @@
 - 开发评测集和 benchmark 的要点；
 - 每份数据的路径。
 
-方法见[文档 02](02_SAMTokEdit_Qwen21_v3方法.md)，实验见[文档 03](03_SAMTokEdit_Qwen21_v3实验.md)。截至 2026-10-20。
+方法见[文档 02](02_SAMTokEdit_Qwen21_v3方法.md)，实验见[文档 03](03_SAMTokEdit_Qwen21_v3实验.md)。截至 2026-10-24。
 
 路径记号（`scripts/docs/check_paths.py` 会逐一检查）：`datasets/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/datasets/…`，`V3/…` 指 v3 实验根 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`。
 
@@ -27,8 +27,9 @@
 | D7 | 写字编辑（数据线新产） | 计划 3,000 条 | C3b（计划，§2.11） | 待交付 |
 | D8 | 结构替换（数据线新产） | 计划 4,000 条 | C3b（计划，§2.11） | 待交付 |
 | D9 | 整体改属性（数据线新产） | 计划 2,000 条 | C3b（计划，§2.11） | 待交付 |
-| D10 | CrispEdit、ScaleEdit 新数据，协议 2.0（extedit 第一批，§2.12） | 38,346 条（单目标 36,430、多目标 1,916）/ 40,791 单元 | 尚未接入训练 | `datasets/ExtEdit_Protocol2_20261021/` |
-| D11 | CrispEdit、ScaleEdit 新数据，协议 2.0（extedit 第二批，§2.12） | 151,337 条（单目标 141,626、多目标 9,711）/ 163,595 单元 | 尚未接入训练 | `datasets/ExtEdit_Protocol2_20261022/` |
+| D10 | CrispEdit、ScaleEdit 新数据，协议 2.0（extedit 第一批，§2.12） | 38,346 条（单目标 36,430、多目标 1,916）/ 40,791 单元 | C3-D、C3-MD（12,000 行）；合板 | `datasets/ExtEdit_Protocol2_20261021/` |
+| D11 | CrispEdit、ScaleEdit 新数据，协议 2.0（extedit 第二批，§2.12） | 151,337 条（单目标 141,626、多目标 9,711）/ 163,595 单元 | 合板 | `datasets/ExtEdit_Protocol2_20261022/` |
+| 合板 | D1、D3、D4、D10、D11 合成一份，加文字标记和默认训练视图（§2.13） | 283,364 条 / 303,965 单元；默认视图 258,577 条 / 278,240 单元 | 尚未训练（`edit_merged` 已就绪） | `datasets/SAMTokEdit_Merged_20261024/` |
 | — | 第一轮指认数据（E-A1、E-A2） | 42,000 行 / 每轮 82,000 行 | E-A1、E-A2 | `V3/data/stageA_ea1_20261011/`、`V3/data/stageA_ea2_20261012/` |
 | — | 第二轮开发评测集 | 1,320 项 | C1、C1b、C2 及基线 | `V3/data/round2_20261016/eval_c1.json` |
 | — | benchmark v2，release 2.6.0 | 1,084 张图 / 3,872 单元 | 最终测试（未正式跑）；10-19 拆分 36 例 | `datasets/samtok_edit_benchmark_v2/` |
@@ -67,6 +68,8 @@
 | 10-19 | 从 benchmark 2.6.0 拆出 36 个单指令 case |
 | 10-20 | 核查 C2 训练数据（中等尺度不缺；部分目标"做了一半"；写字编辑多是改字）；制定 C3 数据计划（§2.11） |
 | 10-20 | 梳理 CrispEdit、ScaleEdit 从源数据到 D3/D4 的完整流程，设计统一打标管线（§2.12） |
+| 10-21 | extedit 第一批发布（D10）；10-22 加自然度复查后重新发布 |
+| 10-24 | extedit 第二批发布（D11）；合板前统一文字复查；五批合板（§2.13） |
 
 ## 1. 统一的指令协议
 
@@ -470,6 +473,92 @@ Pico-Banana-400K 文字子集：
 - 直接产出与 D3、D4 同格式的协议 2.0 数据；
 - 估计每 10 万个原始对出 2–3 万条，旧流程约 2,000 条。
 
+### 2.13 合板：五批编辑数据合成一份（10-24，`datasets/SAMTokEdit_Merged_20261024/`）
+用户 10-24 的要求：
+- 盘点现有的可用数据，合成一批，供后续方法使用；
+- 文字类加独立标记；
+- 合板前统一做一次文字复查，单机运行，由用户提交。
+
+字段、规则和用法的完整说明在该目录的 README，这里记要点。
+
+**文字复查**
+- **说明与入口：**labeling 分支的 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/docs/EXTEDIT_TEXT_RECHECK.md`。
+- **运行目录：**`experiments2/SAMTokEdit/data_pipeline/02_production_runs/merge_text_recheck_20261024/`，校准在其 `admin/calibration/`。
+- **对象：**五批里与文字有关的单元，共 17,305 个：
+  - 改字（改属性，属性为 text）13,786 个；
+  - 写字候选（添加、替换的新物体描述里有引号或 text、reading 一类的词）3,519 个。
+- **两项检查：**
+  - 请求检查：只看指令，27B 两票，给出要写的字以及它是否乱码或拼错。ScaleEdit 的源指令常有 "Stadiiom" 这类拼错。
+  - 读图复查：同 extedit 的文字复查，BEFORE / AFTER 特写，不告诉模型要写什么，由代码比对。
+  - D10、D11 的改字打标时已读图复查过，只做请求检查。
+- **运行：**ARNOLD 单机，10-24 10:45 到 11:32 UTC，没有报错。
+- **校准（看图）：**
+  - 27 条事先判过的单元里，5 条坏的全部拦下；
+  - 按结果分组抽 32 条：判乱码的都对；读图不通过的约七到八成确有问题。
+- **规则：**
+  - 两票里至少一票取出了要写的字，才算写字单元，共 2,181 个；
+  - 至少一票判乱码，或读图复查不通过，即不通过；
+  - 记录里有一个文字单元不通过，整条移出默认视图。
+- **结果：**
+  - 改字 13,786 个，通过 13,400 个。D10 通过 99.2%，D3 通过 81%。
+  - 写字 2,181 个，通过 1,768 个。D11 通过 82%；D1 只有 53%，原版模型自蒸馏，写字质量差。
+  - 794 条记录移出默认视图。
+
+**合板规则**
+- **格式：**统一为 D3 / D4 的单元格式，单目标记录也是只有一个单元的 `units`。
+  - 每个单元带 SAMTok token（span、解码区域、往返 IoU）和文字标记 `text`：
+    - `role` 为 `change`（改字）、`render`（写字）、`remove`（删除文字类对象，按 scope 词表打标）或空；
+    - 另有要写的字和复查结论。
+  - 每条记录带源图 SHA-1（`group`）、编辑图漂移和局部损失标记、`split`，以及不进默认视图的原因 `exclude`。
+- **默认训练视图**（`views/default_train.txt`）去掉的记录：
+  - 验证集（C1–C3 的 dev）；
+  - token 往返 < 0.5；
+  - 做了一半的目标，同 C3 取行；
+  - 文字复查不通过；
+  - 源图与 benchmark 2.6.0 相同或近重复（dHash ≤ 6 位），或与验证集共用源图；
+  - 同一个新物体描述超过 50 次；
+  - D1 以外，同一张源图超过 3 条。
+- **图片：**全部硬链接到原文件，不占额外空间。
+
+**结果**
+
+| 来源 | 全部记录 | 默认视图记录 | 默认视图单元 | 主要的去掉原因 |
+|---|---:|---:|---:|---|
+| D1 | 50,000 | 34,602 | 34,602 | 往返低 9,536、做了一半 4,108、验证集 2,804 |
+| D3 | 39,615 | 33,658 | 33,658 | 往返低 4,116、同图超限 627、做了一半 529 |
+| D4 | 4,066 | 3,578 | 8,690 | 往返低 385、做了一半 101 |
+| D10 | 38,346 | 36,915 | 39,334 | 描述超限 712、做了一半 601 |
+| D11 | 151,337 | 149,824 | 161,956 | 做了一半 670、描述超限 512、文字 321 |
+| 合计 | 283,364 | 258,577 | 278,240 | |
+
+- **默认视图按操作（单元）：**
+  - 删除 72,211（26.0%）；
+  - 替换 69,775（25.1%）；
+  - 改属性 64,837（23.3%）；
+  - 添加 58,849（21.2%）；
+  - 改字 12,568（4.5%）。
+- **多目标与文字：**
+  - 多目标 15,082 条、34,745 个单元；
+  - 写字 1,687 个单元，删文字类对象 1,845 个。
+- **与 benchmark 的近重复：**D3 4 条、D4 1 条，D1 为 0。
+- **校验：**
+  - id 不重复；
+  - 517,860 个图片文件都在，抽 5,000 个都是硬链接；
+  - 单元索引、视图与记录一致；
+  - 输入文件都早于构建。
+
+**怎么用于训练**
+- **训练行类型 `edit_merged`：**单目标、多目标记录都用它，训练时只加载行里用到的记录。
+  - D1 记录可带近邻负例和 twins，同 C2。
+  - 在 75 条记录上（每个来源 15 条）核对过：它读出的区域、token 和指令，与 C2 原来各类型（`edit`、`edit_v1`、`edit_ext`、多目标）逐像素一致。
+- **取行：**`round2-data rows-merged --spec <配置>`。配置写明：
+  - 按来源、操作、文字类别的抽取份额；
+  - 高亮行和 D1 拼合多目标行的比例。
+  - 一份 1,500 次更新的配置生成 48,000 行，约 2 分钟。
+- **待做：**GPU 上的训练冒烟，要等 C3 实验让出 GPU。
+
+**代码：**`src/samtok_edit21/preparation/merge_data.py`（`merge-data`，提交 `f7a86b60`），`rows-merged` 与 `edit_merged`（提交 `a542da97`）。
+
 ## 3. 评测数据
 
 ### 3.1 第二轮开发评测集（`V3/data/round2_20261016/eval_c1.json`，1,320 项）
@@ -526,7 +615,7 @@ benchmark 在单独的仓库维护：`Tangent0308/samtok_edit_benchmark`，分�
 - 结果见文档 03 §5.6。
 
 ### 3.4 训练数据与评测数据的关系
-- **来源：**v1 清洗数据来自 RefEdit/CrispEdit/ScaleEdit/GRES，与 SA-1B 的 benchmark 来源不同，用户决定不做泄漏检查。50k 和区域池与 benchmark 同属 SA-1B，已按源图 ID 和哈希排除，交集为 0；没有做近重复检索。
+- **来源：**v1 清洗数据来自 RefEdit/CrispEdit/ScaleEdit/GRES，与 SA-1B 的 benchmark 来源不同，用户决定不做泄漏检查。50k 和区域池与 benchmark 同属 SA-1B，已按源图 ID 和哈希排除，交集为 0。合板时（§2.13）对 D1、D3、D4 补做了近重复检索（dHash ≤ 6 位）：D1 为 0，D3 4 条、D4 1 条，已移出默认视图；D10、D11 打标取数时已查过。
 - **分布差距：**
   - 区域大小：D1 中位 0.16%，D3 中位 4.1%，benchmark 中位 0.47%。
   - 多目标：benchmark 每图 2–5 条一起执行，C2 训练中多目标行约 13%（D4 + D5）。
@@ -543,7 +632,9 @@ benchmark 在单独的仓库维护：`Tangent0308/samtok_edit_benchmark`，分�
 | `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/` | 协议 1.0 多目标召回 | 2.0 适配的输入 |
 | `datasets/SAMTokEdit_Cleaned_20261009/protocol_multi_qwen38_27b_v1/protocol_v2_blind/` | **D4**，含 README、summary | C2 |
 | `datasets/ExtEdit_Protocol2_20261021/` | **D10**：CrispEdit、ScaleEdit 新数据按协议 2.0 打标的第一批（38,346 条，含 README、token 缓存） | C3-D、C3-MD 用了其中 12,000 行 |
-| `datasets/ExtEdit_Protocol2_20261022/` | **D11**：第二批（151,337 条，含 README、token 缓存） | 尚未接入训练 |
+| `datasets/ExtEdit_Protocol2_20261022/` | **D11**：第二批（151,337 条，含 README、token 缓存） | 合板 |
+| `datasets/SAMTokEdit_Merged_20261024/` | **合板**（§2.13）：五批合成一份，含 README、`records.jsonl`、单元索引 `units.parquet`、默认视图、`build.json` | 以后的训练（`edit_merged`） |
+| `experiments2/SAMTokEdit/data_pipeline/02_production_runs/merge_text_recheck_20261024/` | 合板前的统一文字复查：清单、记录、校准与判定 | 合板的文字标记 |
 | `datasets/sa1b_samtok_edit_50k_20261014/release/` | **D1** 全部：说明、标注、源图 1,132 张、目标图 50,000 张、mask、支持区域、`edited` 和 `region_v2` mask | C1、C1b、C2；开发集 |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/sa1b_samtok_edit_50k_20261014/sources/` | SA-1B dense 标注 | D2 区域池 |
 | `datasets/SAMTok_Training_Data/mix_gres8k_ver4k_train.parquet` | GRES/VER | Derived 子集来源；E-A2 的 GRES 指认 |

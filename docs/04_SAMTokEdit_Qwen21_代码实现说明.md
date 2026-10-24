@@ -605,8 +605,9 @@ samtok-edit infer --mode interactive --image source.png --mask mask.png \
 
 | 文件 | 内容 |
 |---|---|
-| `src/samtok_edit21/preparation/round2_data.py` | 开发划分、SA-1B dense mask 区域池、token 缓存；C1/C1b/C2 训练行（指认、近邻反例、反事实成对、天然孪生、50k 拼合多目标、v1/D4 编辑行与漂移判断）；C3 训练行（`build_rows_c3`：按 C2 比例抽行、去掉做了一半的样本、D10 定向子集）；开发评测集 `eval_c1.json` |
-| `src/samtok_edit21/training/round2.py` | 每类训练行的样本准备（`_prepare_*`；D3/D4 格式的单条与多目标记录共用 `_prepare_record`、`_prepare_multi_record`，C3 起也读 D10 的 `edit_ext`、`edit_multi_ext`）、多 span 的位置查找、路由标签（`token_labels`，无 token 覆盖率 > 0.5 时取最大者）、`round2_loss`（FM + 区域 + 邻居 + 写/读路由；`edit_region_dilate=False` 时编辑行的区域项不外扩）、`unit_change`、局部损失 `loss_mask` |
+| `src/samtok_edit21/preparation/round2_data.py` | 开发划分、SA-1B dense mask 区域池、token 缓存；C1/C1b/C2 训练行（指认、近邻反例、反事实成对、天然孪生、50k 拼合多目标、v1/D4 编辑行与漂移判断）；C3 训练行（`build_rows_c3`：按 C2 比例抽行、去掉做了一半的样本、D10 定向子集）；合板数据的取行（`build_rows_merged`：按 JSON 配置从默认视图抽行，见文档 01 §2.13）；开发评测集 `eval_c1.json` |
+| `src/samtok_edit21/preparation/merge_data.py` | 合板（文档 01 §2.13）：五批数据统一为 D3/D4 单元格式，token 内嵌，文字标记，源图 SHA-1 分组，默认视图的排除规则（`hard_exclusions`、`apply_caps`），图片硬链接，`units.parquet`、`stats.json`、`build.json` |
+| `src/samtok_edit21/training/round2.py` | 每类训练行的样本准备（`_prepare_*`；D3/D4 格式的单条与多目标记录共用 `_prepare_record`、`_prepare_multi_record`，C3 起也读 D10 的 `edit_ext`、`edit_multi_ext`；合板数据的单条与多目标记录都用 `edit_merged`：`merged_regions`、`_prepare_merged`，只加载行里用到的记录）、多 span 的位置查找、路由标签（`token_labels`，无 token 覆盖率 > 0.5 时取最大者）、`round2_loss`（FM + 区域 + 邻居 + 写/读路由；`edit_region_dilate=False` 时编辑行的区域项不外扩）、`unit_change`、局部损失 `loss_mask` |
 | `src/samtok_edit21/training/round2_engine.py` | 训练循环：`--init-adapter` 热启动、余弦学习率、`--heavy-weight`、`--edit-region-dilate`（C3-M）、按行号的确定性分片、快速评测、W&B |
 | `src/samtok_edit21/training/routing.py` | 第一轮的写方向路由，加上读方向（⟨M⟩→源图）和读方向仿射 `read_affine`；两个方向都是带权 BCE |
 | `src/samtok_edit21/training/tracking.py` | 多卡下的 W&B 记录（`DistributedTracker`） |
@@ -619,7 +620,8 @@ samtok-edit infer --mode interactive --image source.png --mask mask.png \
 
 | 命令 | 作用 | 是否多卡 |
 |---|---|---|
-| `round2-data <step>` | 建第二轮数据：`pool`（开发划分、区域池、token 缓存，多卡）、`rows`（C1）、`rows-c1b`、`rows-c2`、`quick-c2`、`eval`（开发评测集） | `pool` 多卡 |
+| `round2-data <step>` | 建第二轮数据：`pool`（开发划分、区域池、token 缓存，多卡）、`rows`（C1）、`rows-c1b`、`rows-c2`、`rows-c3m`、`rows-c3d`、`rows-merged --spec <配置>`（合板数据）、`quick-c2`、`eval`（开发评测集） | `pool` 多卡 |
+| `merge-data --out <目录>` | 合板：写出 `datasets/SAMTokEdit_Merged_20261024/` 这样的数据目录（`--limit N` 每个来源只取前 N 条，试跑用） | 否（多进程） |
 | `round2-train` | 训练 | 是 |
 | `round2-eval` | 在开发集上评测一个权重，或不给权重时评测原版 | 是 |
 | `round2-report` | 配对报告 | 否 |
@@ -727,5 +729,6 @@ samtok-edit ground-report --eval $RUN/eval --data $V3/data/stageA_ea2_20261012 -
 
 | 日期 | 内容 |
 |---|---|
+| 2026-10-24 | 3.9 节补合板代码：`merge-data`、`round2-data rows-merged`、训练行类型 `edit_merged` |
 | 2026-10-19 | 文档重排：本文由 01 改为 04；补 3.9 节第二轮代码；路径与引用改到新的文档 01–03 |
 | 2026-10-13 | v3 首版。把 E-A2 的方法（码本向量注入、注意力路由损失、干扰实例项、指认任务、数据构建与泄漏防护、三种评测探针、报告、对比页）写进仓库；训练循环加入各卡权重同步；新增四机入口和文档代码块同步工具 |
