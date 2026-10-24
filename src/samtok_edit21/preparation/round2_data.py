@@ -892,6 +892,7 @@ def build_rows_c2(out, seed=20261019, world=8, accumulation=4):
 # Stage C (docs/03 section 6): 1,500 updates continued from C2.  The C2 mix is kept by drawing its rows (pairs stay
 # pairs); "half done" targets are left out first; the data variant replaces a quarter of the rows by extedit batch 1.
 EXT_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/ExtEdit_Protocol2_20261021")
+MERGED_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261024")   # docs/01 2.13
 EXT_MANIFEST = EXT_ROOT / "manifest_protocol_v2.jsonl"
 EXT_MULTI_MANIFEST = EXT_ROOT / "manifest_multi_protocol_v2.jsonl"
 C3_UPDATES = 1500
@@ -1048,6 +1049,133 @@ def build_rows_c3(out, variant, seed=20261023, world=8, accumulation=4):
     return stats
 
 
+# Rows from the merged dataset (docs/01 section 2.13).  A spec (JSON) lists draws over the default-view records, then
+# the shares of highlight rows and of joined 50k multi-target rows; forms, the near negatives and twins of the SA-1B
+# records as in C2.  A draw: {"family": "D11" or [...], "op": "add" | "remove" | "replace" | "attribute" | "text" |
+# "multi", "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true}.
+# Records are drawn without replacement over all draws; a draw larger than what is left repeats its records.
+def merged_match(record, draw):
+    families = draw.get("family")
+    if families is not None and record["family"] not in ([families] if isinstance(families, str) else families):
+        return False
+    op = draw.get("op")
+    if op == "multi" and len(record["units"]) < 2:
+        return False
+    if op not in (None, "multi") and (len(record["units"]) != 1 or record["units"][0]["op"] != op):
+        return False
+    role = draw.get("text_role")
+    return role is None or any(u["text"]["role"] == role for u in record["units"])
+
+
+def build_rows_merged(out, spec_path):
+    spec = json.load(open(spec_path))
+    name, rng = spec["name"], random.Random(spec.get("seed", 20261025))
+    world, accumulation, updates = spec.get("world", 8), spec.get("accumulation", 4), spec["updates"]
+    total = updates * world * accumulation
+    forms = spec.get("forms", C2_FORMS)
+    records = [r for r in map(json.loads, open(Path(spec.get("merged", MERGED_ROOT)) / "records.jsonl")) if r["default"]]
+    dev = set(json.load(open(out / "dev_split.json"))["sa1b_sources"])
+    train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
+    pool = {e["source_id"]: e for e in train}
+    hl = spec.get("highlights", {})
+    n_hl, n_hlm = round(total * hl.get("single", 0.0)), round(total * hl.get("multi", 0.0))
+    n_join = round(total * spec.get("joined_multi", 0.0))
+    draws = spec["draws"]
+    sizes = [d.get("rows", round(total * d.get("share", 0.0))) for d in draws]
+    rest = [k for k, d in enumerate(draws) if d.get("rest")]
+    left = total - n_hl - n_hlm - n_join - sum(s for k, s in enumerate(sizes) if k not in rest)
+    if len(rest) > 1 or left < 0 or (not rest and left):
+        raise ValueError(f"draws do not add up: {left} rows left for {len(rest)} 'rest' draws")
+    for k in rest:
+        sizes[k] = left
+
+    def form(unit):
+        return rng.choices(list(forms), weights=list(forms.values()))[0] if unit.get("instruction_noref") else "ref_token"
+
+    used, singles, units, report = set(), [], [], []
+    for draw, need in zip(draws, sizes):
+        options = [r for r in records if r["id"] not in used and merged_match(r, draw)]
+        if not options and need:
+            raise ValueError(f"no record for draw {draw}")
+        picks = rng.sample(options, min(need, len(options)))
+        while len(picks) < need:               # oversample: the draw needs more than is left
+            picks += rng.sample(options, min(need - len(picks), len(options)))
+        used |= {r["id"] for r in picks}
+        report.append({"draw": draw, "rows": need, "available": len(options), "repeated": max(0, need - len(options))})
+        for r in picks:
+            row = {"kind": "edit_merged", "id": r["id"]}
+            if len(r["units"]) > 1:
+                order = list(range(len(r["units"])))
+                rng.shuffle(order)
+                row.update(order=order, forms=[form(r["units"][i]) for i in order])
+                units.append([row])
+                continue
+            row["form"] = form(r["units"][0])
+            if r["family"] == "D1" and spec.get("d1_negatives", True) and r["sa1b"]["source_id"] in pool:
+                row["negatives"] = edit_negatives(pool[r["sa1b"]["source_id"]], r["units"][0]["token"]["dec"])
+            singles.append((r, row))
+    # SA-1B twins among the drawn rows: same image, same blind sentence; both read blind with their token
+    twins = defaultdict(list)
+    if spec.get("d1_twins", True):
+        for r, row in singles:
+            if r["family"] == "D1" and r["units"][0].get("instruction_noref"):
+                twins[(r["sa1b"]["source_id"], r["units"][0]["instruction_noref"])].append((r, row))
+    paired = set()
+    for k, group in enumerate(g for g in twins.values() if len(g) > 1):
+        items = [{"bbox": r["sa1b"]["bbox"], "row": row} for r, row in group]
+        pairs, _ = pair_within(items)
+        for j, (a, b) in enumerate(pairs):
+            key = f"{name}-twin-{k}-{j}"
+            ra, rb = a["row"], b["row"]
+            if ra["id"] == rb["id"]:
+                continue
+            ra.update(form="noref_token", partners=[rb["id"]], pair_key=key, pair_kind="twin")
+            rb.update(form="noref_token", partners=[ra["id"]], pair_key=key, pair_kind="twin")
+            units.append([ra, rb])
+            paired |= {id(ra), id(rb)}
+    units += [[row] for _, row in singles if id(row) not in paired]
+    # joined 50k multi-target rows (as C2), from the default-view SA-1B records
+    if n_join:
+        release = [json.loads(line) for line in open(RELEASE / "annotations/train_protocol_v2.jsonl")]
+        ok = {r["sa1b"]["sample_id"] for r in records if r["family"] == "D1"}
+        supports = CoarseSupports(out / "support_cache.jsonl")
+        by_image = defaultdict(list)
+        for r in release:
+            if r["sample_id"] in ok and r["instruction_noref"]:
+                by_image[r["source_id"]].append(r)
+        images = sorted(by_image)
+        dec = {r["sa1b"]["sample_id"]: r["units"][0]["token"]["dec"] for r in records if r["family"] == "D1"}
+        for size in rng.choices(list(C2_MULTI_SIZES), weights=list(C2_MULTI_SIZES.values()), k=n_join):
+            for _ in range(200):
+                group = composite_group(by_image[rng.choice(images)], supports, rng, size)
+                if group:
+                    break
+            else:
+                raise RuntimeError(f"no {size}-unit composite found")
+            rng.shuffle(group)
+            entry = pool.get(group[0]["source_id"])
+            negatives = sorted({j for r in group for j in edit_negatives(entry, dec[r["sample_id"]])}) if entry else []
+            units.append([{"kind": "edit_multi", "source_id": group[0]["source_id"], "sample_ids": [r["sample_id"] for r in group],
+                           "forms": [form(r) for r in group], "negatives": negatives}])
+    n_pairs = round(PAIR_SHARE * n_hl / 2)
+    units += highlight_pairs(train, rng, n_pairs, f"{name}-hlpair")
+    units += highlight_singles(train, rng, n_hl - 2 * n_pairs, round(C2_HL_NAMED * n_hl))
+    units += highlight_multis(train, rng, n_hlm)
+    rows = place_in_slots(units, rng, updates, world, accumulation)
+    with open(out / f"{name}.jsonl", "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    family = {r["id"]: r["family"] for r in records}
+    stats = {"name": name, "rows": len(rows), "updates": updates, "world": world, "accumulation": accumulation,
+             "kinds": dict(Counter(r["kind"] for r in rows)), "draws": report,
+             "merged_rows_by_family": dict(Counter(family[r["id"]] for r in rows if r["kind"] == "edit_merged")),
+             "twin_pairs": sum(1 for r in rows if r.get("pair_kind") == "twin") // 2,
+             "d1_rows_with_negatives": sum(1 for r in rows if r["kind"] == "edit_merged" and r.get("negatives")),
+             "forms": dict(Counter(r.get("form") for r in rows if r["kind"] == "edit_merged" and "form" in r))}
+    (out / f"{name}_stats.json").write_text(json.dumps(stats, indent=1))
+    return stats
+
+
 def build_quick_c2(out, seed=20261019):
     """Items checked during stage-B training: 40 edits (10 per operation), 10 remove pairs, 24 + 8 single
     highlights, 8 multi-token highlights, 4 instance pairs and 2 part/host pairs (112 items)."""
@@ -1138,8 +1266,10 @@ def build_eval(out, seed=20261017):
 
 def main(argv=None):
     p = argparse.ArgumentParser(prog="samtok-edit round2-data", description=__doc__.split("\n\n")[0])
-    p.add_argument("step", choices=["pool", "rows", "rows-c1b", "rows-c2", "rows-c3m", "rows-c3d", "quick-c2", "eval"])
+    p.add_argument("step", choices=["pool", "rows", "rows-c1b", "rows-c2", "rows-c3m", "rows-c3d", "rows-merged",
+                                    "quick-c2", "eval"])
     p.add_argument("--out", required=True)
+    p.add_argument("--spec", help="rows-merged: the JSON spec of the draws (see build_rows_merged)")
     args = p.parse_args(argv)
     out = Path(args.out)
     if args.step == "pool":
@@ -1152,6 +1282,8 @@ def main(argv=None):
         print(json.dumps(build_rows_c2(out), indent=1))
     elif args.step in ("rows-c3m", "rows-c3d"):
         print(json.dumps(build_rows_c3(out, args.step[-1]), indent=1))
+    elif args.step == "rows-merged":
+        print(json.dumps(build_rows_merged(out, args.spec), indent=1))
     elif args.step == "quick-c2":
         print(json.dumps(build_quick_c2(out), indent=1))
     else:

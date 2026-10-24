@@ -34,7 +34,7 @@ from samtok_edit21.training.grounding_engine import average_gradients, broadcast
 from samtok_edit21.training.routing import DEFAULT_LAYERS
 
 KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5, "edit_multi_v1": 6,
-              "edit_ext": 7, "edit_multi_ext": 8}
+              "edit_ext": 7, "edit_multi_ext": 8, "edit_merged": 9}
 
 
 def parser():
@@ -162,6 +162,9 @@ def main(argv=None):
 
     ctx = Context(data)
     rows = [json.loads(line) for line in open(data / args.rows)]
+    merged = [r for r in rows if r["kind"] == "edit_merged"]
+    if merged:   # load only the merged records these rows use (twins name their partner)
+        ctx.merged_ids = {r["id"] for r in merged} | {p for r in merged for p in r.get("partners", ())}
     needed = args.updates * args.accumulation * world
     if needed > len(rows):
         raise ValueError(f"{needed} rows needed, {args.rows} has {len(rows)}")

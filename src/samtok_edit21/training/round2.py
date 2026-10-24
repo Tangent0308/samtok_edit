@@ -4,8 +4,10 @@ A row is a highlight with one token (``hl``, ``hl_ref``), a highlight with sever
 or an edit: an SA-1B 50k edit (``edit``: blind no-ref + token, ref + token, or ref without a token), a cleaned v1 edit
 (``edit_v1``), a cleaned v1 multi-object pair (``edit_multi_v1``, its real joint target) or 2-4 non-overlapping 50k
 edits of one image joined into one multi-target edit (``edit_multi``); stage C adds the extedit batch-1 records and
-pairs (``edit_ext``, ``edit_multi_ext``: same format as the cleaned v1 ones).  A multi-target prompt has one numbered
-line and one token per unit.  The model input is what inference gives it: the source image and the prompt.
+pairs (``edit_ext``, ``edit_multi_ext``: same format as the cleaned v1 ones); ``edit_merged`` is any record of the
+merged dataset (docs/01 section 2.13: single or multi-unit, token inline; SA-1B records may carry near negatives and
+twins).  A multi-target prompt has one numbered line and one token per unit.  The model input is what inference
+gives it: the source image and the prompt.
 Regions enter only through targets and loss weights:
 
     loss = w(t) * (FM + lambda_region * FM_region + lambda_distractor * FM_distractor)
@@ -45,7 +47,7 @@ from samtok_edit21.training.objectives import validate_conditioning
 from samtok_edit21.training.routing import DISTRACTOR_WEIGHT
 
 MAX_PIXELS = 1024 * 1024
-EDIT_KINDS = ("edit", "edit_v1", "edit_multi", "edit_multi_v1", "edit_ext", "edit_multi_ext")
+EDIT_KINDS = ("edit", "edit_v1", "edit_multi", "edit_multi_v1", "edit_ext", "edit_multi_ext", "edit_merged")
 
 
 @dataclass
@@ -71,7 +73,8 @@ class Context:
         self.release = {r["sample_id"]: r for r in map(json.loads, open(rd.RELEASE / "annotations/train_protocol_v2.jsonl"))}
         self.tokens = {t["sample_id"]: t for t in map(json.loads, open(self.data / "edit_tokens.jsonl"))}
         self._pool = lru_cache(maxsize=256)(self._load)
-        self._v1 = self._d4 = self._ext = self._ext_multi = None
+        self._v1 = self._d4 = self._ext = self._ext_multi = self._merged = None
+        self.merged_ids = None          # set by the trainer: the merged records its rows use (others are not loaded)
 
     def d4(self, pair_id):
         """A cleaned v1 multi-object pair and its units' tokens (loaded on first use)."""
@@ -101,6 +104,17 @@ class Context:
             self._ext_multi = {p["id"]: (p, tokens[p["id"]]) for p in map(json.loads, open(rd.EXT_MULTI_MANIFEST))
                                if p["id"] in tokens}
         return self._ext_multi[pair_id]
+
+    def merged(self, record_id):
+        """A record of the merged dataset (``records.jsonl``, loaded on first use: only ``merged_ids`` when set; the
+        id is read from the start of each line, so the other records are not parsed)."""
+        if self._merged is None:
+            self._merged = {}
+            for line in open(rd.MERGED_ROOT / "records.jsonl"):
+                rid = line[8:line.index('"', 8)]          # every record starts with {"id": "...
+                if self.merged_ids is None or rid in self.merged_ids:
+                    self._merged[rid] = json.loads(line)
+        return self._merged[record_id]
 
     def _load(self, source_id):
         return json.load(open(self.data / "pool" / f"{source_id}.json"))
@@ -187,6 +201,8 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
         return _prepare_multi_record(pipe, "edit_multi_v1", rd.V1_ROOT, *ctx.d4(row["id"]), row, max_pixels)
     if row["kind"] == "edit_multi_ext":
         return _prepare_multi_record(pipe, "edit_multi_ext", rd.EXT_ROOT, *ctx.ext_multi(row["id"]), row, max_pixels)
+    if row["kind"] == "edit_merged":
+        return _prepare_merged(pipe, ctx, row, max_pixels)
     entry = ctx.pool(row["source_id"])
     with Image.open(entry["image"]) as im:
         source = im.convert("RGBA")
@@ -366,6 +382,58 @@ def _prepare_multi_record(pipe, kind, root, pair, tokens, row, max_pixels):
     return _edit_sample(pipe, kind, source, target, rd.multi_edit_prompt(sentences), loss_px=loss_px,
                         route_px=route_px, token_px=token_px, negative_px=np.zeros(shape, bool), read_negatives=False,
                         max_pixels=max_pixels, dilate=True, local_px=near if row.get("loss_region") == "local" else None)
+
+
+def merged_regions(record, row, shape, partner_selection=None, pool_mask=None):
+    """The region maps of a merged record (no model needed): per unit in ``row``'s order the loss region (the changed
+    pixels; a multi-unit pair's shared change cut to the unit), the write-side route region (S + change), the token's
+    decoded region and the rendered sentence; the negatives (near pool regions, twins' S) and the local-loss area."""
+    order = row.get("order") or list(range(len(record["units"])))
+    forms = row.get("forms") or [row.get("form", "noref_token")] * len(order)
+    multi = len(record["units"]) > 1
+    loss_px, route_px, token_px, sentences = [], [], [], []
+    near = np.zeros(shape, bool)
+    for index, form in zip(order, forms):
+        unit = record["units"][index]
+        s_px = rle_region(unit["selection"], shape)
+        execution_px = rle_region(unit.get("execution_region"), shape)
+        changed_px = rle_region(unit.get("edited_region"), shape)
+        if multi:
+            changed_px = unit_change(changed_px, s_px | execution_px if execution_px is not None else s_px)
+        loss_px.append(next(m for m in (changed_px, execution_px, s_px) if m is not None and m.any()))
+        route_px.append(s_px | changed_px if changed_px is not None else s_px)
+        token_px.append(rd.decode_rle(unit["token"]["dec"]).astype(bool))
+        sentences.append(p2.render(unit["instruction_spec"], form == "ref_token", selector_token=unit["token"]["span"]))
+        for m in (s_px, changed_px, execution_px):
+            if m is not None:
+                near |= m
+    negative_px = np.zeros(shape, bool)
+    for j in row.get("negatives", ()):
+        negative_px |= pool_mask(j)
+    for partner in row.get("partners", ()):
+        negative_px |= partner_selection(partner)
+    negative_px &= ~near
+    local_px = near if record.get("loss_region") == "local" else None
+    return loss_px, route_px, token_px, sentences, negative_px, local_px
+
+
+def _prepare_merged(pipe, ctx, row, max_pixels):
+    """A record of the merged dataset (docs/01 section 2.13)."""
+    record = ctx.merged(row["id"])
+    with Image.open(rd.MERGED_ROOT / record["source_image"]) as im:
+        source = im.convert("RGBA")
+    with Image.open(rd.MERGED_ROOT / record["target_image"]) as im:
+        target = im.convert("RGBA")
+    shape = (source.height, source.width)
+    entry = ctx.pool(record["sa1b"]["source_id"]) if row.get("negatives") else None
+    loss_px, route_px, token_px, sentences, negative_px, local_px = merged_regions(
+        record, row, shape, partner_selection=lambda p: rle_region(ctx.merged(p)["units"][0]["selection"], shape),
+        pool_mask=lambda j: rd.decode_rle(entry["masks"][j]["rle"]).astype(bool))
+    prompt = rd.multi_edit_prompt(sentences) if len(sentences) > 1 else sentences[0]
+    return _edit_sample(pipe, "edit_merged", source, target, prompt, loss_px=loss_px, route_px=route_px,
+                        token_px=token_px, negative_px=negative_px,
+                        read_negatives=bool(row.get("negatives") or row.get("partners")), max_pixels=max_pixels,
+                        dilate=True, local_px=local_px)
 
 
 def _prepare_edit_multi(pipe, ctx, row, max_pixels):

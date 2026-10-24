@@ -28,6 +28,8 @@ import io
 import json
 import os
 import re
+import subprocess
+import time
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
@@ -310,6 +312,7 @@ def image_name(rec, kind, src):
 
 def build(out, workers=32, limit=0):
     """Build the merged dataset in ``out`` (``limit``: only the first records of every family, for a smoke build)."""
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     verdicts = {}
@@ -377,7 +380,50 @@ def build(out, workers=32, limit=0):
     stats = statistics(records)
     stats["links"] = {"files": len(jobs), "made": made}
     (out / "stats.json").write_text(json.dumps(stats, indent=1, ensure_ascii=False))
+    write_build_info(out, {"workers": workers, "limit": limit}, started, workers=workers)
     return stats
+
+
+def inputs():
+    """The files the build reads; the images, the pool entries and the benchmark sources are only counted."""
+    files = [rd.RELEASE / "annotations/train_protocol_v2.jsonl", R2 / "edit_tokens.jsonl", R2 / "dev_split.json",
+             rd.V1_MANIFEST, D4_MANIFEST, R2 / "v1_tokens.jsonl", R2 / "d4_tokens.jsonl", TEXT_VERDICTS,
+             R2 / "support_cache.jsonl"]
+    for root, runs in EXT.values():
+        files += [root / name for name in ("manifest_protocol_v2.jsonl", "manifest_multi_protocol_v2.jsonl",
+                                           "tokens.jsonl", "multi_tokens.jsonl")]
+        files += [run / "ingest" / "rows.jsonl" for run in runs]
+    return files
+
+
+def _file_entry(path):
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 24), b""):
+            h.update(block)
+    return {"path": str(path), "bytes": os.path.getsize(path), "sha1": h.hexdigest()}
+
+
+def write_build_info(out, arguments, started, finished=None, commit=None, note=None, workers=16):
+    """``build.json``: code commit (and uncommitted files under src/), arguments, times, every input with its size
+    and SHA-1, and the counts of the linked folders."""
+    repo = Path(__file__).resolve().parents[3]
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True).stdout.strip()
+
+    info = {"command": "python -m samtok_edit21 merge-data", "arguments": arguments, "started": started,
+            "finished": finished or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "commit": commit or git("rev-parse", "HEAD"),
+            "uncommitted": [] if commit else git("status", "--porcelain", "--", "src").splitlines()}
+    if note:
+        info["note"] = note
+    with ThreadPoolExecutor(workers) as pool:
+        info["inputs"] = list(pool.map(_file_entry, inputs()))
+    info["counted"] = {"sa1b_pool_entries": len(os.listdir(R2 / "pool")),
+                       "benchmark_sources": len(list(BENCHMARK_ASSETS.glob("*/source.*")))}
+    (Path(out) / "build.json").write_text(json.dumps(info, indent=1, ensure_ascii=False))
+    return info
 
 
 def write_units(out, records):

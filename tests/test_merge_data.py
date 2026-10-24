@@ -59,3 +59,42 @@ def test_image_names():
     assert md.image_name(d1, "target", "/x/abcdef.png") == "images/D1/target/ab/abcdef.png"
     d3 = {"family": "D3", "source_ref": "refedit-12"}
     assert md.image_name(d3, "source", "/y/a.png") == "images/D3/12/refedit-12.source.png"
+
+
+def test_merged_regions_single_multi_negatives_and_local_loss():
+    import numpy as np
+    from samtok_edit21.preparation import round2_data as rd
+    from samtok_edit21.training.round2 import merged_regions
+    shape = (40, 60)
+
+    def rle(y0, y1, x0, x1):
+        m = np.zeros(shape, bool)
+        m[y0:y1, x0:x1] = True
+        e = rd.encode_rle(m)
+        return {"rle_size": e["size"], "rle_counts": e["counts"]}, e
+
+    s1, d1 = rle(5, 15, 5, 15)
+    s2, d2 = rle(20, 30, 30, 40)
+    spec = {"version": "2.0", "operation": "remove", "ref": "the cup", "scope": "cup", "payload": "", "target_part": "",
+            "remove_mode": "whole", "attributes": [], "placement": {}, "qualifier": ""}
+    unit = lambda s, d: {"selection": s, "execution_region": s, "edited_region": s, "instruction_spec": spec,  # noqa: E731
+                         "token": {"span": "<|mt_start|><|mt_0001|><|mt_0002|><|mt_end|>", "dec": d}}
+    single = {"units": [unit(s1, d1)], "loss_region": None}
+    loss, route, token, sentences, negative, local = merged_regions(
+        single, {"form": "noref_token", "negatives": [0]}, shape, pool_mask=lambda j: rd.decode_rle(d2).astype(bool))
+    assert len(loss) == 1 and loss[0].sum() == 100 and token[0].sum() == 100 and local is None
+    assert negative.sum() == 100 and not (negative & loss[0]).any() and "selected region" in sentences[0]
+    pair = {"units": [unit(s1, d1), unit(s2, d2)], "loss_region": "local"}
+    loss, route, token, sentences, negative, local = merged_regions(pair, {"order": [1, 0], "forms": ["ref_token"] * 2}, shape)
+    assert [m.sum() for m in loss] == [100, 100] and loss[0][25, 35] and local.sum() == 200 and not negative.any()
+    assert "the cup" in sentences[0]
+
+
+def test_merged_draw_matching():
+    from samtok_edit21.preparation.round2_data import merged_match
+    single = {"family": "D11", "units": [{"op": "replace", "text": {"role": "render"}}]}
+    pair = {"family": "D4", "units": [{"op": "remove", "text": {"role": None}}, {"op": "add", "text": {"role": None}}]}
+    assert merged_match(single, {"family": ["D10", "D11"], "op": "replace", "text_role": "render"})
+    assert not merged_match(single, {"family": "D11", "op": "add"})
+    assert not merged_match(single, {"op": "multi"}) and merged_match(pair, {"op": "multi"})
+    assert not merged_match(pair, {"op": "remove"}) and merged_match(pair, {"family": "D4"})
