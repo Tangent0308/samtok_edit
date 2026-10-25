@@ -555,7 +555,7 @@ Pico-Banana-400K 文字子集：
   - 按来源、操作、文字类别的抽取份额；
   - 高亮行和 D1 拼合多目标行的比例。
   - 一份 1,500 次更新的配置生成 48,000 行，约 2 分钟。
-- **待做：**GPU 上的训练冒烟，要等 C3 实验让出 GPU。
+- **GPU 训练冒烟（10-25）：**本机 8 卡、3 次更新、96 行（`edit_merged` 84 行，覆盖五个来源、单目标与多目标、D1 的近邻负例和 twins），0 个样本跳过，损失正常。
 
 **代码：**`src/samtok_edit21/preparation/merge_data.py`（`merge-data`，提交 `f7a86b60`），`rows-merged` 与 `edit_merged`（提交 `a542da97`）。
 
