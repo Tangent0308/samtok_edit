@@ -9,8 +9,8 @@ token, built only from the locator the job supplies:
 * ``mask_full`` jobs (one grayscale label map with every unit's mask, U1..U5 = gray 51..255): the unit's mask from it.
 Units without a locator (ref + none) stay text only.  The unit's instruction text stays as given and the token is
 placed after its selector (protocol 2.0 rendering, checked against the given text).  Generation is
-token-only (no pixel mask, no attention bias, no blending), CFG 1, about 1 MP on a 32 px grid, exported at the
-source size like the official Qwen-Image-2.1 adapter.
+token-only (no pixel mask, no attention bias, no blending; only the ``teacher`` test below blends), CFG 1, about 1 MP
+on a 32 px grid, exported at the source size like the official Qwen-Image-2.1 adapter.
 
     python -m samtok_edit21.evaluation.benchmark_token --jobs <jobs.jsonl> --output <run dir> \\
         --config <config.json> --benchmark <benchmark clone> --gpus 0,1,2,3,4,5,6,7
@@ -26,9 +26,16 @@ Config keys:
 * ``token_guidance`` (default 1, off): a second prediction per step from the same prompt with every region token
   removed, and the difference amplified (CFG with that token-free prompt as the negative branch); only prompts that
   carry a token, the rest run as before;
+* ``teacher`` (teacher-capability test for on-policy self-distillation, analysis/opsd_teacher_20261025; reads the
+  ground truth, so never a benchmark submission): ``gt_masks`` makes every unit's token from its ground-truth mask
+  (manifest ``target.mask``) instead of the job's locator; ``ref`` reads every unit as ref + token, the blind ones
+  too; ``blend`` = {"dilate", "feather", "add_expand"} keeps the source outside the allowed region (latent blending):
+  the union of the units' ground-truth masks, an add unit's box also grown by ``add_expand`` of its size on every
+  side, then dilated and feathered by the given numbers of tokens;
 * ``steps``, ``qwen``, ``samtok``;
 * ``manifest``: the release ``cases.jsonl``; only the instruction specs are read, to place the token and (with
-  ``ground``) to take the selector phrase, which is part of the given instruction;
+  ``ground``) to take the selector phrase, which is part of the given instruction (with ``teacher`` also the
+  ground-truth masks);
 * ``log``: directory for one JSON per job with the prompts, names and token round trips.
 """
 from __future__ import annotations
@@ -74,6 +81,41 @@ def _specs(manifest):
         _STATE["specs"] = {c["id"]: {u["id"]: u["instruction_spec"] for u in c["units"]} for c in cases}
         _STATE["manifest"] = manifest
     return _STATE["specs"]
+
+
+def _targets(manifest):
+    """Ground-truth targets per case and unit (teacher test only): operation, mask path (absolute) and box."""
+    if _STATE.get("targets_manifest") != manifest:
+        root = Path(manifest).resolve().parents[1]
+        _STATE["targets"] = {c["id"]: {u["id"]: {"operation": u["operation"], "mask": str(root / u["target"]["mask"]),
+                                                 "box": u["target"]["box"]} for u in c["units"]}
+                             for c in map(json.loads, open(manifest))}
+        _STATE["targets_manifest"] = manifest
+    return _STATE["targets"]
+
+
+def ground_truth_mask(target, size):
+    """A unit's ground-truth mask at the source size ``(width, height)``."""
+    with Image.open(target["mask"]) as im:
+        mask = im.convert("L")
+        if mask.size != size:
+            mask = mask.resize(size, Image.NEAREST)
+        return np.asarray(mask) > 0
+
+
+def allowed_region(targets, masks, size, add_expand=0.5):
+    """Where the teacher may change the image: the union of the units' masks; an add unit may also reach its box grown
+    by ``add_expand`` of the box size on every side (a new object can stand out of its attachment site)."""
+    width, height = size
+    region = np.zeros((height, width), bool)
+    for uid, target in targets.items():
+        region |= masks[uid]
+        if target["operation"] == "add" and add_expand:
+            x1, y1, x2, y2 = target["box"]
+            dx, dy = (x2 - x1) * add_expand, (y2 - y1) * add_expand
+            region[max(0, int(y1 - dy)):min(height, int(np.ceil(y2 + dy))),
+                   max(0, int(x1 - dx)):min(width, int(np.ceil(x2 + dx)))] = True
+    return region
 
 
 def unit_masks(job, codec=None, source=None):
@@ -171,32 +213,50 @@ def strip_tokens(prompt):
     return re.sub(r"[ \t]+([.,;:])", r"\1", TOKEN_SPAN.sub("", prompt))
 
 
-def generate_any(pipe, codec, prompt, image, *, steps, seed, guidance=1.0):
+def generate_any(pipe, codec, prompt, image, *, steps, seed, guidance=1.0, blend=None):
     """Token-only generation; a prompt without any region token (ref + none units only) runs as plain text.  With
-    ``guidance`` > 1 a prompt with tokens is also predicted without them, and the difference is amplified."""
+    ``guidance`` > 1 a prompt with tokens is also predicted without them, and the difference is amplified.
+    ``blend`` (teacher test): {"region": pixel mask, "dilate", "feather"} keeps the source outside the region."""
     from samtok_edit21.evaluation.grounding import canvas, export, generate
     from samtok_edit21.models.pipeline import edit as pipeline_edit
 
+    blending = {} if blend is None else {"blend_region": blend["region"], "blend_dilate": blend["dilate"],
+                                         "blend_feather": blend["feather"]}
     if "<|mt_start|>" in prompt:
         if guidance != 1.0:
             return generate(pipe, codec, prompt, image, steps=steps, seed=seed, cfg_scale=guidance,
-                            negative_prompt=strip_tokens(prompt))[0]
-        return generate(pipe, codec, prompt, image, steps=steps, seed=seed)[0]
+                            negative_prompt=strip_tokens(prompt), **blending)[0]
+        return generate(pipe, codec, prompt, image, steps=steps, seed=seed, **blending)[0]
     height, width = canvas(image)
     output, _ = pipeline_edit(pipe, prompt, [image.convert("RGBA")], mode="direct", height=height, width=width,
-                              num_inference_steps=steps, cfg_scale=1.0, seed=seed, use_kv_cache=True, pass2_te="raw")
+                              num_inference_steps=steps, cfg_scale=1.0, seed=seed, use_kv_cache=True, pass2_te="raw",
+                              **blending)
     return export(output, image.size)
 
 
 def edit(*, job, seed, config):
+    from samtok_edit21.preparation import instruction_protocol_v2 as p2
     from samtok_edit21.preparation.round2_data import multi_edit_prompt
 
     pipe, codec = _models(config)
     specs = _specs(config["manifest"])[job["case_id"]]
     image = Image.open(job["images"][0]).convert("RGB")
-    masks, how = unit_masks(job, codec, image)
+    teacher = config.get("teacher") or {}
+    if teacher.get("gt_masks"):
+        targets = {u["id"]: _targets(config["manifest"])[job["case_id"]][u["id"]] for u in job["units"]}
+        masks = {uid: ground_truth_mask(t, image.size) for uid, t in targets.items()}
+        how = {uid: "gt_mask" for uid in masks}
+    else:
+        masks, how = unit_masks(job, codec, image)
     guidance = float(config.get("token_guidance", 1.0))
-    log = {"job_id": job["job_id"], "units": [], "token_guidance": guidance}
+    log = {"job_id": job["job_id"], "units": [], "token_guidance": guidance, "teacher": teacher or None}
+    blend = None
+    if teacher.get("blend"):
+        if not teacher.get("gt_masks") or config["mode"] != "joint":
+            raise ValueError("teacher blending needs gt_masks and the joint mode")
+        region = allowed_region(targets, masks, image.size, teacher["blend"].get("add_expand", 0.5))
+        blend = {"region": region, "dilate": teacher["blend"].get("dilate", 2), "feather": teacher["blend"].get("feather", 1.0)}
+        log["allowed_area"] = float(region.mean())
 
     def token(current, uid):
         mask = masks[uid]
@@ -216,13 +276,15 @@ def edit(*, job, seed, config):
             raw = describe(pipe, current, span)
             name = clean_phrase(raw) or None
         text = unit_sentence(specs[unit["id"]], unit, span, name)
+        if teacher.get("ref"):              # teacher test: every unit names its object, the blind ones too
+            text = p2.render(specs[unit["id"]], True, selector_token=span) if span else p2.render(specs[unit["id"]], True)
         log["units"].append({"id": unit["id"], "region": how[unit["id"]], "area": float(masks[unit["id"]].mean()), "roundtrip": roundtrip,
                              "name": name, "sentence": text.replace(span, "<M>") if span else text})
         return text
 
     if config["mode"] == "joint":
         prompt = multi_edit_prompt([sentence(image, u) for u in job["units"]])
-        image = generate_any(pipe, codec, prompt, image, steps=config["steps"], seed=seed, guidance=guidance)
+        image = generate_any(pipe, codec, prompt, image, steps=config["steps"], seed=seed, guidance=guidance, blend=blend)
     elif config["mode"] == "sequential":
         for unit in job["units"]:
             image = generate_any(pipe, codec, sentence(image, unit), image, steps=config["steps"], seed=seed,

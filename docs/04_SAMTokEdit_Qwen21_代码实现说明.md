@@ -148,9 +148,11 @@ DiT 是单流结构（32 个 block、宽度 4096、32 个头），把所有东�
 <!-- code: src/samtok_edit21/evaluation/grounding.py::generate -->
 ```python
 @torch.no_grad()
-def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_AREA, cfg_scale=1.0, negative_prompt=None):
-    """Token-only inference: inline region tokens, raw text encoder, no binding, no blending, CFG 1 (or token guidance:
-    ``cfg_scale`` with a token-free ``negative_prompt``)."""
+def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_AREA, cfg_scale=1.0, negative_prompt=None,
+             blend_region=None, blend_dilate=2, blend_feather=1.0):
+    """Token-only inference: inline region tokens, raw text encoder, no binding, CFG 1 (or token guidance: ``cfg_scale``
+    with a token-free ``negative_prompt``).  No blending, unless ``blend_region`` (a pixel mask, teacher test only)
+    asks to keep the source outside it."""
     from samtok_edit21.models.binding import BindingConfig
     from samtok_edit21.models.pipeline import edit
 
@@ -158,7 +160,8 @@ def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_A
     extra = {} if negative_prompt is None else {"negative_prompt": negative_prompt}
     image, _ = edit(pipe, prompt, [source_rgb.convert("RGBA")], mode="inline", height=height, width=width,
                     num_inference_steps=steps, cfg_scale=cfg_scale, seed=seed, use_kv_cache=True, pass2_te="raw",
-                    binding=BindingConfig("none"), codec=codec, blend_region=None, **extra)
+                    binding=BindingConfig("none"), codec=codec, blend_region=blend_region, blend_dilate=blend_dilate,
+                    blend_feather=blend_feather, **extra)
     return export(image, source_rgb.size), (height, width)
 ```
 <!-- /code -->
