@@ -19,6 +19,7 @@ BOX_RE = re.compile(r"<\|box_start\|>\[(\d{1,4}), (\d{1,4}), (\d{1,4}), (\d{1,4}
 REGION_RE = re.compile(f"(?:{SPAN_RE.pattern})|(?:{BOX_RE.pattern})")
 EMPTY_THINK = "<think>\n\n</think>\n\n"
 GROUP_RE = re.compile(r"(?:" + REGION_RE.pattern + r")+")
+TOKEN_SPAN = re.compile(r"\s*<\|mt_start\|>(?:<\|mt_\d+\|>)*<\|mt_end\|>")
 
 
 def valid_span_codes(c0, c1):
@@ -140,3 +141,8 @@ def token_layout(tokenizer, input_ids, prompt):
         raise ValueError("Binding requires one source image before the instruction")
     return {"units": [tuple(unit) for unit in units], "instruction": (vision_end[0] + 1, len(ids)),
             "length": len(ids)}
+
+
+def strip_tokens(prompt):
+    """The prompt with every region token removed: the negative branch of token guidance."""
+    return re.sub(r"[ \t]+([.,;:])", r"\1", TOKEN_SPAN.sub("", prompt))

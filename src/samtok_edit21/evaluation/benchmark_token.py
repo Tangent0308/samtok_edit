@@ -51,10 +51,11 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from samtok_edit21.data.protocol import strip_tokens
+
 GRAY = {"U1": 51, "U2": 102, "U3": 153, "U4": 204, "U5": 255}
 DESCRIBE = "What object is {span}? Answer in at most five words."
 GROUND = "Can you segment {ref}?"
-TOKEN_SPAN = re.compile(r"\s*<\|mt_start\|>(?:<\|mt_\d+\|>)*<\|mt_end\|>")
 HEAD_END = re.compile(r"\s(?:with|featuring|that|which|having|showing|is|are|on|in)\s|[.;:(]")
 _STATE = {}
 
@@ -207,11 +208,6 @@ def unit_sentence(spec, unit, span, name=None):
     if name and not unit["has_ref"]:
         return unit["instruction"].replace("the selected region", f"{name} {span}", 1)
     return p2.render(spec, unit["has_ref"], selector_token=span)
-
-
-def strip_tokens(prompt):
-    """The prompt with every region token removed: the negative branch of token guidance."""
-    return re.sub(r"[ \t]+([.,;:])", r"\1", TOKEN_SPAN.sub("", prompt))
 
 
 def generate_any(pipe, codec, prompt, image, *, steps, seed, guidance=1.0, blend=None):
