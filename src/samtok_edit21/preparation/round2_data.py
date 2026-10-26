@@ -32,6 +32,9 @@ import numpy as np
 
 SA1B = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/sa1b_samtok_edit_50k_20261014")
 RELEASE = SA1B / "release"
+# the production run of the release keeps the per-source dense annotations (sources/<id>/dense.json)
+SA1B_RUN = Path("/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/data_pipeline/02_production_runs/"
+                "sa1b_samtok_edit_50k_20261014")
 V1_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Cleaned_20261009")
 V1_MANIFEST = V1_ROOT / "protocol_adapt_qwen38_27b_v1/protocol_v2_blind/manifest_protocol_v2.jsonl"
 
@@ -219,7 +222,7 @@ def run_pool(args):
         path = out / "pool" / f"{source_id}.json"
         if path.exists():
             continue
-        entry = pool_image(codec, source_id, RELEASE / image, SA1B / "sources" / source_id / "dense.json")
+        entry = pool_image(codec, source_id, RELEASE / image, SA1B_RUN / "sources" / source_id / "dense.json")
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(entry))
         tmp.rename(path)
