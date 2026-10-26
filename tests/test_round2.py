@@ -1,6 +1,6 @@
-"""Round 2 (docs/archive/v3_process/08 section 5): read-side routing, several spans per prompt, row building, loss and read-back.
+"""Round 2: read-side routing, several spans per prompt, row building, loss and read-back.
 
-CPU only.  The routing tests reuse the tiny instance of the real Qwen-Image-2.1 DiT class from test_grounding, so
+CPU only.  The routing tests use the tiny instance of the real Qwen-Image-2.1 DiT class (conftest ``tiny_dit``), so
 they exercise the actual block code (modulation, projections, RoPE, block-causal prefix attention).
 """
 import math
@@ -17,7 +17,6 @@ from samtok_edit21.preparation import round2_data as rd
 from samtok_edit21.training import round2 as r2
 from samtok_edit21.training.routing import AttentionRouter, span_read_logits
 
-from test_grounding import tiny_dit  # noqa: F401  (pytest fixture)
 
 SOURCE = list(range(3, 19))          # tiny_dit: 3 text tokens, then the 4x4 source image (16 joint positions)
 

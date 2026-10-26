@@ -1,12 +1,11 @@
-"""Round-2 objective (docs/archive/v3_process/08 section 5.3): one prompt may carry several mask tokens; supervision only in the loss.
+"""Round-2 objective: one prompt may carry several mask tokens; regions supervise only through the loss.
 
 A row is a highlight with one token (``hl``, ``hl_ref``), a highlight with several tokens (``hlm``, one colour each)
 or an edit: an SA-1B 50k edit (``edit``: blind no-ref + token, ref + token, or ref without a token), a cleaned v1 edit
 (``edit_v1``), a cleaned v1 multi-object pair (``edit_multi_v1``, its real joint target) or 2-4 non-overlapping 50k
 edits of one image joined into one multi-target edit (``edit_multi``); stage C adds the extedit batch-1 records and
 pairs (``edit_ext``, ``edit_multi_ext``: same format as the cleaned v1 ones); ``edit_merged`` is any record of the
-merged dataset (docs/01 section 2.13: single or multi-unit, token inline; SA-1B records may carry near negatives and
-twins).  A multi-target prompt has one numbered line and one token per unit.  The model input is what inference
+merged dataset (docs/01: single or multi-unit, token inline; SA-1B records may carry near negatives and twins).  A multi-target prompt has one numbered line and one token per unit.  The model input is what inference
 gives it: the source image and the prompt.
 Regions enter only through targets and loss weights:
 
@@ -38,15 +37,15 @@ from PIL import Image
 
 from samtok_edit21.data.highlight import OVERLAY_ALPHA, PALETTE, resize_mask
 from samtok_edit21.data.io import dimensions
-from samtok_edit21.models.binding import token_layout
+from samtok_edit21.data.protocol import token_layout
 from samtok_edit21.models.pipeline import encode_edit, resize_sources
 from samtok_edit21.preparation import instruction_protocol_v2 as p2
 from samtok_edit21.preparation import round2_data as rd
-from samtok_edit21.training.grounding import DISTRACTOR_COVERAGE, grid_coverage
-from samtok_edit21.training.objectives import validate_conditioning
 from samtok_edit21.training.routing import DISTRACTOR_WEIGHT
 
 MAX_PIXELS = 1024 * 1024
+LATENT_STRIDE = 16           # one target token covers 16 x 16 pixels
+DISTRACTOR_COVERAGE = 0.25   # a token counts as "on another instance" above this coverage
 EDIT_KINDS = ("edit", "edit_v1", "edit_multi", "edit_multi_v1", "edit_ext", "edit_multi_ext", "edit_merged")
 
 
@@ -63,6 +62,76 @@ class Round2Sample:
     source_distractors: torch.Tensor | None = None      # [hs, ws] negatives on the source grid (C1b rows; read side)
     region_dilate: bool | None = None                   # FM_region context; None: highlights yes, edits no
     loss_mask: torch.Tensor | None = None                # [h, w] where FM is taken (rows with a drifting target)
+
+
+def grid_coverage(weight, grid):
+    """Pixel soft mask -> fraction of each target token covered."""
+    coverage = F.avg_pool2d(torch.as_tensor(weight)[None, None], LATENT_STRIDE, LATENT_STRIDE)[0, 0].clamp(0, 1)
+    if tuple(coverage.shape) != tuple(grid):
+        raise ValueError(f"Region grid {tuple(coverage.shape)} does not match the target latent {tuple(grid)}")
+    return coverage
+
+
+def validate_conditioning(inputs):
+    target, embeds, mask = (
+        inputs["input_latents"],
+        inputs["prompt_embeds"],
+        inputs["edit_image_pad_mask"],
+    )
+    if target.ndim != 4 or target.shape[:2] != (1, 64):
+        raise ValueError("Expected target latent [1,64,H/16,W/16]")
+    if not target.is_floating_point() or not embeds.is_floating_point():
+        raise ValueError("Latents and text features must be floating point")
+    if embeds.ndim != 3 or embeds.shape[0] != 1 or embeds.shape[-1] != 4096:
+        raise ValueError("Expected 4096-dim text features")
+    if mask.dtype != torch.bool or mask.shape != embeds.shape[:2]:
+        raise ValueError("Invalid Qwen3 image-pad mask")
+    attention = inputs.get("prompt_embeds_mask")
+    if attention is not None and (
+        attention.shape != embeds.shape[:2]
+        or not torch.all((attention == 0) | (attention == 1))
+        or torch.any(mask & ~attention.bool())
+    ):
+        raise ValueError("Invalid text attention mask")
+    if not isinstance(inputs["edit_latents"], (list, tuple)) or not inputs["edit_latents"]:
+        raise ValueError("Missing source latents")
+    for source in inputs["edit_latents"]:
+        if not source.is_floating_point():
+            raise ValueError("Source latents must be floating point")
+        if source.ndim != 4 or source.shape[:2] != (1, 64) or any(
+            size < 2 or size % 2 for size in source.shape[2:]
+        ):
+            raise ValueError("Expected source latent [1,64,even H,even W]")
+    if any(size < 2 or size % 2 for size in target.shape[2:]):
+        raise ValueError("Target latent grid must be positive and even")
+    source_tokens = sum(x.shape[2] * x.shape[3] for x in inputs["edit_latents"])
+    if int(mask.sum()) * 4 != source_tokens:
+        raise ValueError(
+            "Qwen3 visual grid and VAE grid disagree; do not independently resize TE images"
+        )
+    padded = torch.nn.functional.pad(mask[0].to(torch.int8), (1, 1))
+    boundaries = padded[1:] - padded[:-1]
+    starts = (boundaries == 1).nonzero().flatten()
+    ends = (boundaries == -1).nonzero().flatten()
+    grids = [x.shape[2] * x.shape[3] for x in inputs["edit_latents"]]
+    if ((ends - starts) * 4).tolist() != grids:
+        raise ValueError("Per-image Qwen3 visual blocks and VAE grids disagree")
+
+    def finite(x):
+        if (
+            isinstance(x, torch.Tensor)
+            and x.is_floating_point()
+            and not torch.isfinite(x).all()
+        ):
+            raise ValueError("Nonfinite conditioning")
+        if isinstance(x, dict):
+            for v in x.values():
+                finite(v)
+        if isinstance(x, (list, tuple)):
+            for v in x:
+                finite(v)
+
+    finite(inputs)
 
 
 class Context:

@@ -30,7 +30,7 @@ import torch
 from PIL import Image, ImageFilter
 
 from samtok_edit21.data.highlight import OVERLAY_ALPHA, PALETTE, extract_mask, iou, pick_color
-from samtok_edit21.evaluation.grounding import generate, thumbnail
+from samtok_edit21.evaluation.generation import generate, thumbnail
 from samtok_edit21.preparation import instruction_protocol_v2 as p2
 from samtok_edit21.preparation import round2_data as rd
 
@@ -251,7 +251,7 @@ def main(argv=None):
     import torch.distributed as dist
     from samtok_edit21.models.codec import load_codec
     from samtok_edit21.models.pipeline import load_pipeline
-    from samtok_edit21.training.grounding import load_grounding_adapter
+    from samtok_edit21.models.adapters import load_grounding_adapter
     from samtok_edit21.training.round2 import Context
 
     args = parser().parse_args(argv)

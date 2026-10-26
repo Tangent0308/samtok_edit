@@ -1,13 +1,10 @@
-"""Use native Qwen3-VL weights and official DiffSynth 2.1 conditioning.
+"""The Qwen-Image-2.1 editing pipeline with the SAMTok text encoder.
 
-v2 two-pass inference: pass 1 generates the region JSON with the localization
-LoRA (Stage 1); pass 2 encodes the region-bound prompt with the raw SAMTok TE
-(adapters disabled), exactly as the Stage 2 cache did.  Optional structural
-region binding and latent blending act only inside the DiT pipeline call.
-
-v3 token-only inference uses the same ``edit(..., mode="inline")`` call with no
-binding and no blending; an optional ``CodeInjector`` attached to the text
-encoder adds the SAMTok code vectors at the mask-token positions.
+``load_pipeline`` builds DiffSynth's ``QwenImage21Pipeline`` (DiT and VAE of Qwen-Image-2.1) and swaps its text
+encoder for Qwen3-VL-8B-SAMTok, whose vocabulary holds the 514 mask-token entries.  A region reaches the model only as
+mask tokens written into the instruction (``edit(..., mode="inline")``); the optional ``CodeInjector`` attached to the
+text encoder adds the SAMTok code vectors at the mask-token positions.  ``blend_inputs`` prepares latent blending,
+which only the teacher test of on-policy self-distillation uses.
 """
 
 from __future__ import annotations
@@ -28,16 +25,8 @@ from diffsynth.pipelines.qwen_image_21 import (
     QwenImage21Unit_PromptEmbedder,
 )
 
-from samtok_edit21.data.protocol import (
-    LOC_REQUEST,
-    EMPTY_THINK,
-    boxes_in,
-    condition_localization,
-    parse_cot,
-    parse_generated_cot,
-    regions_in,
-    spans_in,
-)
+from samtok_edit21.data.protocol import boxes_in, regions_in, spans_in
+
 
 MODEL_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/models")
 DEFAULT_QWEN = str(MODEL_ROOT / "pretrained_models/Qwen-Image-2.1")
@@ -192,74 +181,6 @@ def te_adapters(pipe, enabled):
                 parameter.requires_grad_(flag)
 
 
-def localization_inputs(pipe, instruction, images, *, cot=None, request=LOC_REQUEST):
-    """Chat input for pass 1 / NTP; ``request=None`` uses the text as the whole request."""
-    if len(images) != 1:
-        raise ValueError("Localization binds regions to exactly one source image")
-    if not instruction.strip() or any(t in instruction for t in ("<|", "<think>", "</think>")):
-        raise ValueError("Localization needs clean, nonempty instruction text")
-    text = instruction.strip() if request is None else instruction.strip() + "\n" + request
-    content = [
-        {"type": "image"},
-        # Qwen3 SAMTok _build_messages strips whitespace around the segment
-        # following <image>; retain the internal instruction/request newline.
-        {"type": "text", "text": text},
-    ]
-    # Official SAMTok Qwen3 dataset passes only user/assistant messages. Its
-    # released native template does not synthesize a helpful-assistant system.
-    text = pipe.processor.apply_chat_template(
-        [{"role": "user", "content": content}],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-    text += EMPTY_THINK
-    inputs = pipe.processor(
-        text=[text],
-        images=[
-            QwenImage21Unit_PromptEmbedder.composite_over_white(im) for im in images
-        ],
-        return_tensors="pt",
-        padding=True,
-    ).to(pipe.device)
-    prefix_len = inputs.input_ids.shape[1]
-    labels = None
-    if cot is not None:
-        parse_cot(cot, nonempty=True)
-        labels = pipe.processor.tokenizer(
-            cot + "<|im_end|>", add_special_tokens=False, return_tensors="pt"
-        ).input_ids.to(pipe.device)
-        for key in ("input_ids", "attention_mask", "mm_token_type_ids"):
-            if key in inputs:
-                tail = (
-                    labels
-                    if key == "input_ids"
-                    else (
-                        torch.ones_like(labels)
-                        if key == "attention_mask"
-                        else torch.zeros_like(labels)
-                    )
-                )
-                inputs[key] = torch.cat([inputs[key], tail], dim=1)
-    return inputs, prefix_len, labels
-
-
-def ntp_loss(pipe, instruction, images, cot, *, request=LOC_REQUEST):
-    inputs, prefix, labels = localization_inputs(pipe, instruction, images, cot=cot, request=request)
-    _, normalized = pipe.text_encoder.encode(**inputs)
-    supervised = normalized[:, prefix - 1 : prefix - 1 + labels.shape[1]]
-    logits = pipe.text_encoder.model.lm_head(supervised)
-    loss = torch.nn.functional.cross_entropy(
-        logits.float().reshape(-1, logits.shape[-1]), labels.reshape(-1)
-    )
-    return loss, {
-        "prefix_tokens": prefix,
-        "label_tokens": labels.numel(),
-        "hidden_start": prefix - 1,
-        "last_label": int(labels[0, -1]),
-        "loss_ntp": loss.detach().item(),
-    }
-
-
 def encode_edit(pipe, prompt, images, *, return_ids=False):
     """Official prompt embedding; region tokens must stay atomic special tokens."""
     tokenizer = pipe.processor.tokenizer
@@ -271,27 +192,6 @@ def encode_edit(pipe, prompt, images, *, return_ids=False):
         if ids[0] != tokenizer.convert_tokens_to_ids("<|box_start|>") or ids[-1] != tokenizer.convert_tokens_to_ids("<|box_end|>"):
             raise RuntimeError("Box delimiters are not atomic tokens")
     return QwenImage21Unit_PromptEmbedder().process(pipe, prompt, images, return_token_ids=return_ids)
-
-
-def region_binding_for(pipe, prompt, images, height, width, config, codec=None):
-    """Inference binding from the prompt actually encoded in pass 2 (D8).
-
-    Same layout and region maps as the Stage 2 cache: mask spans are decoded by
-    the codec on the source image, boxes are rasterized.
-    """
-    from samtok_edit21.models.binding import RegionBinding, binding_payload
-
-    if config is None or config.mode == "none":
-        return None
-    embed = getattr(pipe.dit, "region_embed", None) if config.mode == "region_embed" else None
-    if not regions_in(prompt):
-        return RegionBinding(config, None, embed) if config.mode == "region_embed" else None
-    prepared = resize_sources(pipe, images, height, width)
-    ids = encode_edit(pipe, prompt, prepared, return_ids=True)["prompt_input_ids"]
-    payload = binding_payload(pipe.processor.tokenizer, ids, prompt, images[0],
-                              {"target": (height, width), "source": (prepared[0].height, prepared[0].width)},
-                              codec)
-    return RegionBinding(config, payload, embed)
 
 
 def blend_inputs(pipe, image, region, height, width, *, dilate=2, feather=1.0):
@@ -319,125 +219,40 @@ def blend_inputs(pipe, image, region, height, width, *, dilate=2, feather=1.0):
     return mask.clamp(0, 1), latents
 
 
-@torch.no_grad()
-def localize(
-    pipe,
-    instruction,
-    images,
-    *,
-    height=1024,
-    width=1024,
-    max_new_tokens=256,
-    do_sample=False,
-    temperature=0.8,
-    variant="ref",
-    reviewed_units=None,
-    strict_noref=False,
-):
-    if strict_noref and variant != "noref":
-        raise ValueError("strict_noref requires variant=noref")
-    if len(images) != 1:
-        raise ValueError("Localization requires exactly one source image")
-    # Pass 2's ShapeChecker rounds the requested canvas up before resizing
-    # source images. Localize on that same canvas even for nonaligned requests.
-    height, width = pipe.check_resize_height_width(height, width)
-    prepared = resize_sources(pipe, images, height, width)
-    inputs, prefix, _ = localization_inputs(pipe, instruction, prepared)
-    kwargs = {
-        "max_new_tokens": max_new_tokens,
-        "do_sample": do_sample,
-        "eos_token_id": pipe.processor.tokenizer.convert_tokens_to_ids("<|im_end|>"),
-        "pad_token_id": pipe.processor.tokenizer.pad_token_id,
-        "use_cache": True,
-    }
-    if do_sample:
-        kwargs["temperature"] = temperature
-    with te_adapters(pipe, True):  # pass 1 uses the localization adapter
-        ids = pipe.text_encoder.generate(**inputs, **kwargs)
-    raw = pipe.processor.tokenizer.decode(ids[0, prefix:], skip_special_tokens=False)
-    try:
-        items = parse_generated_cot(raw)
-        result = condition_localization(instruction, items, variant=variant,
-                                        reviewed=reviewed_units, strict=strict_noref)
-    except (ValueError, TypeError, KeyError) as exc:
-        if strict_noref:
-            raise ValueError(f"Strict localization failed: {exc}") from exc
-        items = []
-        result = {"conditioning_prompt": instruction, "requested_variant": variant,
-                  "actual_variant": "plain", "fallback_reason": str(exc)}
-    return {"raw": raw, "items": items, **result}
+def edit(pipe, instruction, images, *, mode="inline", pass2_te="raw", blend_region=None, blend_dilate=2,
+         blend_feather=1.0, **kwargs):
+    """One edit through the DiffSynth pipeline call; returns ``(image, report)``.
 
-
-@torch.no_grad()
-def edit(
-    pipe, instruction, images, *, mode="online", cot=None, max_new_tokens=256,
-    variant="ref", reviewed_units=None, strict_noref=False, pass2_te="raw",
-    binding=None, codec=None, blend_region=None, blend_dilate=2, blend_feather=1.0, **kwargs
-):
-    """Direct, inline, explicit oracle, or online two-pass inference.
-
-    ``pass2_te``: ``raw`` (v2) disables TE adapters while encoding the edit
-    prompt; ``adapter`` keeps them (v1 checkpoints). ``binding`` is the DiT
-    adapter's BindingConfig; ``blend_region`` a source-pixel mask for latent
-    blending, ``"prompt"`` for the regions of the final edit prompt, or None.
+    ``mode="inline"``: the instruction carries mask tokens (exactly one source image); ``mode="direct"``: plain text
+    editing without region tokens.  ``pass2_te="raw"`` encodes with every PEFT layer of the text encoder disabled (the
+    SAMTok TE as released), ``"adapter"`` keeps them.  ``blend_region`` (a boolean mask in source pixels) keeps the
+    source outside it by latent blending; the method itself never blends.  Other keyword arguments (size, steps,
+    seed, ``cfg_scale``, ``negative_prompt``, ...) go to the pipeline call unchanged.
     """
     regions = regions_in(instruction)
-    if (regions or mode in {"online", "oracle"}) and len(images) != 1:
+    if regions and len(images) != 1:
         raise ValueError("Region-conditioned editing requires exactly one source image")
     if mode == "direct" and regions:
         raise ValueError("direct is plain editing; use inline for region tokens")
     if mode == "inline" and not regions:
         raise ValueError("inline requires region tokens")
-    if strict_noref and (variant != "noref" or mode not in {"online", "oracle"}):
-        raise ValueError("strict_noref requires online/oracle with variant=noref")
+    if mode not in {"direct", "inline"}:
+        raise ValueError(f"Unknown mode: {mode}")
     if pass2_te not in {"raw", "adapter"}:
         raise ValueError("pass2_te must be raw or adapter")
-    result = {
-        "requested_variant": variant if mode in {"online", "oracle"} else None,
-        "actual_variant": "inline" if regions else "plain",
-        "raw": None,
-        "items": [],
-        "conditioning_prompt": instruction,
-        "fallback_reason": None,
-    }
-    if mode == "online":
-        result = localize(
-            pipe,
-            instruction,
-            images,
-            height=kwargs.get("height", 1024),
-            width=kwargs.get("width", 1024),
-            max_new_tokens=max_new_tokens,
-            variant=variant, reviewed_units=reviewed_units, strict_noref=strict_noref,
-        )
-    elif mode == "oracle":
-        items = parse_generated_cot(cot)
-        result.update(items=items, **condition_localization(
-            instruction, items, variant=variant, reviewed=reviewed_units, strict=strict_noref))
-    elif mode not in {"direct", "inline"}:
-        raise ValueError(f"Unknown mode: {mode}")
-    prompt = result["conditioning_prompt"]
-    regions_in(prompt)
     if regions_in(kwargs.get("negative_prompt", "")):
         raise ValueError("CFG negative branch must not contain region tokens")
     height, width = pipe.check_resize_height_width(kwargs.get("height", 1024), kwargs.get("width", 1024), verbose=0)
     pipe.scheduler.training = False
+    blend = {}
     with te_adapters(pipe, pass2_te == "adapter"):
-        region_binding = region_binding_for(pipe, prompt, images, height, width, binding, codec)
-        blend = {}
-        if isinstance(blend_region, str):
-            if blend_region != "prompt":
-                raise ValueError("blend_region must be a mask, 'prompt' or None")
-            from samtok_edit21.models.binding import blend_region as prompt_region
-            blend_region = prompt_region(prompt, images[0], codec) if regions_in(prompt) else None
         if blend_region is not None:
             mask, latents = blend_inputs(pipe, images[0], blend_region, height, width,
                                          dilate=blend_dilate, feather=blend_feather)
             blend = {"blend_mask": mask, "blend_latents": latents}
-        image = pipe(prompt, edit_image=images, region_binding=region_binding, **blend, **kwargs)
-    result["pass2_te"] = pass2_te
-    result["binding"] = None if binding is None else {
-        **binding.as_dict(), "bound_units": 0 if region_binding is None else len(region_binding.units)}
-    result["blend"] = None if not blend else {"dilate": blend_dilate, "feather": blend_feather,
-                                              "area": float((blend["blend_mask"] > 0.5).float().mean())}
-    return image, result
+        image = pipe(instruction, edit_image=images, **blend, **kwargs)
+    report = {"conditioning_prompt": instruction, "actual_variant": "inline" if regions else "plain",
+              "pass2_te": pass2_te,
+              "blend": None if not blend else {"dilate": blend_dilate, "feather": blend_feather,
+                                               "area": float((blend["blend_mask"] > 0.5).float().mean())}}
+    return image, report

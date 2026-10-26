@@ -355,7 +355,6 @@ def multi_group(entry, rng, size, start=()):
 
 def build_rows(out, seed=20261016, updates=2000, batch=32):
     """C1 rows in training order: highlight (single, single with the category name, multi) and edits."""
-    from PIL import Image
     rng = random.Random(seed)
     split = json.load(open(out / "dev_split.json"))
     dev = set(split["sa1b_sources"])

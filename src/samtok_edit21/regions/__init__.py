@@ -1,1 +1,1 @@
-"""Frozen mask encoding and region supervision."""
+"""Interactive region selection (SAM2 points and boxes to masks)."""

@@ -30,7 +30,7 @@ from pathlib import Path
 
 import torch
 
-from samtok_edit21.training.grounding_engine import average_gradients, broadcast_parameters, rank_divergence
+from samtok_edit21.training.distributed import average_gradients, broadcast_parameters, rank_divergence
 from samtok_edit21.training.routing import DEFAULT_LAYERS
 
 KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5, "edit_multi_v1": 6,
@@ -100,7 +100,7 @@ def main(argv=None):
     from samtok_edit21.models.code_injector import CodeInjector, attach_code_injector, load_code_injector, save_code_injector
     from samtok_edit21.models.codec import load_codec
     from samtok_edit21.models.pipeline import load_pipeline
-    from samtok_edit21.training.objectives import add_adapter, load_adapter, save_adapter
+    from samtok_edit21.models.adapters import add_adapter, load_adapter, save_adapter
     from samtok_edit21.training.round2 import Context, prepare_round2, round2_loss
     from samtok_edit21.training.routing import AttentionRouter
     from samtok_edit21.training.tracking import DistributedTracker

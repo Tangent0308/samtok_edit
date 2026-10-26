@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "samtok-edit21"
-version = "0.1.0"
-description = "SAMTok region conditioning and two-stage LoRA training for Qwen-Image-2.1"
+version = "4.0.0"
+description = "Region editing with SAMTok mask tokens for Qwen-Image-2.1"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["numpy", "Pillow"]
 
 [project.optional-dependencies]
 training = ["diffsynth==2.1.8", "mmengine==0.10.7", "pycocotools==2.0.11", "hydra-core", "opencv-python", "scipy"]
-data = ["ijson", "pyarrow"]
+data = ["pyarrow"]
 test = ["pytest"]
 
 [project.scripts]
