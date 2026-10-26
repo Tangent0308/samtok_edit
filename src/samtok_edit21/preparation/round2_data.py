@@ -1,4 +1,5 @@
-"""Round-2 data (docs/archive/v3_process/08 section 5): the mask pool, C1 training rows and the C1 evaluation set.
+"""Round-2 data (docs/01): the development split, the SA-1B mask pool and token caches, the training rows of C1 to C3
+and of the merged dataset, and the development evaluation set.
 
 Sources (protocol 2.0, read only):
 * the SA-1B 50k release: ``annotations/train_protocol_v2.jsonl`` (edits, support and changed regions);
@@ -9,9 +10,10 @@ Steps (outputs go to one data directory; nothing is written next to the sources)
     python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-data pool --out <dir>
     python -m samtok_edit21 round2-data rows --out <dir>
     python -m samtok_edit21 round2-data eval --out <dir>
-    python -m samtok_edit21 round2-data rows-c2 --out <dir>     # stage B (docs/archive/v3_process/08 section 9)
-    python -m samtok_edit21 round2-data rows-c3m --out <dir>    # stage C without new data (docs/03 section 6)
-    python -m samtok_edit21 round2-data rows-c3d --out <dir>    # stage C with the extedit batch-1 data (D10)
+    python -m samtok_edit21 round2-data rows-c2 --out <dir>     # stage B (C2)
+    python -m samtok_edit21 round2-data rows-c3m --out <dir>    # stage C without new data (C3-M)
+    python -m samtok_edit21 round2-data rows-c3d --out <dir>    # stage C with the extedit batch-1 data (D10, C3-D)
+    python -m samtok_edit21 round2-data rows-merged --out <dir> --spec <spec.json>   # merged data, OPSD rows too
 
 ``pool`` encodes every usable dense mask (and every 50k source mask) with SAMTok and decodes the token again; the
 decoded region is what the token means and is the supervision target, exactly as in round 1.  ``rows`` writes the
@@ -90,7 +92,7 @@ def stable_order(keys, salt):
 
 
 def dev_split(release_rows, v1_rows):
-    """60 SA-1B source images and 40 v1 records held out of all training (docs/archive/v3_process/08 section 2)."""
+    """60 SA-1B source images and 40 v1 records held out of all training (docs/01)."""
     sources = stable_order({r["source_id"] for r in release_rows}, "round2-dev-50k")[:DEV_IMAGES_50K]
     v1 = stable_order({r["id"] for r in v1_rows}, "round2-dev-v1")[:DEV_RECORDS_V1]
     return {"sa1b_sources": sorted(sources), "v1_ids": sorted(v1)}
@@ -419,7 +421,7 @@ def build_rows(out, seed=20261016, updates=2000, batch=32):
 # no heavy negatives.  C1's near misses landed on a different-category neighbour (37 %), the host of a part
 # (29 %) or a same-category neighbour (24 %).  C1b therefore takes as negatives the nearest annotated regions of
 # any category plus the hosts, adds counterfactual pairs of adjacent regions (and of a part and its host), and builds
-# part of the multi-token rows around an adjacent pair (docs/archive/v3_process/08 section 6.3).
+# part of the multi-token rows around an adjacent pair (docs/02 section 3.7).
 
 NEAR_GAP = 0.05            # a neighbour: box gap at most 5 % of the image diagonal
 MAX_NEAR, MAX_HOSTS = 6, 2
@@ -671,7 +673,8 @@ def build_rows_c1b(out, seed=20261018, updates=800, world=8, accumulation=4):
 
 # ---------------------------------------------------------------- C2 rows: stage B, editing with tokens (CPU)
 #
-# Stage B (docs/archive/v3_process/08 section 9): editing becomes the main task, starting from C1b, and every usable edit is used.
+# Stage B (C2; docs/02 sections 3.7 to 3.9): editing becomes the main task, starting from C1b, and every usable edit
+# is used.
 # * every 50k record whose token names its region, and every cleaned v1 record likewise, appears once; add records
 #   (the weakest operation after stage A) appear twice;
 # * v1 targets that also change the image outside the edit are kept, with the loss restricted to the edit's
@@ -908,15 +911,15 @@ def build_rows_c2(out, seed=20261019, world=8, accumulation=4):
     return stats
 
 
-# Stage C (docs/03 section 6): 1,500 updates continued from C2.  The C2 mix is kept by drawing its rows (pairs stay
+# Stage C (C3; docs/03): 1,500 updates continued from C2.  The C2 mix is kept by drawing its rows (pairs stay
 # pairs); "half done" targets are left out first; the data variant replaces a quarter of the rows by extedit batch 1.
 EXT_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/ExtEdit_Protocol2_20261021")
-MERGED_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261024")   # docs/01 2.13
+MERGED_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261024")   # docs/01
 EXT_MANIFEST = EXT_ROOT / "manifest_protocol_v2.jsonl"
 EXT_MULTI_MANIFEST = EXT_ROOT / "manifest_multi_protocol_v2.jsonl"
 C3_UPDATES = 1500
 C3_NEW_SHARE = 0.25
-# extedit rows of the data variant, aimed at what C2 loses (docs/03 section 5.7): replacements whose old object is
+# extedit rows of the data variant, aimed at what C2 loses (docs/03, the C2 analyses): replacements whose old object is
 # fully gone, whole-object attribute changes, text changes, real multi-unit pairs
 C3_EXT = {"replace": 5000, "attribute": 4000, "text": 1500, "multi": 1500}
 C3_EXT_REPLACE_COVERED = 0.85
@@ -934,7 +937,7 @@ def spec_op(spec):
 
 
 def half_done(op, covered):
-    """A target that did only part of its edit (docs/03 section 6, analysis/c3_plan_20261020): a replace or attribute
+    """A target that did only part of its edit (docs/03, analysis/c3_plan_20261020): a replace or attribute
     change covering less than half of the target, or an add that changed most of its anchor."""
     if covered is None:
         return False

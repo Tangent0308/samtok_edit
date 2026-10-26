@@ -1,4 +1,4 @@
-"""Merge of the edit data (docs/01 section 2.13): default-view rules, caps, text tags, image names."""
+"""Merge of the edit data (docs/01): default-view rules, caps, text tags, image names."""
 from samtok_edit21.preparation import merge_data as md
 
 

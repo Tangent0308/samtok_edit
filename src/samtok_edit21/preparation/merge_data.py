@@ -1,4 +1,4 @@
-"""Merge of the protocol-2.0 edit data into one training set (2026-10-24; docs/01 section 2.13).
+"""Merge of the protocol-2.0 edit data into one training set (2026-10-24; docs/01).
 
 Sources (read only):
 * D1   SA-1B 50k self-distilled edits (release format: S and the support region as PNG masks), tokens in

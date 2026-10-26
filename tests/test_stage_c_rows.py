@@ -1,4 +1,4 @@
-"""Stage-C row helpers (docs/03 section 6): pairs stay together, draws are exact, half-done targets are recognised."""
+"""Stage-C row helpers (docs/03, C3): pairs stay together, draws are exact, half-done targets are recognised."""
 import random
 
 import pytest

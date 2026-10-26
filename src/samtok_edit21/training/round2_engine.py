@@ -1,17 +1,18 @@
-"""Round-2 trainer (docs/archive/v3_process/08 sections 5.3 and 7): stock Qwen-Image-2.1 DiT + LoRA + code injector, C1 or C1b rows.
+"""Round-2 trainer (docs/02 sections 2.3 and 6.4): the Qwen-Image-2.1 DiT with LoRA and the code injector.
 
-C1 starts a fresh LoRA; C1b warm-starts from a C1 adapter (``--init-adapter``) with the C1b rows, a cosine decay
-and heavier hard negatives::
-
-    ... round2-train --data <round2 dir> --output <run dir>/train --rows rows_c1b.jsonl \\
-        --init-adapter <C1 run>/train/adapter_1500 --updates 800 --warmup 20 --lr-schedule cosine --heavy-weight 8
-
-The model sees what inference sees (source image + prompt with tokens); regions enter only through the loss
-(``training.round2``).  Same distributed recipe as the round-1 trainer: every rank processes its own rows, gradients
-are averaged, all ranks start from rank 0's weights and the checkpoints verify that they still agree::
+Every row kind of the round-2 and merged data trains here: highlights (``hl``, ``hl_ref``, ``hlm``) and edits
+(``edit*``) through ``training.round2``, on-policy self-distillation rows (``opsd_merged``) through
+``training.opsd``.  A run starts from a fresh LoRA or warm-starts from an adapter (``--init-adapter``); C3-D, for
+example, continued C2 like this::
 
     python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-train \\
-        --data <round2 dir> --output <run dir>/train
+        --data <round2 dir> --output <run dir>/train --rows rows_c3d.jsonl --quick-items eval_c2_quick_idx.json \\
+        --init-adapter <C2 run>/train/adapter_3522 --updates 1500 --accumulation 4 --warmup 100 --lr 5e-5 \\
+        --lr-schedule cosine --lr-min 5e-6 --heavy-weight 8 --checkpoints 500,1000,1500
+
+The model sees what inference sees (source image + prompt with tokens); regions enter only through the losses.  Every
+rank processes its own rows, gradients are averaged, all ranks start from rank 0's weights and the checkpoints verify
+that they still agree.
 
 Global row ``(update * accumulation + step) * world + rank`` of the rows file is processed by ``rank`` at that
 step, so the batch of every update is fixed by the data, whatever the number of GPUs.

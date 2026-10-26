@@ -413,9 +413,9 @@ def _prepare_record(pipe, kind, root, record, token, row, max_pixels):
 
 
 def unit_change(changed, own):
-    """The changed pixels that belong to one unit of a multi-object pair.  In 1,598 of the 4,066 pairs every unit
-    carries the pair's whole changed region, so it is cut to the unit's own region grown by 1 % of the image
-    diagonal; when nothing is left, the unit's own region stands in."""
+    """The changed pixels that belong to one unit of a multi-object pair.  In 1,164 of the 4,066 pairs all units
+    carry one and the same changed region (in 1,075 the pair's whole one), so it is cut to the unit's own region grown
+    by 1 % of the image diagonal; when nothing is left, the unit's own region stands in."""
     from scipy.ndimage import distance_transform_edt   # not cv2: it needs libxcb, which the cluster images lack
     radius = max(4, round(0.01 * float(np.hypot(*own.shape))))
     grown = distance_transform_edt(~own) <= radius
@@ -487,7 +487,7 @@ def merged_regions(record, row, shape, partner_selection=None, pool_mask=None):
 
 
 def _prepare_merged(pipe, ctx, row, max_pixels):
-    """A record of the merged dataset (docs/01 section 2.13)."""
+    """A record of the merged dataset (docs/01)."""
     record = ctx.merged(row["id"])
     with Image.open(rd.MERGED_ROOT / record["source_image"]) as im:
         source = im.convert("RGBA")
