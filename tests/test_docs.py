@@ -17,7 +17,7 @@ def test_code_blocks_in_docs_match_the_source(capsys):
     status = sync.main(["--check"])
     report = capsys.readouterr().out
     assert status == 0, "Run `python scripts/docs/sync_code_blocks.py` and commit the docs:\n" + report
-    assert " code blocks" in report
+    assert int(report.split(" code blocks")[0].split()[-1]) > 0, report     # the docs do quote code
 
 
 def test_excerpt_selects_functions_methods_and_files():
