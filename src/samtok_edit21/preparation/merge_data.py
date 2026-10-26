@@ -69,9 +69,11 @@ def covered(region):
 
 
 def half_done(spec, region, family):
-    """A target that did part of its edit (docs/03 section 6): a replace or attribute change covering less than half
-    of S; for SA-1B 50k adds also an anchor changed by more than 60 % (v1 add selections can be the support itself)."""
-    return rd.half_done(spec["operation"], covered(region)) if (family == "D1" or spec["operation"] != "add") else False
+    """A target that did part of its edit (docs/03, C3): a replace or attribute change covering less than half
+    of S; for SA-1B 50k adds also an anchor changed by more than 60 % (v1 add selections can be the support itself).
+    A text change is not measured this way (as in C3's v1 rows): only its glyphs change, a small part of S."""
+    op = spec_op(spec)
+    return rd.half_done(op, covered(region)) if (family == "D1" or op != "add") else False
 
 
 def rle_only(region):

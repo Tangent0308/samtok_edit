@@ -51,6 +51,10 @@ def test_text_tag_and_half_done():
     region = {"stats": {"s_covered": 0.8}}
     assert md.half_done({"operation": "add"}, region, "D1") and not md.half_done({"operation": "add"}, region, "D3")
     assert md.half_done({"operation": "replace"}, {"stats": {"s_covered": 0.3}}, "D11")
+    colour = {"operation": "attribute", "attributes": [{"property": "color", "value": "red"}]}
+    text = {"operation": "attribute", "attributes": [{"property": "text", "value": "OPEN"}]}
+    assert md.half_done(colour, {"stats": {"s_covered": 0.2}}, "D10")
+    assert not md.half_done(text, {"stats": {"s_covered": 0.2}}, "D10")       # glyphs only: no coverage rule
 
 
 def test_image_names():
