@@ -103,11 +103,12 @@ def test_code_injector_positions_and_zero_init():
     assert delta[0, :, 0].tolist() == [0, 0, 0, 1, 2, 3, 0, 0]         # start: none, code0: W0, code1: W1, end: W2
     assert delta[1, :, 0].tolist() == [0, 2, 0, 0, 0, 0, 0, 0]         # a stray end is ignored, a stray code is not
     with torch.no_grad():
-        injector.proj[2].weight.normal_()
+        injector.proj[2].weight.normal_(generator=torch.Generator().manual_seed(0))
         injector.proj[2].bias.zero_()
     books = codec.vq.quantizer.codebooks
     expected = injector.proj[2](books[0].weight[3] + books[1].weight[300 - 256])
-    assert torch.allclose(injector(ids)[0, 5], expected, atol=1e-6)    # <|mt_end|> carries the quantised embedding
+    # <|mt_end|> carries the quantised embedding (float32: the batched and the single-row linear round differently)
+    assert torch.allclose(injector(ids)[0, 5], expected, atol=1e-5)
     with pytest.raises(ValueError):
         CodeInjector(torch.zeros(10, 4), range(512), 600)
 
