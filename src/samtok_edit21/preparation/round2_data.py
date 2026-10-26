@@ -527,22 +527,39 @@ def multi_group_adjacent(entry, rng, size):
 def place_in_slots(units, rng, updates, world, accumulation):
     """Rows in training order: global row (u * accumulation + s) * world + r is processed by rank r at step s of
     update u.  A pair occupies steps s, s + 1 (s even) of one rank, so both members share an update; singles fill
-    the remaining slots two by two."""
+    the remaining slots two by two.  OPSD rows (kind opsd_merged) cost several other rows each, and the ranks wait for
+    the slowest one at every gradient average: they fill whole step pairs, two rows on every rank, spread evenly over
+    the run; a remainder short of a step pair joins the other singles.  Without OPSD rows the placement (and the use
+    of ``rng``) is the one of the earlier rows files."""
     if accumulation % 2:
         raise ValueError("pairs need an even accumulation")
     pairs = [u for u in units if len(u) == 2]
-    singles = [u[0] for u in units if len(u) == 1]
+    singles = [u[0] for u in units if len(u) == 1 and u[0].get("kind") != "opsd_merged"]
+    heavy = [u[0] for u in units if len(u) == 1 and u[0].get("kind") == "opsd_merged"]
+    steps = []                                      # OPSD step pairs: rows 2r, 2r + 1 go to rank r
+    if heavy:
+        rng.shuffle(heavy)
+        full = len(heavy) - len(heavy) % (2 * world)
+        steps = [heavy[k:k + 2 * world] for k in range(0, full, 2 * world)]
+        singles += heavy[full:]
     rng.shuffle(singles)
     blocks = pairs + [singles[k:k + 2] for k in range(0, len(singles), 2)]
     rng.shuffle(blocks)
-    if len(blocks) != updates * world * accumulation // 2 or any(len(b) != 2 for b in blocks):
+    groups = updates * accumulation // 2
+    if len(blocks) + len(steps) * world != groups * world or any(len(b) != 2 for b in blocks):
         raise ValueError("units do not fill the slots exactly")
+    at = [g for g in range(groups) if (g + 1) * len(steps) // groups > g * len(steps) // groups]
+    opsd_at = {g: h for h, g in enumerate(at)}
     rows, k = [None] * (updates * world * accumulation), 0
     for u in range(updates):
         for r in range(world):
             for s in range(0, accumulation, 2):
-                rows[(u * accumulation + s) * world + r], rows[(u * accumulation + s + 1) * world + r] = blocks[k]
-                k += 1
+                g = (u * accumulation + s) // 2
+                if g in opsd_at:
+                    block = steps[opsd_at[g]][2 * r:2 * r + 2]
+                else:
+                    block, k = blocks[k], k + 1
+                rows[(u * accumulation + s) * world + r], rows[(u * accumulation + s + 1) * world + r] = block
     return rows
 
 
@@ -1048,11 +1065,13 @@ def build_rows_c3(out, variant, seed=20261023, world=8, accumulation=4):
     return stats
 
 
-# Rows from the merged dataset (docs/01 section 2.13).  A spec (JSON) lists draws over the default-view records, then
-# the shares of highlight rows and of joined 50k multi-target rows; forms, the near negatives and twins of the SA-1B
-# records as in C2.  A draw: {"family": "D11" or [...], "op": "add" | "remove" | "replace" | "attribute" | "text" |
-# "multi", "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true}.
-# Records are drawn without replacement over all draws; a draw larger than what is left repeats its records.
+# Rows from the merged dataset (docs/01).  A spec (JSON) lists draws over the default-view records, then the shares
+# of highlight rows and of joined 50k multi-target rows; forms, the near negatives and twins of the SA-1B records as
+# in C2.  A draw: {"family": "D11" or [...], "op": "add" | "remove" | "replace" | "attribute" | "text" | "multi",
+# "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true}; with
+# "opsd": true its rows are on-policy self-distillation rows (kind opsd_merged, training/opsd.py: no target image is
+# read, no negatives or twins; place_in_slots gives them whole step pairs on every rank).  Records are drawn without
+# replacement over all draws; a draw larger than what is left repeats its records.
 def merged_match(record, draw):
     families = draw.get("family")
     if families is not None and record["family"] not in ([families] if isinstance(families, str) else families):
@@ -1102,7 +1121,7 @@ def build_rows_merged(out, spec_path):
         used |= {r["id"] for r in picks}
         report.append({"draw": draw, "rows": need, "available": len(options), "repeated": max(0, need - len(options))})
         for r in picks:
-            row = {"kind": "edit_merged", "id": r["id"]}
+            row = {"kind": "opsd_merged" if draw.get("opsd") else "edit_merged", "id": r["id"]}
             if len(r["units"]) > 1:
                 order = list(range(len(r["units"])))
                 rng.shuffle(order)
@@ -1110,6 +1129,9 @@ def build_rows_merged(out, spec_path):
                 units.append([row])
                 continue
             row["form"] = form(r["units"][0])
+            if row["kind"] == "opsd_merged":
+                units.append([row])
+                continue
             if r["family"] == "D1" and spec.get("d1_negatives", True) and r["sa1b"]["source_id"] in pool:
                 row["negatives"] = edit_negatives(pool[r["sa1b"]["source_id"]], r["units"][0]["token"]["dec"])
             singles.append((r, row))
@@ -1168,6 +1190,7 @@ def build_rows_merged(out, spec_path):
     stats = {"name": name, "rows": len(rows), "updates": updates, "world": world, "accumulation": accumulation,
              "kinds": dict(Counter(r["kind"] for r in rows)), "draws": report,
              "merged_rows_by_family": dict(Counter(family[r["id"]] for r in rows if r["kind"] == "edit_merged")),
+             "opsd_rows_by_family": dict(Counter(family[r["id"]] for r in rows if r["kind"] == "opsd_merged")),
              "twin_pairs": sum(1 for r in rows if r.get("pair_kind") == "twin") // 2,
              "d1_rows_with_negatives": sum(1 for r in rows if r["kind"] == "edit_merged" and r.get("negatives")),
              "forms": dict(Counter(r.get("form") for r in rows if r["kind"] == "edit_merged" and "form" in r))}
