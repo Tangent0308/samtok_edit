@@ -32,7 +32,7 @@ export SAMTOK_PHASES="${SAMTOK_PHASES:-train,eval,report}"
 export SAMTOK_ADAPTER="${SAMTOK_ADAPTER:-}"
 # Code: branch and (recommended) the exact commit, so all workers and any later rerun use the same code.
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
-export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-v3}"
+export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-v4}"
 export SAMTOK_EDIT_COMMIT="${SAMTOK_EDIT_COMMIT:-}"
 # Number of workers; 1 runs the same pipeline on a single 8-GPU machine (then use --accumulation 4).
 export SAMTOK_NNODES="${SAMTOK_NNODES:-4}"
