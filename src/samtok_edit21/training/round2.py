@@ -38,7 +38,7 @@ from PIL import Image
 from samtok_edit21.data.highlight import OVERLAY_ALPHA, PALETTE, resize_mask
 from samtok_edit21.data.io import dimensions
 from samtok_edit21.data.protocol import token_layout
-from samtok_edit21.models.pipeline import encode_edit, resize_sources
+from samtok_edit21.models.pipeline import ATTENTION, encode_edit, resize_sources
 from samtok_edit21.preparation import instruction_protocol_v2 as p2
 from samtok_edit21.preparation import round2_data as rd
 from samtok_edit21.training.routing import DISTRACTOR_WEIGHT
@@ -616,7 +616,7 @@ def round2_loss(pipe, sample, router=None, *, lambda_region=1.0, lambda_distract
 
     def predict():
         return pipe.model_fn(dit=pipe.dit, latents=noisy, timestep=timestep, **inputs, kv_cache=None,
-                             use_gradient_checkpointing=checkpointing, region_binding=None)
+                             use_gradient_checkpointing=checkpointing, **ATTENTION)
 
     write = read = None
     if router is None or not sample.spans:

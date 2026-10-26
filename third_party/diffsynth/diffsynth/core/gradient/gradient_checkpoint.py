@@ -1,11 +1,9 @@
 import torch
+import sys
 
 
-try:
-    import deepspeed
-    _HAS_DEEPSPEED = True
-except ModuleNotFoundError:
-    _HAS_DEEPSPEED = False
+def get_deepspeed():
+    return sys.modules.get("deepspeed")
 
 
 def create_custom_forward(module):
@@ -14,9 +12,11 @@ def create_custom_forward(module):
     return custom_forward
 
 
-def create_custom_forward_use_reentrant(module):
+def create_custom_forward_use_reentrant(module, num_positional_args, kwarg_keys):
     def custom_forward(*inputs):
-        return module(*inputs)
+        positional_args = inputs[:num_positional_args]
+        keyword_args = dict(zip(kwarg_keys, inputs[num_positional_args:]))
+        return module(*positional_args, **keyword_args)
     return custom_forward
 
 
@@ -34,14 +34,20 @@ def gradient_checkpoint_forward(
     *args,
     **kwargs,
 ):
-    if use_gradient_checkpointing and _HAS_DEEPSPEED and deepspeed.checkpointing.is_configured():
+    deepspeed = get_deepspeed() if use_gradient_checkpointing else None
+    if use_gradient_checkpointing and deepspeed is not None and deepspeed.checkpointing.is_configured():
+        kwarg_keys = tuple(kwargs)
         all_args = args + tuple(kwargs.values())
         if not judge_args_requires_grad(*all_args):
             # get the first grad_enabled tensor from un_checkpointed forward
             model_output = model(*args, **kwargs)
         else:
             model_output = deepspeed.checkpointing.checkpoint(
-                create_custom_forward_use_reentrant(model),
+                create_custom_forward_use_reentrant(
+                    model,
+                    len(args),
+                    kwarg_keys,
+                ),
                 *all_args,
             )
         return model_output

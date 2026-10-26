@@ -51,6 +51,9 @@ Welcome to DiffSynth-Studio's Documentation
    Model_Details/YuE2
    Model_Details/SenseNova-U1
    Model_Details/Qwen-Image-2.1
+   Model_Details/FLUX.3
+   Model_Details/MOSS-Image
+   Model_Details/Fibo
 
 .. toctree::
    :maxdepth: 2
@@ -59,6 +62,7 @@ Welcome to DiffSynth-Studio's Documentation
    Training/Understanding_Diffusion_models
    Training/Supervised_Fine_Tuning
    Training/FP8_Precision
+   Training/Distillation
    Training/Direct_Distill
    Training/Split_Training
    Training/Differential_LoRA

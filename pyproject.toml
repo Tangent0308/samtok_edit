@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = ["numpy", "Pillow"]
 
 [project.optional-dependencies]
-training = ["diffsynth==2.1.8", "mmengine==0.10.7", "pycocotools==2.0.11", "hydra-core", "opencv-python", "scipy"]
+training = ["diffsynth==2.1.12", "mmengine==0.10.7", "pycocotools==2.0.11", "hydra-core", "opencv-python", "scipy"]
 data = ["pyarrow"]
 test = ["pytest"]
 

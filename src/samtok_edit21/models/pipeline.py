@@ -31,6 +31,10 @@ from samtok_edit21.data.protocol import boxes_in, regions_in, spans_in
 MODEL_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/models")
 DEFAULT_QWEN = str(MODEL_ROOT / "pretrained_models/Qwen-Image-2.1")
 DEFAULT_SAMTOK = str(MODEL_ROOT / "SAMTok/Qwen3-VL-8B-SAMTok")
+# The DiT attention path the method was trained and evaluated with: the block-causal FlexAttention mask (DiffSynth's
+# default up to 2.1.8).  Since 2.1.9 DiffSynth defaults to the segmented SDPA path, which computes the same attention
+# with different kernels; every model call of this package passes this flag to stay on the original path.
+ATTENTION = {"use_flex_attention": True}
 
 
 class SamtokTextEncoder(torch.nn.Module):
@@ -250,7 +254,7 @@ def edit(pipe, instruction, images, *, mode="inline", pass2_te="raw", blend_regi
             mask, latents = blend_inputs(pipe, images[0], blend_region, height, width,
                                          dilate=blend_dilate, feather=blend_feather)
             blend = {"blend_mask": mask, "blend_latents": latents}
-        image = pipe(instruction, edit_image=images, **blend, **kwargs)
+        image = pipe(instruction, edit_image=images, **blend, **{**ATTENTION, **kwargs})
     report = {"conditioning_prompt": instruction, "actual_variant": "inline" if regions else "plain",
               "pass2_te": pass2_te,
               "blend": None if not blend else {"dilate": blend_dilate, "feather": blend_feather,
