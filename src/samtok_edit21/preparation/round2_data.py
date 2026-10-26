@@ -915,6 +915,7 @@ def build_rows_c2(out, seed=20261019, world=8, accumulation=4):
 # pairs); "half done" targets are left out first; the data variant replaces a quarter of the rows by extedit batch 1.
 EXT_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/ExtEdit_Protocol2_20261021")
 MERGED_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261024")   # docs/01
+MERGED_FORMS = ("noref_token", "ref_token")   # how a merged unit with a blind sentence can read
 EXT_MANIFEST = EXT_ROOT / "manifest_protocol_v2.jsonl"
 EXT_MULTI_MANIFEST = EXT_ROOT / "manifest_multi_protocol_v2.jsonl"
 C3_UPDATES = 1500
@@ -1076,8 +1077,9 @@ def build_rows_c3(out, variant, seed=20261023, world=8, accumulation=4):
 # in C2.  A draw: {"family": "D11" or [...], "op": "add" | "remove" | "replace" | "attribute" | "text" | "multi",
 # "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true}; with
 # "opsd": true its rows are on-policy self-distillation rows (kind opsd_merged, training/opsd.py: no target image is
-# read, no negatives or twins; place_in_slots gives them whole step pairs on every rank).  Records are drawn without
-# replacement over all draws; a draw larger than what is left repeats its records.
+# read, no negatives or twins; place_in_slots gives them whole step pairs on every rank); "forms" gives the draw its
+# own weights of the two forms for units with a blind sentence (default: the spec's "forms").  Records are drawn
+# without replacement over all draws; a draw larger than what is left repeats its records.
 def merged_match(record, draw):
     families = draw.get("family")
     if families is not None and record["family"] not in ([families] if isinstance(families, str) else families):
@@ -1097,6 +1099,9 @@ def build_rows_merged(out, spec_path):
     world, accumulation, updates = spec.get("world", 8), spec.get("accumulation", 4), spec["updates"]
     total = updates * world * accumulation
     forms = spec.get("forms", C2_FORMS)
+    for weights in [forms] + [d["forms"] for d in spec["draws"] if "forms" in d]:
+        if not weights or set(weights) - set(MERGED_FORMS):
+            raise ValueError(f"forms must weigh {MERGED_FORMS}, got {weights}")
     records = [r for r in map(json.loads, open(Path(spec.get("merged", MERGED_ROOT)) / "records.jsonl")) if r["default"]]
     dev = set(json.load(open(out / "dev_split.json"))["sa1b_sources"])
     train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
@@ -1113,8 +1118,11 @@ def build_rows_merged(out, spec_path):
     for k in rest:
         sizes[k] = left
 
-    def form(unit):
-        return rng.choices(list(forms), weights=list(forms.values()))[0] if unit.get("instruction_noref") else "ref_token"
+    def form(unit, weights=None):
+        if not unit.get("instruction_noref"):
+            return "ref_token"
+        weights = weights or forms
+        return rng.choices(list(weights), weights=list(weights.values()))[0]
 
     used, singles, units, report = set(), [], [], []
     for draw, need in zip(draws, sizes):
@@ -1131,10 +1139,10 @@ def build_rows_merged(out, spec_path):
             if len(r["units"]) > 1:
                 order = list(range(len(r["units"])))
                 rng.shuffle(order)
-                row.update(order=order, forms=[form(r["units"][i]) for i in order])
+                row.update(order=order, forms=[form(r["units"][i], draw.get("forms")) for i in order])
                 units.append([row])
                 continue
-            row["form"] = form(r["units"][0])
+            row["form"] = form(r["units"][0], draw.get("forms"))
             if row["kind"] == "opsd_merged":
                 units.append([row])
                 continue
