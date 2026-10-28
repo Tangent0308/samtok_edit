@@ -12,7 +12,7 @@
   - 取行加了 OPSD 行（提交 `128b1f8a`，§3）；
   - 合板的 `half_done` 不再对改字套用覆盖率规则（`e53c4181`，§2.4）；
   - 重建区域池时读 dense 标注的路径改到现在的位置（`f7db6e4c`，§6）。
-- **合板之前的数据史**（v1 清洗、协议适配、第一轮数据、C3 数据计划、外部数据打标管线的设计）见 v3 分支的 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/docs/01_SAMTokEdit_Qwen21_v3数据.md` 和 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/docs/07_SAMTokEdit_Qwen21_外部编辑数据打标管线.md`，本文只摘要。
+- **合板之前的数据史**（v1 清洗、协议适配、第一轮数据、C3 数据计划、外部数据打标管线的设计）见 v3 分支的 `qwen-image-2.1-v3:docs/01_SAMTokEdit_Qwen21_v3数据.md` 和 `qwen-image-2.1-v3:docs/07_SAMTokEdit_Qwen21_外部编辑数据打标管线.md`（`分支:路径`，可用 `git show` 读），本文只摘要。
 - **路径记号**（`scripts/docs/check_paths.py` 逐一检查）：`datasets/…`、`experiments2/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/` 下的同名路径；`V3/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`；`src/…`、`tests/…` 在本仓库（分支 `qwen-image-2.1-v4`）。
 - **术语：**一条**记录**是一对源图和目标图；记录里的一个编辑叫一个**单元**，单目标记录只有一个单元。
 
@@ -119,7 +119,7 @@ D1、D3、D4、D10、D11 + 统一文字复查 ──merge-data（10-24）──�
 - **漂移：**目标图来自其他编辑模型，只有一部分做过贴回。token 缓存记了区域外的改动 `out_diff`、`out_share8`；任一超阈值（> 1.0 或 > 0.02）的记录标 `loss_region: local`，训练时只在编辑附近算损失。
 
 **D10、D11（extedit 管线，v3 文档 07）**
-- **代码：**labeling 仓库 `Tangent0308/sam3-crispedit` 的分支 `extedit-protocol2-labeling`，本地 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/`，说明 `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/docs/EXTEDIT_PROTOCOL2.md`。
+- **代码：**labeling 仓库 `Tangent0308/sam3-crispedit` 的分支 `extedit-protocol2-labeling`，说明 `extedit-protocol2-labeling:docs/EXTEDIT_PROTOCOL2.md`（原本机 clone `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/`，10-28 随机器回收）。
 - **流程：**取数 → 像素预检（对齐、配准、改动图）→ Qwen3.8-27B 规划（一次调用给出判定、1–5 个单元的槽位和 S 的框）→ SAM3 分割 + SAMTok token（往返 < 0.5 的丢掉）→ 区域把关（含替换、改属性没做完和添加改坏锚点的规则）+ 按支持区域贴回 → 27B 两票审核 → 文字复查（改字）、自然度复查（CrispEdit 添加）→ 导出。
 - **取数时排除：**旧流程用过的行、与 benchmark 2.6.0 源图相同或近重复的行、同一源图超过 3 条的行。
 - **与旧流程比：**27B 从每条 5–6 次降到 2 次，SAM3 只跑一次，去掉了场景难度筛；收下率第一批 38.3%、第二批 27.7%，旧流程端到端约 1.5%–2.5%。
@@ -208,7 +208,7 @@ D1、D3、D4、D10、D11 + 统一文字复查 ──merge-data（10-24）──�
 ### 2.3 文字复查
 
 - **起因：**用户 10-24 要求文字类单元加独立标记，合板前对所有文字相关的单元统一复查一次（ARNOLD 单机，用户提交）。
-- **说明与代码：**`/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/docs/EXTEDIT_TEXT_RECHECK.md`（labeling 分支，代码 `7e472f7`）。
+- **说明与代码：**`extedit-protocol2-labeling:docs/EXTEDIT_TEXT_RECHECK.md`（labeling 分支，代码 `7e472f7`）。
 - **运行目录：**`experiments2/SAMTokEdit/data_pipeline/02_production_runs/merge_text_recheck_20261024/`。
   - 清单 `units.jsonl`；
   - 运行写入 `node0/textrecheck/`（`records.jsonl`、`summary.json`）；
@@ -616,7 +616,7 @@ C1–C3 的行文件（每次更新 32 行 = 8 卡 × 累积 4 步）：
 - **协议：**指令协议 2.0、mask 语义 2.0。benchmark 的两种句子与本仓库协议模块的渲染逐字一致（3,872 个单元全部一致，10-19 核对）。
 - **评分：**Qwen3.8-Flash-Next-FP8，每个 case 一次联合判全部单元；每个单元打 E（编辑）、P（保持）、Q（质量），另有整图的 P、Q；全部过线才算 JointPass。
 - **状态：**独立人工终审和语义签字还没做（`release.json` 的 `independent_human_verified` 为 false）。
-- **代码仓库：**`Tangent0308/samtok_edit_benchmark` 的 `v2branch`。本机 clone `/opt/tiger/tanyue/samtok_edit_benchmark/` 停在 dev 分支，本地的 `origin/v2branch` 也只到 2.3.0，不能当 2.6.0 用；2.6.0 以数据根为准。
+- **代码仓库：**`Tangent0308/samtok_edit_benchmark` 的 `v2branch`。原本机 clone 停在 dev 分支，本地的 `origin/v2branch` 也只到 2.3.0，不能当 2.6.0 用；2.6.0 以数据根为准。判分用的代码是 `v2branch` 的提交 `bf2283d`（见 `experiments2/SAMTokEdit/handoff_20261028/envs/README.md`）。
 
 ### 4.3 benchmark 的子集
 
@@ -664,7 +664,7 @@ C1–C3 的行文件（每次更新 32 行 = 8 卡 × 累积 4 步）：
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/extedit_protocol2_batch2_local8_20261022/` | D11 的生产运行（本机部分） |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/extedit_protocol2_batch2_4n_20261023/` | D11 的生产运行（四机部分） |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/sa1b_samtok_edit_50k_20261014/sources/` | SA-1B dense 标注，D2 的来源 |
-| `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/` | extedit 打标与文字复查的代码（分支 `extedit-protocol2-labeling`） |
+| `Tangent0308/sam3-crispedit` 的分支 `extedit-protocol2-labeling` | extedit 打标与文字复查的代码（原本机 clone `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/`，已随机器回收） |
 | `V3/data/round2_20261016/` | round-2 数据目录（§3.7） |
 | `V3/data/round2_20261016/eval_c1.json` | 开发集 |
 | `datasets/samtok_edit_benchmark_v2/` | benchmark 2.6.0 数据根 |

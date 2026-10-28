@@ -4,6 +4,8 @@ Region editing with SAMTok mask tokens on the Qwen-Image-2.1 editing pipeline. A
 
 This is the **v4** branch (`qwen-image-2.1-v4`): the round-2 method of v3 (token grounding, trained with flow matching, region terms and attention routing) on the current DiffSynth, plus on-policy self-distillation (OPSD) with a mask-privileged teacher. The v2 two-stage method and the v3 first-round tools are kept on the `qwen-image-2.1-v3` branch.
 
+Project status, working conventions and next steps for a new session (in Chinese): [HANDOFF.md](HANDOFF.md). Data, method and experiment documents: [docs/](docs/README.md).
+
 ## Install
 
 ```bash

@@ -2,8 +2,8 @@
 
 本文汇总 2026-10-11 至 10-27 的全部训练和评测实验，截至 2026-10-27。
 - 每个实验按同一结构写：**目的**、**设置**（初始化、数据与行文件、步数与每步行数、关键超参、硬件与时长）、**评测**、**结果**、**分析与结论**、**图**、**路径**。
-- §2–§6 的实验都用 v3 分支的代码运行（`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3`）。v4 是 v3 第二轮方法的整理版，另加 OPSD 训练器；v4 的代码核对和冒烟见[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，用 v4 跑的第一次训练是 10-26 起的 OPSD 试训（§7）。
-- 数据见[文档 01](01_SAMTokEdit_Qwen21_v4数据.md)，方法见[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)。v3 的原始实验记录是 `/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/docs/03_SAMTokEdit_Qwen21_v3实验.md`；本文的数字按盘上的结果文件核对过，两者不一致时以盘上为准，并在原处注明；少数只见于 v3 文档、盘上没有单独结果文件的统计，在原处标"（v3 文档）"。
+- §2–§6 的实验都用 v3 分支（`qwen-image-2.1-v3`）的代码运行。v4 是 v3 第二轮方法的整理版，另加 OPSD 训练器；v4 的代码核对和冒烟见[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，用 v4 跑的第一次训练是 10-26 起的 OPSD 试训（§7）。
+- 数据见[文档 01](01_SAMTokEdit_Qwen21_v4数据.md)，方法见[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)。v3 的原始实验记录是 `qwen-image-2.1-v3:docs/03_SAMTokEdit_Qwen21_v3实验.md`（`分支:路径`，可用 `git show` 读）；本文的数字按盘上的结果文件核对过，两者不一致时以盘上为准，并在原处注明；少数只见于 v3 文档、盘上没有单独结果文件的统计，在原处标"（v3 文档）"。
 
 **路径记号**
 - `V3/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`。实验树 10-19 整理过，旧路径对照见 `V3/MOVED_20261019.tsv`，目录说明见 `V3/README.md`。
@@ -468,7 +468,7 @@
 
 ![C2 训练曲线](assets/v4/c2_training.jpg)
 
-图 4　C2 训练曲线（每 10 次更新记一次，15 点滑动平均）：全图误差 mse、目标区域误差 reg、邻居误差 dis、读写路由损失；灰线为学习率。原图：`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/docs/assets/v3_round2/fig_r2_c2_training.png`
+图 4　C2 训练曲线（每 10 次更新记一次，15 点滑动平均）：全图误差 mse、目标区域误差 reg、邻居误差 dis、读写路由损失；灰线为学习率。原图：`qwen-image-2.1-v3:docs/assets/v3_round2/fig_r2_c2_training.png`
 
 - **曲线的含义：**
   - 目标区域误差 reg 从前 10% 更新的均值 0.142 只降到后 10% 的 0.133，是全图误差 mse（约 0.031）的 4 倍多；
@@ -582,7 +582,7 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
 
 ![不执行诊断](assets/v4/c2_noexec.png)
 
-图 7　左：C2 在 100 条开发集编辑上的执行率，换种子与写明物体名；右：区域损失里真正改动的像素所占的权重（中位数），50k 对 v1。原图：`/opt/tiger/tanyue/samtok_edit_qwen-image-2.1-v3/docs/assets/v3_round2/fig_r2_noexec.png`
+图 7　左：C2 在 100 条开发集编辑上的执行率，换种子与写明物体名；右：区域损失里真正改动的像素所占的权重（中位数），50k 对 v1。原图：`qwen-image-2.1-v3:docs/assets/v3_round2/fig_r2_noexec.png`
 
 ### 4.5 benchmark 2.6.0 拆分 36 例（10-19）
 - **目的：**在正式判分之前，先在 benchmark 风格的 case 上目测 C2 与原版的规律。
@@ -1129,6 +1129,7 @@ v4 的代码核对写在[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，本文�
 | `V3/analysis/c3_eval_20261023/` | C3 决策子集与方案 A：选例、各系统输出、判分、`report.txt`、`report_a.txt`、`status.txt`、对比图 `sheets/c3_cases_1.jpg` 到 `_5.jpg`（§5） |
 | `V3/analysis/opsd_plan_20261025/README.md` | OPSD 的调研与方案（§6） |
 | `V3/analysis/opsd_teacher_20261025/` | OPSD 老师上限测试：配置、输出、判分、`report.txt`、对比图 `sheets/teacher_cases_1.jpg` 到 `_5.jpg`（§6） |
+| `V3/analysis/v4_code_checks_20261026/` | v4 开发时的代码核对：v3 与 v4 等价、OPSD 正确性检查与 8 卡冒烟、合板重建核对、文档统计脚本（原 `/tmp/claude_v4/`，10-28 搬来） |
 | `V3/analysis/opsd_pilot_20261026/` | OPSD 试训：说明 `README.md`、配置、生成、判分、`report.txt`、`report_s2.txt`、诊断 `diagnosis/`、图 `figs/`、对比图 `sheets/`（§7） |
 | `V3/runs/opsd_p1_local8_001/`、`V3/runs/opsd_p0_local8_001/` | 试训的两次训练：权重 `adapter_100/250/500`、开发集评测、`analysis_*.txt` |
 | `V3/reports/progress_20261020/` | 10.20 进度汇报的草稿和图（图 2、3、5、8、9 的原图） |
@@ -1137,5 +1138,7 @@ v4 的代码核对写在[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，本文�
 | `datasets/SAMTokEdit_Merged_20261024/` | 合板训练数据（OPSD 试训用的是 10-26 重建版） |
 | `docs/assets/v4/` | 本文的 18 张图（缩小、节选版） |
 
-- 运行环境（v3 实验）：`/tmp/samtok21-fixes-dUnbt5/venv`，在仓库根目录设 `PYTHONPATH=src:third_party/diffsynth:third_party`。
+- 运行环境：按仓库 README 用 `requirements.txt`（验证过的版本见 `constraints-tested.txt`）建环境，在仓库根目录设 `PYTHONPATH=src:third_party/diffsynth:third_party`。原来的本机环境 `/tmp/samtok21-fixes-dUnbt5/venv` 已随机器回收，依赖清单和判分环境的记录在 `experiments2/SAMTokEdit/handoff_20261028/envs/`。
+- v4 开发时的代码核对（v3 与 v4 等价、OPSD 正确性、合板重建核对等）的脚本和结果：`V3/analysis/v4_code_checks_20261026/`（见其 `README.md`）。
+- 交接说明：仓库根目录的 `HANDOFF.md`（NAS 上的副本 `experiments2/SAMTokEdit/handoff_20261028/HANDOFF.md`）。
 - 2026-10-19 经用户确认，删除过没有完整评测过的中间权重、失败与入口验证运行的权重和审阅草图（约 8.9 GB）；快速评测结果仍在各 run 目录。
