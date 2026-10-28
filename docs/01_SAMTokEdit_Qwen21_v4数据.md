@@ -468,12 +468,14 @@ D1、D3、D4、D10、D11 + 统一文字复查 ──merge-data（10-24）──�
 | `highlights` | `{"single": 比例, "multi": 比例}`：单 token、多 token 高亮行占全部行的比例 | 0 |
 | `joined_multi` | D1 拼合多目标行占全部行的比例 | 0 |
 | `d1_negatives`、`d1_twins` | D1 的近邻负例、孪生 | 都开 |
+| `exclude` | 一个记录 id 文件（每行一个，或 JSON 列表），这些记录不进任何一项，例如诊断用的留出行（10-28 加入） | 无 |
 
 **抽取（`draws` 的每一项）**
 - **筛选**（`merged_match`）：
   - `family`：一个或几个来源；
   - `op`：add、remove、replace、attribute、text 只取该操作的单目标记录，multi 只取多目标记录，不写则不限；
-  - `text_role`：change、render、remove，取至少有一个单元带该标记的记录。
+  - `text_role`：change、render、remove，取至少有一个单元带该标记的记录；
+  - `area_max`：每个单元的改动面积（`edited_region.area_frac`，占全图）都不超过该值，没有改动区域的记录不取（10-28 加入，第二次 OPSD 试训用来只取 D1 小区域）。
 - **数量三选一：**`rows`（行数）、`share`（占全部行的比例）、`rest: true`（剩下的全部，最多一项）。高亮行、拼合多目标行先按比例扣除，各项加起来必须正好填满总行数。
 - **不放回：**各项依次从尚未被抽过的记录里随机取；要的比剩下的多时重复抽，`<name>_stats.json` 记下每项的 `available` 和 `repeated`。
 - **`"opsd": true`：**这一项的行是 `opsd_merged`。

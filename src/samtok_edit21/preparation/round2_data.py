@@ -1078,8 +1078,10 @@ def build_rows_c3(out, variant, seed=20261023, world=8, accumulation=4):
 # "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true}; with
 # "opsd": true its rows are on-policy self-distillation rows (kind opsd_merged, training/opsd.py: no target image is
 # read, no negatives or twins; place_in_slots gives them whole step pairs on every rank); "forms" gives the draw its
-# own weights of the two forms for units with a blind sentence (default: the spec's "forms").  Records are drawn
-# without replacement over all draws; a draw larger than what is left repeats its records.
+# own weights of the two forms for units with a blind sentence (default: the spec's "forms"); "area_max" keeps the
+# records whose every unit changes at most this share of the image (edited_region.area_frac).  Records are drawn
+# without replacement over all draws; a draw larger than what is left repeats its records.  The spec's "exclude"
+# names a file of record ids (one per line, or a JSON list) kept out of every draw, for example held-out rows.
 def merged_match(record, draw):
     families = draw.get("family")
     if families is not None and record["family"] not in ([families] if isinstance(families, str) else families):
@@ -1089,8 +1091,20 @@ def merged_match(record, draw):
         return False
     if op not in (None, "multi") and (len(record["units"]) != 1 or record["units"][0]["op"] != op):
         return False
+    area = draw.get("area_max")
+    if area is not None and any((u.get("edited_region") or {}).get("area_frac") is None
+                                or u["edited_region"]["area_frac"] > area for u in record["units"]):
+        return False
     role = draw.get("text_role")
     return role is None or any(u["text"]["role"] == role for u in record["units"])
+
+
+def excluded_ids(spec):
+    """Record ids a rows spec keeps out of every draw: ``"exclude"`` names a file, one id per line or a JSON list."""
+    if not spec.get("exclude"):
+        return set()
+    text = Path(spec["exclude"]).read_text()
+    return set(json.loads(text)) if text.lstrip().startswith("[") else {line.strip() for line in text.splitlines() if line.strip()}
 
 
 def build_rows_merged(out, spec_path):
@@ -1124,7 +1138,7 @@ def build_rows_merged(out, spec_path):
         weights = weights or forms
         return rng.choices(list(weights), weights=list(weights.values()))[0]
 
-    used, singles, units, report = set(), [], [], []
+    used, singles, units, report = excluded_ids(spec), [], [], []
     for draw, need in zip(draws, sizes):
         options = [r for r in records if r["id"] not in used and merged_match(r, draw)]
         if not options and need:

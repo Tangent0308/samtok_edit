@@ -18,6 +18,12 @@ gives the clean estimate ``x0 = x_t - sigma * v``.  The teacher's estimate is
 ``mean((x0_S - x0_T)^2)``: the velocity error weighted by ``sigma^2``, which stays bounded where the student has
 drifted outside A at a small sigma (the velocity target ``(x_t - x_src) / sigma`` would not).
 
+Two refinements after the first pilot (docs/02 §5.11), both off by default so that earlier runs stay reproducible:
+``loss="split"`` normalises the error inside and outside A apart, ``sum(m e) / sum(m) + w * sum((1 - m) e) / sum(1 - m)``
+(over the whole latent the outside, whose target is just the source, outweighs a small A); ``high_sigma`` and
+``high_share`` take a set share of the supervised states from the noisy start of the trajectory, where whether and
+where to edit is decided.
+
 Order of operations, so that no gradient ever sees the teacher's weights: the rollout with the student's weights (no
 gradients); then, for every supervised state, the teacher target (teacher weights swapped in, no gradients, swapped
 back), the student's forward with gradients and its backward at once.  Backward therefore runs while the student's
@@ -51,10 +57,15 @@ class OpsdConfig:
     student_guidance: float = 1.0   # token guidance of the rollout policy (1: the plain conditional prediction)
     dilate: int = 2                 # allowed region: dilation, in tokens
     feather: float = 1.0            # allowed region: Gaussian feather, in tokens
+    loss: str = "mean"              # "mean": over the whole latent; "split": inside and outside A normalised apart
+    outside_weight: float = 0.1     # split loss: weight of the outside part
+    high_sigma: float = 0.0         # states at sigma >= this form the high band (0: no band, uniform picking)
+    high_share: float = 0.5         # expected share of the supervised states taken from the high band
 
     def __post_init__(self):
         if self.steps < 1 or self.states < 1 or not 0 <= self.min_sigma < 1 or self.guidance < 1 \
-                or self.student_guidance < 1 or self.dilate < 0 or self.feather < 0:
+                or self.student_guidance < 1 or self.dilate < 0 or self.feather < 0 or self.loss not in ("mean", "split") \
+                or self.outside_weight < 0 or not 0 <= self.high_sigma <= 1 or not 0 <= self.high_share <= 1:
             raise ValueError(f"Invalid OPSD configuration {self}")
 
 
@@ -211,13 +222,26 @@ def rollout(pipe, scheduler, positive, negative, noise, guidance):
     return states
 
 
-def pick_states(sigmas, count, min_sigma, generator=None):
-    """``count`` distinct rollout states with sigma >= ``min_sigma``, uniformly without replacement, in order."""
-    eligible = [index for index, sigma in enumerate(torch.as_tensor(sigmas).tolist()) if sigma >= min_sigma]
+def pick_states(sigmas, count, min_sigma, generator=None, high_sigma=0.0, high_share=0.5):
+    """``count`` distinct rollout states with sigma >= ``min_sigma``, in order.  Without a band (``high_sigma`` at or
+    below ``min_sigma``) they are drawn uniformly without replacement.  With one, ``count * high_share`` of them on
+    average (stochastic rounding) come from the states at sigma >= ``high_sigma`` and the rest from those below; a band
+    that runs short is filled from the other."""
+    values = torch.as_tensor(sigmas).tolist()
+    eligible = [index for index, sigma in enumerate(values) if sigma >= min_sigma]
     if not eligible:
         raise ValueError(f"no rollout state reaches sigma {min_sigma}")
-    order = torch.randperm(len(eligible), generator=generator).tolist()
-    return sorted(eligible[k] for k in order[:count])
+    if high_sigma <= min_sigma:
+        order = torch.randperm(len(eligible), generator=generator).tolist()
+        return sorted(eligible[k] for k in order[:count])
+    high = [index for index in eligible if values[index] >= high_sigma]
+    low = [index for index in eligible if values[index] < high_sigma]
+    total = min(count, len(eligible))
+    wanted = total * high_share
+    n_high = int(wanted) + int(float(torch.rand((), generator=generator)) < wanted - int(wanted))
+    n_low = min(total - min(n_high, len(high)), len(low))
+    picks = [high[k] for k in torch.randperm(len(high), generator=generator).tolist()[:total - n_low]]
+    return sorted(picks + [low[k] for k in torch.randperm(len(low), generator=generator).tolist()[:n_low]])
 
 
 def teacher_clean(latents, sigma, velocity, mask, source_latents):
@@ -231,9 +255,21 @@ def student_loss(latents, sigma, velocity, target):
     return (latents.float() - sigma * velocity.float() - target).pow(2).mean()
 
 
+def split_loss(latents, sigma, velocity, target, mask, outside_weight):
+    """The squared error ``e`` of the clean estimates (mean over channels), inside the allowed region and outside it,
+    each normalised by its own area: ``sum(m e) / sum(m) + outside_weight * sum((1 - m) e) / sum(1 - m)``.  Returns
+    the loss and its two parts."""
+    error = (latents.float() - sigma * velocity.float() - target).pow(2).mean(1)
+    inside, outside = mask[:, 0].float(), 1 - mask[:, 0].float()
+    inner = (inside * error).sum() / inside.sum().clamp_min(1e-6)
+    outer = (outside * error).sum() / outside.sum().clamp_min(1e-6)
+    return inner + outside_weight * outer, inner, outer
+
+
 def opsd_backward(pipe, ctx, row, teacher, config, *, scale, checkpointing=True):
     """One OPSD row: the student's rollout, then for every picked state the teacher target and the student's
-    backward of ``scale * loss / states``.  Returns the mean loss and the picked sigmas."""
+    backward of ``scale * loss / states``.  Returns the mean loss, its error inside and outside the allowed region
+    (each normalised by its own area, whichever loss is trained) and the picked sigmas."""
     sample = prepare_opsd(pipe, ctx, row, config)
     scheduler = deepcopy(pipe.scheduler)            # the trainer's own schedule (1000 training steps) stays untouched
     scheduler.set_timesteps(config.steps, dynamic_shift_len=sample.source_latents.shape[2] * sample.source_latents.shape[3])
@@ -246,8 +282,9 @@ def opsd_backward(pipe, ctx, row, teacher, config, *, scale, checkpointing=True)
         with teacher.active():
             teacher_positive = encode(pipe, sample.teacher_prompt, sample)
             teacher_negative = None if config.guidance == 1.0 else encode(pipe, sample.teacher_negative, sample)
-    picked = pick_states(scheduler.sigmas, config.states, config.min_sigma)
-    losses = []
+    picked = pick_states(scheduler.sigmas, config.states, config.min_sigma, high_sigma=config.high_sigma,
+                         high_share=config.high_share)
+    losses, parts = [], []
     for index in picked:
         latents, timestep, sigma = states[index], scheduler.timesteps[index], float(scheduler.sigmas[index])
         with torch.no_grad(), evaluating(pipe.dit), teacher.active():
@@ -256,9 +293,17 @@ def opsd_backward(pipe, ctx, row, teacher, config, *, scale, checkpointing=True)
             target = teacher_clean(latents, sigma, velocity, sample.mask, sample.source_latents)
         conditioning = encode(pipe, sample.student_prompt, sample)
         velocity = predict(pipe, conditioning, latents, model_timestep(pipe, timestep), checkpointing=checkpointing)
-        loss = student_loss(latents, sigma, velocity, target)
+        if config.loss == "split":
+            loss, inner, outer = split_loss(latents, sigma, velocity, target, sample.mask, config.outside_weight)
+        else:
+            loss = student_loss(latents, sigma, velocity, target)
+            with torch.no_grad():
+                _, inner, outer = split_loss(latents, sigma, velocity, target, sample.mask, 0.0)
         if not torch.isfinite(loss):
             raise RuntimeError("non-finite OPSD loss")
         (scale * loss / len(picked)).backward()
         losses.append(float(loss.detach()))
-    return {"opsd": sum(losses) / len(losses), "sigmas": [round(float(scheduler.sigmas[i]), 4) for i in picked]}
+        parts.append((float(inner.detach()), float(outer.detach())))
+    return {"opsd": sum(losses) / len(losses), "inside": sum(p[0] for p in parts) / len(parts),
+            "outside": sum(p[1] for p in parts) / len(parts),
+            "sigmas": [round(float(scheduler.sigmas[i]), 4) for i in picked]}

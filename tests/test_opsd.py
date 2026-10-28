@@ -69,6 +69,26 @@ def test_teacher_clean_estimate_and_loss():
     assert float(opsd.student_loss(latents, sigma, other, inside)) == pytest.approx(float(expected), rel=1e-5)
 
 
+def test_split_loss_normalises_inside_and_outside_apart():
+    latents, target, sigma = torch.zeros(1, 2, 2, 2), torch.zeros(1, 2, 2, 2), 0.5
+    velocity = torch.zeros(1, 2, 2, 2)
+    velocity[0, :, 0, 0], velocity[0, :, 1, 1] = 2.0, 4.0           # errors (sigma v)^2: 1 inside, 4 at one outside token
+    velocity.requires_grad_(True)
+    mask = torch.tensor([[[[1.0, 0.0], [0.0, 0.0]]]])
+    loss, inner, outer = opsd.split_loss(latents, sigma, velocity, target, mask, 0.1)
+    assert float(inner) == pytest.approx(1.0) and float(outer) == pytest.approx(4.0 / 3)
+    assert float(loss) == pytest.approx(1.0 + 0.1 * 4.0 / 3)
+    loss.backward()
+    # inside, the gradient does not shrink with the area; outside it carries the weight and is spread over three tokens
+    assert torch.allclose(velocity.grad[0, :, 0, 0], torch.full((2,), 2 * sigma ** 2 * 2.0 / 2))
+    assert torch.allclose(velocity.grad[0, :, 1, 1], torch.full((2,), 0.1 * 2 * sigma ** 2 * 4.0 / 2 / 3))
+    # with A the whole grid the inside part is the plain mean loss and nothing is outside
+    other = torch.randn(1, 2, 2, 2)
+    _, inner, outer = opsd.split_loss(latents, sigma, other, target, torch.ones(1, 1, 2, 2), 0.1)
+    assert float(inner) == pytest.approx(float(opsd.student_loss(latents, sigma, other, target)), rel=1e-6)
+    assert float(outer) == 0.0
+
+
 def test_opsd_rows_fill_whole_step_pairs_on_every_rank():
     import random
 
@@ -96,6 +116,30 @@ def test_pick_states_are_distinct_ordered_and_noisy_enough():
     assert opsd.pick_states(sigmas, 10, 0.1) == [0, 1, 2, 3]
     with pytest.raises(ValueError):
         opsd.pick_states(sigmas, 1, 2.0)
+
+
+def test_pick_states_take_a_set_share_from_the_noisy_band():
+    sigmas = torch.tensor([1.0, 0.9, 0.8, 0.7, 0.5, 0.3, 0.2, 0.05])
+    high = []
+    for seed in range(400):
+        picked = opsd.pick_states(sigmas, 2, 0.1, torch.Generator().manual_seed(seed), high_sigma=0.75, high_share=0.75)
+        assert picked == sorted(set(picked)) and len(picked) == 2 and all(sigmas[i] >= 0.1 for i in picked)
+        high.append(sum(float(sigmas[i]) >= 0.75 for i in picked))
+    assert set(high) == {1, 2} and abs(sum(high) / len(high) - 1.5) < 0.1     # stochastic rounding of 2 x 0.75
+    short = opsd.pick_states(sigmas, 4, 0.1, torch.Generator().manual_seed(0), high_sigma=0.95, high_share=1.0)
+    assert len(short) == 4 and short[0] == 0                              # the one noisy state, the rest from below
+    for seed in range(5):                                                  # no band: the uniform draw of before
+        generator = torch.Generator().manual_seed(seed)
+        eligible = [i for i, sigma in enumerate(sigmas.tolist()) if sigma >= 0.1]
+        before = sorted(eligible[k] for k in torch.randperm(len(eligible), generator=generator).tolist()[:3])
+        assert opsd.pick_states(sigmas, 3, 0.1, torch.Generator().manual_seed(seed)) == before
+
+
+def test_opsd_config_checks_the_loss_and_the_band():
+    assert opsd.OpsdConfig(loss="split", outside_weight=0.0, high_sigma=0.73, high_share=1.0).loss == "split"
+    for bad in ({"loss": "l1"}, {"outside_weight": -0.1}, {"high_sigma": 1.5}, {"high_share": 1.2}):
+        with pytest.raises(ValueError):
+            opsd.OpsdConfig(**bad)
 
 
 def test_teacher_weights_swap_in_restore_and_ema():

@@ -453,7 +453,12 @@ C3-D 的配方取自 `adapter.json` 的 `grounding` 字段：
   - 这等价于速度目标 `(x_t − x_src)/σ`，也就是管线里 `blend_outside_region` 的做法，只是把"每步改状态"换成了"训练时给目标"。
   - 但在 x0 空间里，误差就是学生偏离源图的实际幅度，不会因为 `1/σ` 在小 σ 时放大。所以不需要 LLM 版 OPSD 的逐项截断，再加上只监督 σ ≥ `min_sigma` 的状态。
 - **一行的损失：**选出的 N 个状态取平均，乘 `λ_opsd`，再除以梯度累积步数，与普通行同一个口径。
-- **代码：**`teacher_clean`、`student_loss`（§6.5）。
+- **A 内外分开归一（`--opsd-loss split`，第二次试训起）：**`L = Σ m·e / Σ m + β·Σ (1−m)·e / Σ (1−m)`。
+  - `e` 是两个干净估计之差的平方，在通道上取平均；β 由 `--opsd-outside-weight` 设（默认 0.1）。
+  - 在整个 latent 上取平均时，A 外（目标就是源图）压过小的 A（第一次试训的诊断，§5.11）；分开归一后，A 内的权重不再随面积缩小。
+  - 默认仍是 `mean`，第一次试训用的就是它。
+  - 不论用哪种损失，两部分（各自按面积归一的误差）都记进 `train_metrics.jsonl` 的 `opsd_in`、`opsd_out`。
+- **代码：**`teacher_clean`、`student_loss`、`split_loss`（§6.5）。
 
 ### 5.5 学生的轨迹与状态采样
 - **策略：**学生就是推理时的模型，条件与推理完全相同：源图，加上这一行写法（盲指代或带名）的带 token 指令。
@@ -466,6 +471,11 @@ C3-D 的配方取自 `adapter.json` 的 `grounding` 字段：
   - 用前缀 KV 缓存；Euler 步就是调度器的 `step`；
   - 默认学生引导为 1（单次条件预测）。`--opsd-student-guidance > 1` 时按 token 引导采样，只改变状态的分布，学生被训练的仍然是条件预测。
 - **选状态：**在 σ ≥ `min_sigma`（默认 0.1）的状态里不放回地均匀抽 N 个（默认 2），按时间顺序排列（`pick_states`）。
+- **高噪声段（第二次试训起）：**
+  - `--opsd-high-sigma s`（默认 0，即不分段）把 σ ≥ s 的状态划为高噪声段；`--opsd-high-share p` 设 N 个状态里平均有 N·p 个取自高噪声段，其余取自 s 以下；
+  - 个数随机取整：N = 2、p = 0.75 时，一半的行两个状态都在高噪声段，一半的行一高一低；一段不够时由另一段补齐；
+  - 不分段时与以前的均匀抽取逐数相同（`tests/test_opsd.py`）；
+  - 依据：执行与否、改哪个实例在高噪声段就定了（第一次试训的接管测试和开发集的第 1 步，§5.11）。
 - **初始噪声：**`torch.randn`，各卡的种子不同。
 
 已验证：同样的初始噪声下，这条轨迹与 benchmark 和开发集用的 `generation.generate` 逐位相同（§6.7）。所以学生被监督的状态，正是它推理时会走到的状态。
@@ -518,7 +528,7 @@ opsd_backward(pipe, ctx, row, teacher, config, scale):
   - 所以 `place_in_slots` 让 OPSD 行占满整个"步对"：相邻两步、每张卡各 2 行，均匀分布在整个训练中；
   - 凑不满一个步对的余数（少于 2 × world 行）并入普通行，实际训练里可以忽略；
   - 没有 OPSD 行时，排布和随机数的使用与以前的行文件完全相同。
-- **训练器：**`--lambda-opsd` 设权重；`train_metrics.jsonl` 和 W&B 记录 `opsd`（OPSD 行的平均损失）和 `opsd_rows`。
+- **训练器：**`--lambda-opsd` 设权重；`train_metrics.jsonl` 和 W&B 记录 `opsd`（OPSD 行的平均损失）、`opsd_rows`，以及 `opsd_in`、`opsd_out`（A 内、A 外各自按面积归一的误差）。
 
 ### 5.9 参数与默认值
 
@@ -533,9 +543,17 @@ opsd_backward(pipe, ctx, row, teacher, config, scale):
 | `--opsd-dilate` | 2 | A 的外扩（token） |
 | `--opsd-feather` | 1.0 | A 的高斯羽化（token） |
 | `--opsd-teacher-ema` | 0.0 | 0 为冻结老师；0–1 之间为 EMA 的动量 |
+| `--opsd-loss` | mean | `mean`：整个 latent 取平均；`split`：A 内外分开归一（§5.4） |
+| `--opsd-outside-weight` | 0.1 | `split` 时 A 外那一项的权重 β |
+| `--opsd-high-sigma` | 0.0 | 高噪声段的阈值，0 为不分段（§5.5） |
+| `--opsd-high-share` | 0.5 | 监督状态里取自高噪声段的平均比例 |
 
 - 默认值对应上限测试的 T3（外扩 2、羽化 1、引导 2）和方案文档的建议（K = 12–16，每条轨迹 2–4 个状态）。
 - **`--lambda-opsd` 要按混合比例设。**在 C3-D 处实测单行梯度范数（LoRA 与码本注入）的中位数：普通行 0.155（16 行），OPSD 行 0.017（6 行），相差约 9 倍。`λ_opsd = 1` 时，OPSD 在一半一半的混合里只占约十分之一的梯度，所以试训用 8。
+- **第二次试训的 `λ_opsd = 2`**（`V3/analysis/opsd_pilot2_20261028/grad_scale.py`，C3-D 处各 16 行）：
+  - 普通行单行梯度的中位数 0.100；第二次试训的 OPSD 行（D1 小区域、分开归一、高噪声段）0.048，比值 2.1。
+  - 同样这 16 行用原来的损失只有 0.0018，是普通行的 1/56。第一次试训用 λ = 8 时，D1 小区域的 OPSD 行对模型几乎没有作用，这与 §5.11 的面积稀释诊断一致。
+  - 分开归一后梯度分布拖尾（最大 0.84），大梯度出现在 A 内学生离老师最远的行；训练器不截断梯度，偶发的大梯度由 Adam 的二阶矩吸收。
 
 ### 5.10 风险与待定
 - **老师在某些类型上不更强：**这些类型拿不到信号。上限测试里写字、添加提升明显，按类型的细分见文档 03。必要时只对有效的类型抽 OPSD 行。试训证实了这一风险，而且更严重：在训练行上，老师很少比学生好（§5.11）。
@@ -543,7 +561,7 @@ opsd_backward(pipe, ctx, row, teacher, config, scale):
 - **负分支带名字：**老师的负分支是"带名、无 token"的指令，学生看不到这个名字。学生只匹配合成后的速度，不单独匹配各分支。如果不稳定，再试 PDM（正分支和引导方向分开匹配），或去掉老师引导（`--opsd-guidance 1`）。
 - **回填的边界：**A 外扩、羽化，要看对比图。
 - **代价：**每行约为普通行的 4 倍。试训实测（本机 8 卡、每次更新 32 行、OPSD 行占一半）：每次更新约 71 s，普通训练约 27 s。
-- **试训：**10-26 至 10-27，P1（OPSD）与 P0（同一批记录全做普通训练）对照，各 500 次更新，从 C3-D 起。结果和诊断见 §5.11、文档 03 §7。
+- **试训：**10-26 至 10-27，P1（OPSD）与 P0（同一批记录全做普通训练）对照，各 500 次更新，从 C3-D 起。结果和诊断见 §5.11、文档 03 §7.1。第二次试训 10-28 起，见 §5.11 末尾和文档 03 §7.2。
 
 ### 5.11 试训结果与诊断（10-27）
 **结果**（文档 03 §7）：
@@ -568,15 +586,16 @@ opsd_backward(pipe, ctx, row, teacher, config, scale):
    - 老师在学生状态上能否纠正：在有差距的记录上能（接管从未变坏），但这样的记录很少；
    - 双重引导、16 步对 40 步：没有单独测。
 
-**修订方向（未实现，待用户定）：**
-- **损失分开归一：**`L = Σ_j m_j·e_j / Σ_j m_j + β·Σ_j (1−m_j)·e_j / Σ_j (1−m_j)`，其中 `e_j = (x0_S − x0_T)²_j`，β 约 0.1，两项分开记录。A 外也可以改成不需要老师的保持损失，放到普通行上。
-- **选行：**以 D1 为主，侧重删除、添加、改属性（替换上老师没有优势）。其他来源先过一遍学生和老师，只留老师明显更好的行；度量可以是一个高噪声状态上 A 内 x0 的差距，或者短接管。
-- **选状态：**侧重 σ ≥ 0.73，其余放在中噪声段。
+**修订（10-28 用户同意，第二次试训在验证）：**
+- **损失分开归一：**已实现，`--opsd-loss split --opsd-outside-weight 0.1`（§5.4）：`L = Σ_j m_j·e_j / Σ_j m_j + β·Σ_j (1−m_j)·e_j / Σ_j (1−m_j)`，其中 `e_j = (x0_S − x0_T)²_j`，两项分开记录。另一种做法（A 外换成普通行上不需要老师的保持损失）暂不做。
+- **选行：**第二次试训的 OPSD 行全部取 D1 小区域（改动 ≤ 0.5%）的删除、添加、改属性：取行配置的 `area_max`，诊断用的留出行用 `exclude` 排除（文档 01 §3.2）。替换上老师没有优势，不取。按老师与学生的差距筛行（一个高噪声状态上 A 内 x0 的差距，或短接管）暂不做：在 D1 小区域上老师本来就有优势（第 4 条）；以后加入其他来源（例如新的孪生、多目标数据）时再做。
+- **选状态：**已实现，`--opsd-high-sigma 0.73 --opsd-high-share 0.75`（§5.5）。
 - **老师保留带名：**超出引导的优势主要来自带名；回填在开发集上作用不显著，但它管住保持，仍保留。
 - **对照：**
   - 离线目标：老师目标算在加噪的 GT 状态上；
   - 去掉带名的老师；
   - 用这两组确认起作用的是哪一项特权。
+- **第二次试训**（10-28 起）：P1′（OPSD）对 P0′（同一批记录全做普通训练），从 C3-D 起各 500 次更新；设置、事先定的判定和结果见文档 03 §7.2 和 `V3/analysis/opsd_pilot2_20261028/README.md`。
 
 ## 6. 代码实现
 
@@ -690,7 +709,7 @@ def generate(pipe, codec, prompt, source_rgb, *, steps=20, seed=0, area=CANVAS_A
 | `prompts`、`allowed_region`、`prepare_opsd`、`OpsdSample` | 一行的准备：三条指令、A、推理画布上的源图条件、`x_src` 与羽化 mask |
 | `encode`、`predict`、`guided`、`model_timestep` | 条件编码、一次 DiT 预测（同 `model_fn` 与 `ATTENTION`）、CFG 合成（同 DiffSynth 的 `cfg_guided_model_fn`）、时间步格式 |
 | `evaluating`、`rollout`、`pick_states` | eval 模式；学生采样（同管线的 Euler 步与 KV 缓存）；选状态 |
-| `teacher_clean`、`student_loss` | 老师的干净估计；学生损失 |
+| `teacher_clean`、`student_loss`、`split_loss` | 老师的干净估计；学生损失：整个 latent 取平均，或 A 内外分开归一 |
 | `opsd_backward` | 一行 OPSD（§5.7） |
 
 <!-- code: src/samtok_edit21/training/opsd.py::teacher_clean -->
@@ -710,6 +729,20 @@ def student_loss(latents, sigma, velocity, target):
 ```
 <!-- /code -->
 
+<!-- code: src/samtok_edit21/training/opsd.py::split_loss -->
+```python
+def split_loss(latents, sigma, velocity, target, mask, outside_weight):
+    """The squared error ``e`` of the clean estimates (mean over channels), inside the allowed region and outside it,
+    each normalised by its own area: ``sum(m e) / sum(m) + outside_weight * sum((1 - m) e) / sum(1 - m)``.  Returns
+    the loss and its two parts."""
+    error = (latents.float() - sigma * velocity.float() - target).pow(2).mean(1)
+    inside, outside = mask[:, 0].float(), 1 - mask[:, 0].float()
+    inner = (inside * error).sum() / inside.sum().clamp_min(1e-6)
+    outer = (outside * error).sum() / outside.sum().clamp_min(1e-6)
+    return inner + outside_weight * outer, inner, outer
+```
+<!-- /code -->
+
 <!-- code: src/samtok_edit21/training/opsd.py::rollout -->
 ```python
 @torch.no_grad()
@@ -724,6 +757,31 @@ def rollout(pipe, scheduler, positive, negative, noise, guidance):
         velocity = guided(pipe, positive, negative, latents, model_timestep(pipe, timestep), guidance, caches=caches)
         latents = scheduler.step(velocity, timestep, latents)
     return states
+```
+<!-- /code -->
+
+<!-- code: src/samtok_edit21/training/opsd.py::pick_states -->
+```python
+def pick_states(sigmas, count, min_sigma, generator=None, high_sigma=0.0, high_share=0.5):
+    """``count`` distinct rollout states with sigma >= ``min_sigma``, in order.  Without a band (``high_sigma`` at or
+    below ``min_sigma``) they are drawn uniformly without replacement.  With one, ``count * high_share`` of them on
+    average (stochastic rounding) come from the states at sigma >= ``high_sigma`` and the rest from those below; a band
+    that runs short is filled from the other."""
+    values = torch.as_tensor(sigmas).tolist()
+    eligible = [index for index, sigma in enumerate(values) if sigma >= min_sigma]
+    if not eligible:
+        raise ValueError(f"no rollout state reaches sigma {min_sigma}")
+    if high_sigma <= min_sigma:
+        order = torch.randperm(len(eligible), generator=generator).tolist()
+        return sorted(eligible[k] for k in order[:count])
+    high = [index for index in eligible if values[index] >= high_sigma]
+    low = [index for index in eligible if values[index] < high_sigma]
+    total = min(count, len(eligible))
+    wanted = total * high_share
+    n_high = int(wanted) + int(float(torch.rand((), generator=generator)) < wanted - int(wanted))
+    n_low = min(total - min(n_high, len(high)), len(low))
+    picks = [high[k] for k in torch.randperm(len(high), generator=generator).tolist()[:total - n_low]]
+    return sorted(picks + [low[k] for k in torch.randperm(len(low), generator=generator).tolist()[:n_low]])
 ```
 <!-- /code -->
 
@@ -771,7 +829,8 @@ class TeacherWeights:
 ```python
 def opsd_backward(pipe, ctx, row, teacher, config, *, scale, checkpointing=True):
     """One OPSD row: the student's rollout, then for every picked state the teacher target and the student's
-    backward of ``scale * loss / states``.  Returns the mean loss and the picked sigmas."""
+    backward of ``scale * loss / states``.  Returns the mean loss, its error inside and outside the allowed region
+    (each normalised by its own area, whichever loss is trained) and the picked sigmas."""
     sample = prepare_opsd(pipe, ctx, row, config)
     scheduler = deepcopy(pipe.scheduler)            # the trainer's own schedule (1000 training steps) stays untouched
     scheduler.set_timesteps(config.steps, dynamic_shift_len=sample.source_latents.shape[2] * sample.source_latents.shape[3])
@@ -784,8 +843,9 @@ def opsd_backward(pipe, ctx, row, teacher, config, *, scale, checkpointing=True)
         with teacher.active():
             teacher_positive = encode(pipe, sample.teacher_prompt, sample)
             teacher_negative = None if config.guidance == 1.0 else encode(pipe, sample.teacher_negative, sample)
-    picked = pick_states(scheduler.sigmas, config.states, config.min_sigma)
-    losses = []
+    picked = pick_states(scheduler.sigmas, config.states, config.min_sigma, high_sigma=config.high_sigma,
+                         high_share=config.high_share)
+    losses, parts = [], []
     for index in picked:
         latents, timestep, sigma = states[index], scheduler.timesteps[index], float(scheduler.sigmas[index])
         with torch.no_grad(), evaluating(pipe.dit), teacher.active():
@@ -794,12 +854,20 @@ def opsd_backward(pipe, ctx, row, teacher, config, *, scale, checkpointing=True)
             target = teacher_clean(latents, sigma, velocity, sample.mask, sample.source_latents)
         conditioning = encode(pipe, sample.student_prompt, sample)
         velocity = predict(pipe, conditioning, latents, model_timestep(pipe, timestep), checkpointing=checkpointing)
-        loss = student_loss(latents, sigma, velocity, target)
+        if config.loss == "split":
+            loss, inner, outer = split_loss(latents, sigma, velocity, target, sample.mask, config.outside_weight)
+        else:
+            loss = student_loss(latents, sigma, velocity, target)
+            with torch.no_grad():
+                _, inner, outer = split_loss(latents, sigma, velocity, target, sample.mask, 0.0)
         if not torch.isfinite(loss):
             raise RuntimeError("non-finite OPSD loss")
         (scale * loss / len(picked)).backward()
         losses.append(float(loss.detach()))
-    return {"opsd": sum(losses) / len(losses), "sigmas": [round(float(scheduler.sigmas[i]), 4) for i in picked]}
+        parts.append((float(inner.detach()), float(outer.detach())))
+    return {"opsd": sum(losses) / len(losses), "inside": sum(p[0] for p in parts) / len(parts),
+            "outside": sum(p[1] for p in parts) / len(parts),
+            "sigmas": [round(float(scheduler.sigmas[i]), 4) for i in picked]}
 ```
 <!-- /code -->
 
@@ -881,7 +949,7 @@ def place_in_slots(units, rng, updates, world, accumulation):
 | 续跑后的老师 | 对比 `resume.pt` 里的老师和起点权重 | 冻结老师与 C3-D 相同：454 个张量的和与平方和一致；EMA 老师已经移动 |
 | 行排布 | 用 200 组随机设置对比新旧 `place_in_slots` | 没有 OPSD 行时，行序和随机数状态都与旧版相同；有 OPSD 行时，每个 OPSD 步对在所有卡上整齐，并且均匀分布 |
 | 8 卡冒烟（新排布） | 同一配置按整步对排布重新生成行，冻结老师跑 3 次更新 | 没有跳过的行，OPSD 平均损失 0.00508。冒烟规模下余数（8 行）占 OPSD 行的五分之一，耗时不代表实际训练 |
-| 单元测试 | `tests/test_opsd.py` | 指令、A、目标与损失、选状态、老师权重、模式、引导、采样、行排布，共 9 项通过；全套 59 项通过 |
+| 单元测试 | `tests/test_opsd.py` | 指令、A、目标与损失、选状态、老师权重、模式、引导、采样、行排布，共 9 项通过；全套 59 项通过。10-28 加了分开归一、高噪声段、参数检查 3 项（合板取行另加 1 项），全套 63 项通过 |
 
 ### 6.8 怎样运行
 
@@ -938,9 +1006,10 @@ python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-train
 - 其余参数见 `samtok-edit round2-train --help`。
 - **四机：**把同样的参数写进 `scripts/round2/bootstrap_arnold.sh` 的 `SAMTOK_TRAIN_ARGS`（运行设置的写法见 `scripts/round2/settings/`）。行文件的 `world` 和 `accumulation` 要与实际运行一致，OPSD 的整步排布才对齐。
 - **试训的完整设置：**`V3/runs/opsd_p1_local8_001/scripts/train.sh`（P1）、`V3/runs/opsd_p0_local8_001/scripts/train.sh`（P0）。
+- **第二次试训的写法：**另加 `--opsd-loss split --opsd-outside-weight 0.1 --opsd-high-sigma 0.73 --opsd-high-share 0.75`，`--lambda-opsd` 按 §5.9 重新标定；完整设置在 `V3/runs/opsd2_p1_local8_001/scripts/train.sh`、`V3/runs/opsd2_p0_local8_001/scripts/train.sh`。
 
 ### 6.9 测试
-- **运行：**`PYTHONPATH=src:third_party/diffsynth:third_party python -m pytest -q tests/`，共 59 项，全部在 CPU 上：
+- **运行：**`PYTHONPATH=src:third_party/diffsynth:third_party python -m pytest -q tests/`，共 63 项，全部在 CPU 上：
   - `test_opsd.py`：OPSD；
   - `test_round2.py`：第二轮目标、路由与行；
   - `test_grounding.py`：指认、注入、路由、画布；

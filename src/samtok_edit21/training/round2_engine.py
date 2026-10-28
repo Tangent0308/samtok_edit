@@ -78,6 +78,12 @@ def parser():
     p.add_argument("--opsd-student-guidance", type=float, default=1.0, help="Token guidance of the rollout policy")
     p.add_argument("--opsd-dilate", type=int, default=2, help="Teacher's allowed region: dilation in tokens")
     p.add_argument("--opsd-feather", type=float, default=1.0, help="Teacher's allowed region: feather in tokens")
+    p.add_argument("--opsd-loss", choices=("mean", "split"), default="mean",
+                   help="OPSD loss: the mean over the whole latent, or inside and outside the allowed region normalised apart")
+    p.add_argument("--opsd-outside-weight", type=float, default=0.1, help="Split loss: weight of the outside part")
+    p.add_argument("--opsd-high-sigma", type=float, default=0.0,
+                   help="Supervised states at sigma >= this form a high band (0: states drawn uniformly)")
+    p.add_argument("--opsd-high-share", type=float, default=0.5, help="Expected share of supervised states from the high band")
     p.add_argument("--opsd-teacher-ema", type=float, default=0.0,
                    help="0: the teacher keeps the warm-start weights; in (0, 1): EMA of the student with this momentum")
     p.add_argument("--checkpoints", type=integers, default=(500, 1000, 1500, 2000))
@@ -125,7 +131,9 @@ def main(argv=None):
         raise ValueError("--opsd-teacher-ema must be in [0, 1)")
     opsd_config = OpsdConfig(steps=args.opsd_steps, states=args.opsd_states, min_sigma=args.opsd_min_sigma,
                              guidance=args.opsd_guidance, student_guidance=args.opsd_student_guidance,
-                             dilate=args.opsd_dilate, feather=args.opsd_feather)
+                             dilate=args.opsd_dilate, feather=args.opsd_feather, loss=args.opsd_loss,
+                             outside_weight=args.opsd_outside_weight, high_sigma=args.opsd_high_sigma,
+                             high_share=args.opsd_high_share)
     dist.init_process_group("nccl", timeout=timedelta(hours=2))
     rank, world = dist.get_rank(), dist.get_world_size()
     local = int(os.environ["LOCAL_RANK"])
@@ -249,8 +257,8 @@ def main(argv=None):
     if start == 0 and 0 in quick_at:
         quick_eval(0)
     # loss, rows, mse, region, distractor, write, rows with write, read, rows with read, skipped, OPSD loss, OPSD rows,
-    # + per kind counts
-    totals = torch.zeros(12 + len(KIND_INDEX), device=device)
+    # OPSD error inside and outside the allowed region, + per kind counts
+    totals = torch.zeros(14 + len(KIND_INDEX), device=device)
     for update in range(start, args.updates):
         for group in optimizer.param_groups:
             group["lr"] = learning_rate(args, update)
@@ -263,7 +271,9 @@ def main(argv=None):
                                            scale=args.lambda_opsd / args.accumulation)
                     totals[10] += result["opsd"]
                     totals[11] += 1
-                    totals[12 + KIND_INDEX[row["kind"]]] += 1
+                    totals[12] += result["inside"]
+                    totals[13] += result["outside"]
+                    totals[14 + KIND_INDEX[row["kind"]]] += 1
                     continue
                 sample = prepare_round2(pipe, ctx, row, max_pixels=args.max_pixels)
                 flow, write, read, metrics = round2_loss(pipe, sample, router, lambda_region=args.lambda_region,
@@ -289,7 +299,7 @@ def main(argv=None):
                 if read is not None:
                     totals[7] += metrics["read"]
                     totals[8] += 1
-                totals[12 + KIND_INDEX[row["kind"]]] += 1
+                totals[14 + KIND_INDEX[row["kind"]]] += 1
             except Exception as error:   # counted and logged; a broken image must not end a long run
                 totals[9] += 1
                 print(f"[rank {rank}] skip {row['kind']} {row.get('id') or row.get('source_id')} {row.get('sample_id', '')}: {error!r}"[:400],
@@ -314,7 +324,9 @@ def main(argv=None):
                 "read": round(float(summed[7]) / max(float(summed[8]), 1.0), 5),
                 "samples": int(summed[1]), "skipped": int(summed[9]),
                 "opsd": round(float(summed[10]) / max(float(summed[11]), 1.0), 5), "opsd_rows": int(summed[11]),
-                "kinds": {k: int(summed[12 + i]) for k, i in KIND_INDEX.items()},
+                "opsd_in": round(float(summed[12]) / max(float(summed[11]), 1.0), 6),
+                "opsd_out": round(float(summed[13]) / max(float(summed[11]), 1.0), 6),
+                "kinds": {k: int(summed[14 + i]) for k, i in KIND_INDEX.items()},
                 "sec": round(time.time() - started), "lr": optimizer.param_groups[0]["lr"], "inj_norm": round(norm, 4),
                 "affine": [round(float(x), 3) for x in router.affine.detach().flatten()[:2]],
                 "read_affine": [] if router.read_affine is None else [round(float(x), 3) for x in router.read_affine.detach().flatten()[:2]]}

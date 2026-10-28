@@ -102,3 +102,17 @@ def test_merged_draw_matching():
     assert not merged_match(single, {"family": "D11", "op": "add"})
     assert not merged_match(single, {"op": "multi"}) and merged_match(pair, {"op": "multi"})
     assert not merged_match(pair, {"op": "remove"}) and merged_match(pair, {"family": "D4"})
+    small, big, bare = ({"family": "D1", "units": [{"op": "remove", "text": {"role": None}, "edited_region": region}]}
+                        for region in ({"area_frac": 0.002}, {"area_frac": 0.03}, None))
+    assert merged_match(small, {"family": "D1", "op": "remove", "area_max": 0.005})
+    assert not merged_match(big, {"area_max": 0.005}) and merged_match(big, {"family": "D1"})
+    assert not merged_match(bare, {"area_max": 0.005}) and merged_match(bare, {"op": "remove"})
+
+
+def test_rows_spec_exclusion_list(tmp_path):
+    from samtok_edit21.preparation.round2_data import excluded_ids
+    lines, listed = tmp_path / "ids.txt", tmp_path / "ids.json"
+    lines.write_text("D1:a\n\nD11:b\n")
+    listed.write_text('["D1:a", "D4:c"]')
+    assert excluded_ids({}) == set() and excluded_ids({"exclude": str(lines)}) == {"D1:a", "D11:b"}
+    assert excluded_ids({"exclude": str(listed)}) == {"D1:a", "D4:c"}
