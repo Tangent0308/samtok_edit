@@ -22,7 +22,7 @@
 
 | 数据 | 在 v4 里的作用 | 规模 | 路径 |
 |---|---|---|---|
-| 合板数据（D1、D3、D4、D10、D11、D12、D13、D14） | 编辑训练行 `edit_merged`、`opsd_merged` 的唯一来源 | 360,563 条 / 439,416 单元；默认训练视图 335,444 条 / 413,184 单元（10-29 构建） | `datasets/SAMTokEdit_Merged_20261029/`（10-26 版 `datasets/SAMTokEdit_Merged_20261024/` 仍在） |
+| 合板数据（D1、D3、D4、D10、D11、D12、D13、D14） | 编辑训练行 `edit_merged`、`opsd_merged` 的唯一来源 | 360,563 条 / 439,416 单元；默认训练视图 335,444 条 / 413,184 单元（10-29 构建） | `datasets/SAMTokEdit_Merged_20261029/` |
 | D2：SA-1B dense mask 区域池 | 高亮行、D1 的近邻负例、开发集 | 1,132 张图、72,857 个区域；1,072 张训练图上可用 62,873 个 | `V3/data/round2_20261016/pool/` |
 | round-2 数据目录 | 取行的 `--out`、训练的 `--data`：开发划分、token 与支持区域缓存、开发集、C1–C3 的行 | 约 325 MB | `V3/data/round2_20261016/` |
 | 开发集 | 训练中的快速评测、训练后的开发评测 | 1,320 项，全在 60 张留出图上 | `V3/data/round2_20261016/eval_c1.json` |
@@ -85,7 +85,7 @@
 ## 2. 合板数据
 
 `datasets/SAMTokEdit_Merged_20261029/`：八批协议 2.0 编辑数据合成的一份训练数据，完整说明在该目录的 README。
-- 用户 10-24 要求合板，即 10-24 版，10-26 重建为 `datasets/SAMTokEdit_Merged_20261024/`；
+- 用户 10-24 要求合板，即 10-24 版，10-26 重建为 SAMTokEdit_Merged_20261024（10-29 经用户同意删除：新版完整包含它，图片是同一批文件的硬链接，只删了它自己的记录、索引和视图 3.7 GB；文件清单在 `experiments2/SAMTokEdit/cleanup_20261029/`）；
 - 10-29 并入数据线的孪生、多目标、附带单目标，即现在的版本（§2.7）。
 
 数据流：
@@ -157,7 +157,7 @@ SA-1B 孪生、多目标生产（10-25～10-28）──sa1b-groups（10-29）─
 
 **许可：**混合许可，整体只能按最严的条款用于非商业研究。
 - SA-1B 图片（D1、D2、D12–D14）：研究用途；
-- CrispEdit-2M：CC BY 4.0；
+- CrispEdit-2M：CC BY 4.0；本地下载的原始分片（`datasets/CrispEdit_Labeling/source/CrispEdit-2M/` 下的 parquet）10-29 经用户同意删除，D10、D11 的图片是独立副本，不受影响；
 - ScaleEdit（经 `QingyuShi/scaleedit-filtered-6m` 挑选）：CC BY-NC-SA 4.0；
 - D3、D4 的 RefEdit、SAMTok Derived 部分按各自上游。
 
@@ -212,7 +212,7 @@ SA-1B 孪生、多目标生产（10-25～10-28）──sa1b-groups（10-29）─
   import json
   import pandas as pd
 
-  root = "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261024"
+  root = "/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261029"
   units = pd.read_parquet(f"{root}/units.parquet")
   ids = set(units[units["default"] & (units["family"] == "D11") & (units["op"] == "replace")]["record"])
   records = [json.loads(line) for line in open(f"{root}/records.jsonl") if line[8:line.index('"', 8)] in ids]
@@ -532,7 +532,7 @@ D13 另有 955 条去掉坏单元后只剩一个单元，按单目标计。
 | `name` | 输出 `<name>.jsonl`、`<name>_stats.json` | 必填 |
 | `seed` | 随机种子 | 20261025 |
 | `updates`、`world`、`accumulation` | 总行数 = `updates` × `world` × `accumulation` | `updates` 必填；8、4 |
-| `merged` | 合板目录 | `datasets/SAMTokEdit_Merged_20261029/`（10-29 起；之前是 `datasets/SAMTokEdit_Merged_20261024/`，旧记录在两版里相同） |
+| `merged` | 合板目录 | `datasets/SAMTokEdit_Merged_20261029/`（10-29 起；之前是 10-26 版 SAMTokEdit_Merged_20261024，旧记录在两版里相同，10-26 版已删） |
 | `draws` | 依次从默认视图抽记录，见下 | 必填 |
 | `forms` | 有盲指代句的单元的写法比例 | `{"noref_token": 0.65, "ref_token": 0.35}`，同 C2 |
 | `highlights` | `{"single": 比例, "multi": 比例}`：单 token、多 token 高亮行占全部行的比例 | 0 |
@@ -727,7 +727,6 @@ C1–C3 的行文件（每次更新 32 行 = 8 卡 × 累积 4 步）：
 | 路径 | 内容 |
 |---|---|
 | `datasets/SAMTokEdit_Merged_20261029/` | 合板数据（10-29，含 D12–D14）：README、`records.jsonl`、`units.parquet`、`views/`、`stats.json`、`build.json`、`images/`、`pool/`、`support_cache.jsonl` |
-| `datasets/SAMTokEdit_Merged_20261024/` | 合板数据的 10-26 版（五个来源），新版的子集 |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/sa1b_samtok_group_twins50k_multi100k_20261025/` | D12–D14 的原生产（`final/` 是三份结果文件；图片和 mask 在 `nodes/` 下，合板里是它们的硬链接，不要移动） |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/merge_sa1b_groups_20261029/` | D12–D14 的转换：token、改动区域、合板格式的记录、重组的多目标目标图 `recomposed/` |
 | `V3/analysis/new_data_inventory_20261029/` | D12–D14 并入前的盘点 |

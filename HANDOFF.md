@@ -102,7 +102,7 @@
 | 路径 | 内容 |
 |---|---|
 | `NAS/datasets/SAMTokEdit_Merged_20261029/` | 合板训练数据（10-29）：八个来源 D1、D3、D4、D10、D11、D12、D13、D14；默认视图 335,444 条记录、413,184 个单元。代码的 `MERGED_ROOT` 指向它。图片是指向各来源的硬链接，不要原地改 |
-| `NAS/datasets/SAMTokEdit_Merged_20261024/` | 合板的 10-26 版（五个来源），新版的子集，两次 OPSD 试训用的是它 |
+| `NAS/experiments2/SAMTokEdit/cleanup_20261029/` | 10-29 经用户同意的清理（约 830 GB）：文件清单、日志、脚本；合板 10-26 版、CrispEdit-2M 原始分片、未完成的 2 万孪生/多目标生产、判分裁图、续跑保存点、没用到的中间权重 |
 | `NAS/datasets/samtok_edit_benchmark_v2/` | benchmark v2 2.6.0：`benchmark/cases.jsonl`，1,084 例 |
 | `NAS/datasets/ExtEdit_Protocol2_20261021/`、`NAS/datasets/ExtEdit_Protocol2_20261022/` | D10、D11：外部编辑数据，协议 2.0 |
 | `NAS/datasets/SAMTokEdit_Cleaned_20261009/` | 早期清洗与协议 1.0 适配的产物 |
