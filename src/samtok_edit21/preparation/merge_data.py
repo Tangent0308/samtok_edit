@@ -9,7 +9,11 @@ Sources (read only):
        the production runs;
 * the unified text re-check (``verdicts.jsonl``: role, requested text and verdict of every text unit);
 * the SA-1B region pool D2 and the 50k support cache, for the near negatives, twins and joined multi-target rows of
-  the D1 records.
+  the D1 records;
+* D12 twins, D13 multi-object, D14 salvaged singles (10-29): the data line's SA-1B group production, already in this
+  schema with tokens, regions and source-image identity (``samtok-edit sa1b-groups``, ``NEW``).  They take no part in
+  the two caps (user 10-29: use as much of the production as possible), so the older families' default view stays
+  exactly as it was.
 Output, one folder with every image hard-linked (same file system, no extra space):
 * ``records.jsonl``  one record per pair in the D3 / D4 unit schema; every record has ``units`` (a single edit has
   one), each unit its token inline and a ``text`` tag; the record its source-image ``group`` (SHA-1), ``drift`` and
@@ -47,6 +51,9 @@ EXT = {"D10": (DS / "ExtEdit_Protocol2_20261021", [RUNS / "extedit_protocol2_100
        "D11": (DS / "ExtEdit_Protocol2_20261022", [RUNS / "extedit_protocol2_batch2_local8_20261022/node0"]
                + [RUNS / f"extedit_protocol2_batch2_4n_20261023/node{k}" for k in range(4)])}
 D4_MANIFEST = rd.D4_MANIFEST
+NEW_RUN = RUNS / "merge_sa1b_groups_20261029"      # samtok-edit sa1b-groups (preparation/sa1b_groups.py)
+NEW = {family: NEW_RUN / f"records_{family}.jsonl" for family in ("D12", "D13", "D14")}
+NEW_PRODUCTION = RUNS / "sa1b_samtok_group_twins50k_multi100k_20261025/final"
 NEAR_DHASH = 6                 # as the extedit ingest: a benchmark source image within 6 bits of dHash is a copy
 PAYLOAD_CAP = 50               # uses of one new-object description (add / replace), as the extedit publish
 PER_IMAGE_CAP = 3              # records per source image outside D1 (D1 edits one image many times by design)
@@ -265,7 +272,7 @@ def apply_caps(records):
     """Payload cap over every family (multi-unit pairs counted first and never dropped, then single records in a
     fixed pseudo-random order) and the per-image cap outside D1 (in FAMILY_ORDER, then the same order); only records
     still in the default view take part."""
-    live = [r for r in records if r["split"] == "train" and not r["exclude"]]
+    live = [r for r in records if r["split"] == "train" and not r["exclude"] and r["family"] not in NEW]
     counts = Counter()
     for r in live:
         if len(r["units"]) > 1:
@@ -305,6 +312,9 @@ def link(job):
 
 def image_name(rec, kind, src):
     family, ref = rec["family"], rec["source_ref"]
+    if family in NEW:   # one source per SA-1B image (a twin's two members share it), targets by record
+        key = rec["sa1b"]["source_id"] if kind == "source" else ref
+        return f"images/{family}/{kind}/{stable(key)[:2]}/{key}{Path(src).suffix}"
     if family == "D1":
         if kind == "source":
             return f"images/D1/source/{rec['sa1b']['source_id']}{Path(src).suffix}"
@@ -333,6 +343,8 @@ def build(out, workers=32, limit=0):
         records += manifest_records(family, root, [("manifest_protocol_v2.jsonl", False),
                                                    ("manifest_multi_protocol_v2.jsonl", True)],
                                     single, multi, verdicts, shas=ext_shas(runs))
+    for family, path in NEW.items():
+        records += [json.loads(line) for line in open(path)]
     if limit:
         kept = Counter()
         records = [r for r in records if (kept.update([r["family"]]) or kept[r["family"]] <= limit)]
@@ -342,11 +354,13 @@ def build(out, workers=32, limit=0):
     with ThreadPoolExecutor(workers) as pool:
         digests = {p: (s, h) for p, s, h in pool.map(_digest, to_hash)}
     for r in records:
-        r["exclude"] = []
-        if r["family"] in ("D1", "D3", "D4"):
-            sha, h = digests[r["source_image"]]
+        # D12-D14 come with the reasons found while assembling them (benchmark image by SA-1B id, a change outside
+        # the supports, no change) and with their source image's SHA-1 and dHash
+        r["exclude"] = list(r.pop("prior_exclude", []))
+        if r["family"] in ("D1", "D3", "D4") or r["family"] in NEW:
+            sha, h = digests[r["source_image"]] if r["family"] not in NEW else (r["group"][5:], int(r.pop("dhash"), 16))
             r["group"] = f"sha1:{sha}"
-            if sha in bench_sha or near(h, bench_hash):
+            if (sha in bench_sha or near(h, bench_hash)) and "benchmark_overlap" not in r["exclude"]:
                 r["exclude"].append("benchmark_overlap")
         r["exclude"] += hard_exclusions(r)
     dev_groups = {r["group"] for r in records if r["split"] == "dev"}
@@ -395,6 +409,8 @@ def inputs():
         files += [root / name for name in ("manifest_protocol_v2.jsonl", "manifest_multi_protocol_v2.jsonl",
                                            "tokens.jsonl", "multi_tokens.jsonl")]
         files += [run / "ingest" / "rows.jsonl" for run in runs]
+    files += list(NEW.values()) + [NEW_PRODUCTION / name for name in
+                                   ("twins_balanced.jsonl", "multi_balanced.jsonl", "singles.jsonl")]
     return files
 
 

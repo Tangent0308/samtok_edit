@@ -385,24 +385,34 @@ def bad_unit(unit):
     if unit["text"]["verdict"] == "fail":
         why.append("text_fail")
     if unit["edited_region"] is None or unit["selection"] is None or unit["execution_region"] is None:
-        why.append("size_mismatch")
+        why.append("size_mismatch")       # an image or mask that does not match the source, or missing results
+    elif not unit["edited_region"].get("rle_counts"):
+        why.append("no_change")           # the target equals the source inside the support
     return why
+
+
+LOCAL = ("size_mismatch", "no_change")   # unit reasons the merge's own checks do not see: carried as prior_exclude
 
 
 def recompose(source_path, target_path, removed_supports, out_path):
     """The target with the removed units' supports restored to source pixels (the production's own way of
-    dropping a failed target from a fused image)."""
+    dropping a failed target from a fused image); returns the number of restored pixels."""
     from PIL import Image
+    union = None
+    for rle in removed_supports:
+        mask = rd.decode_rle({"size": rle["rle_size"], "counts": rle["rle_counts"]})
+        union = mask if union is None else union | mask
+    if Path(out_path).exists():          # written by an earlier assemble: the same pixels
+        return int(union.sum())
     with Image.open(source_path) as im:
         src = np.asarray(im.convert("RGB"))
     with Image.open(target_path) as im:
         tgt = np.asarray(im.convert("RGB")).copy()
-    union = np.zeros(src.shape[:2], bool)
-    for rle in removed_supports:
-        union |= rd.decode_rle({"size": rle["rle_size"], "counts": rle["rle_counts"]})
     tgt[union] = src[union]
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(tgt).save(out_path)
+    tmp = out_path.with_name(f".{out_path.name}.{os.getpid()}.tmp.png")
+    Image.fromarray(tgt).save(tmp)
+    os.replace(tmp, out_path)
     return int(union.sum())
 
 
@@ -411,7 +421,11 @@ def outside_ok(target_info):
     return target_info.get("size_ok") and target_info.get("outside_changed_gt2_frac", 1.0) == 0.0
 
 
-def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None):
+def _recompose_job(job):
+    return recompose(*job)
+
+
+def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
     """Merge-schema records of the three families (``records_D12/13/14.jsonl``) and ``assemble.json``."""
     toks, regs = load_stage(run, "tokens"), load_stage(run, "regions")
     bench_ids = bench if bench is not None else {json.loads(l)["source"]["image_id"]
@@ -439,7 +453,7 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None):
     def prior(source_id):
         return ["benchmark_overlap"] if source_id in bench_ids else []
 
-    files = {}
+    files, recompose_jobs = {}, []
     for kind in ("twins", "multi", "singles"):
         files[kind] = open(run / f"records_{FAMILY[kind]}.jsonl.tmp", "w")
     try:
@@ -451,13 +465,15 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None):
             refs = [f"{g['twin_id']}-{m['unit_id']}" for m in g["members"]]
             for k, (m, u) in enumerate(zip(g["members"], units)):
                 tinfo = next((t for t in reg.get("targets", []) if m["unit_id"] in t["uids"]), {})
-                pre = prior(g["source_id"]) + ([] if outside_ok(tinfo) else ["outside_change"])
+                pre = (prior(g["source_id"]) + ([] if outside_ok(tinfo) else ["outside_change"])
+                       + [w for w in why[m["unit_id"]] if w in LOCAL])
                 rec = record("D12", g["twin_id"], refs[k], g["source_image"], m["edited_image"], tok.get("size"), [u],
                              {"group": f"sha1:{tok['sha1']}" if tok.get("sha1") else None, "dhash": tok.get("dhash"),
                               "split": "dev" if g["source_id"] in dev_ids else "train", "prior_exclude": pre,
                               "sa1b": {"source_id": g["source_id"], "object_id": str(m.get("object_id")),
                                        "operation": g["operation"]},
                               "twin": {"group": g["twin_id"], "partner": f"D12:{refs[1 - k]}", "same_noref": same},
+                              "size_ok": bool(tinfo.get("size_ok")) and "size_mismatch" not in why[m["unit_id"]],
                               "production": {"run": prod, "file": FILES["twins"], "id": g["twin_id"],
                                              "unit_id": m["unit_id"]}})
                 files["twins"].write(json.dumps(rec, ensure_ascii=False) + "\n")
@@ -465,6 +481,17 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None):
                 stats["twins"]["bad_units"] += bool(why[m["unit_id"]])
         for line in open(production / FILES["singles"]):
             s = json.loads(line)
+            # a salvaged single keeps no generation context; its generation folder does (the OCR text check):
+            # generation.json (twin members) or render.json (multi-object steps)
+            folder = Path(s["edited_image"]).parent
+            for name in ("generation.json", "render.json"):
+                if (folder / name).exists():
+                    info = json.load(open(folder / name))
+                    context = (info.get("row") or {}).get("generation_context") or info.get("generation_context")
+                    if context:
+                        s["generation_context"] = context
+                        stats["singles"]["generation_context"] += 1
+                        break
             tok, reg = toks.get(("singles", s["job_id"]), {}), regs.get(("singles", s["job_id"]), {})
             units, why = base("singles", s, [s], tok, reg)
             tinfo = (reg.get("targets") or [{}])[0]
@@ -472,7 +499,9 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None):
             rec = record("D14", s["job_id"], ref, s["source_image"], s["edited_image"], tok.get("size"), units,
                          {"group": f"sha1:{tok['sha1']}" if tok.get("sha1") else None, "dhash": tok.get("dhash"),
                           "split": "dev" if s["source_id"] in dev_ids else "train",
-                          "prior_exclude": prior(s["source_id"]) + ([] if outside_ok(tinfo) else ["outside_change"]),
+                          "prior_exclude": (prior(s["source_id"]) + ([] if outside_ok(tinfo) else ["outside_change"])
+                                            + [w for w in why[s["unit_id"]] if w in LOCAL]),
+                          "size_ok": bool(tinfo.get("size_ok")) and "size_mismatch" not in why[s["unit_id"]],
                           "sa1b": {"source_id": s["source_id"], "object_id": str(s.get("object_id")),
                                    "operation": s["operation"]},
                           "salvage": s.get("provenance"),
@@ -489,24 +518,28 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None):
             target, pruned = g["joint_target"], None
             bad = {uid for uid, w in why.items() if w}
             if bad and not pre:
-                comps = [list(c) for c in g["parallel"]["components"]]
+                # components over the units the production kept (it lists the planned ones, some of which it dropped)
+                present = {u["unit_id"] for u in g["units"]}
+                comps = [[uid for uid in c if uid in present] for c in g["parallel"]["components"]]
                 drop = sorted({uid for c in comps if bad & set(c) for uid in c})
                 keep = [u for u in units if u["production_uid"] not in drop]
                 if keep:
                     supports = [u["execution_region"] for u in units if u["production_uid"] in drop]
                     out_path = run / "recomposed" / f"{g['multi_id'][-2:]}" / f"{g['multi_id']}.png"
-                    restored = recompose(g["source_image"], g["joint_target"], supports, out_path)
+                    recompose_jobs.append((g["source_image"], g["joint_target"], supports, out_path))
                     target = str(out_path)
                     pruned = {"units": drop, "reasons": {uid: why[uid] for uid in drop if why[uid]},
-                              "kept": [u["production_uid"] for u in keep], "restored_pixels": restored,
+                              "kept": [u["production_uid"] for u in keep],
                               "target": "recomposed from the production's joint target"}
                     stats["multi"]["pruned_records"] += 1
                     stats["multi"]["pruned_units"] += len(drop)
                     stats["multi"]["pruned_good_units"] += len([u for u in drop if not why[u]])
                     units = keep
+            left = sorted({w for u in units for w in why[u["production_uid"]] if w in LOCAL})
             rec = record("D13", g["multi_id"], g["multi_id"], g["source_image"], target, tok.get("size"), units,
                          {"group": f"sha1:{tok['sha1']}" if tok.get("sha1") else None, "dhash": tok.get("dhash"),
-                          "split": "dev" if g["source_id"] in dev_ids else "train", "prior_exclude": pre,
+                          "split": "dev" if g["source_id"] in dev_ids else "train", "prior_exclude": pre + left,
+                          "size_ok": bool(tinfo.get("size_ok")) and "size_mismatch" not in left,
                           "sa1b": {"source_id": g["source_id"],
                                    "object_ids": [u["object_id"] for u in units]},
                           "multi": {"n_targets_production": len(g["units"]), "operations": g.get("operations"),
@@ -519,6 +552,11 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None):
     finally:
         for f in files.values():
             f.close()
+    # the new target images of pruned records, in parallel, before the records that point at them are published
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(workers) as pool:
+        restored = list(pool.map(_recompose_job, recompose_jobs, chunksize=4))
+    stats["multi"]["restored_pixels"] = int(sum(restored))
     for kind in FILES:
         os.replace(run / f"records_{FAMILY[kind]}.jsonl.tmp", run / f"records_{FAMILY[kind]}.jsonl")
     summary = {k: dict(v) for k, v in stats.items()}
@@ -542,13 +580,14 @@ def main(argv=None):
     p.add_argument("--device", default="cuda")
     p.add_argument("--name")
     p.add_argument("--limit-shards", type=int, default=0)
+    p.add_argument("--workers", type=int, default=32, help="assemble: processes that write the recomposed targets")
     a = p.parse_args(argv)
     if a.command == "prepare":
         print(json.dumps({k: v for k, v in prepare(a.run).items() if k != "shards"}, indent=1))
     elif a.command == "work":
         print(json.dumps({"stage": a.stage, "shards_done": work(a.stage, a.run, a.device, a.name, a.limit_shards)}))
     elif a.command == "assemble":
-        print(json.dumps(assemble(a.run), indent=1))
+        print(json.dumps(assemble(a.run, workers=a.workers), indent=1))
     else:
         info = json.load(open(a.run / "shards.json"))
         n = len(info["shards"])
