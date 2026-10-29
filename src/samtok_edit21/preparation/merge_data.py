@@ -10,7 +10,7 @@ Sources (read only):
 * the unified text re-check (``verdicts.jsonl``: role, requested text and verdict of every text unit);
 * the SA-1B region pool D2 and the 50k support cache, for the near negatives, twins and joined multi-target rows of
   the D1 records;
-* D12 twins, D13 multi-object, D14 salvaged singles (10-29): the data line's SA-1B group production, already in this
+* D12 twins, D13 multi-object, D14 salvaged singles, D15 single targets (10-29): the data line's SA-1B production, already in this
   schema with tokens, regions and source-image identity (``samtok-edit sa1b-groups``, ``NEW``).  They take no part in
   the two caps (user 10-29: use as much of the production as possible), so the older families' default view stays
   exactly as it was.
@@ -53,7 +53,9 @@ EXT = {"D10": (DS / "ExtEdit_Protocol2_20261021", [RUNS / "extedit_protocol2_100
 D4_MANIFEST = rd.D4_MANIFEST
 NEW_RUN = RUNS / "merge_sa1b_groups_20261029"      # samtok-edit sa1b-groups (preparation/sa1b_groups.py)
 NEW = {family: NEW_RUN / f"records_{family}.jsonl" for family in ("D12", "D13", "D14")}
+NEW["D15"] = RUNS / "merge_sa1b_single50k_20261029/records_D15.jsonl"      # single-target v2.1 (sa1b-groups --set single50k)
 NEW_PRODUCTION = RUNS / "sa1b_samtok_group_twins50k_multi100k_20261025/final"
+NEW_SINGLE50K = RUNS / "sa1b_samtok_single50k_20261026/final/singles_balanced.jsonl"
 NEAR_DHASH = 6                 # as the extedit ingest: a benchmark source image within 6 bits of dHash is a copy
 PAYLOAD_CAP = 50               # uses of one new-object description (add / replace), as the extedit publish
 PER_IMAGE_CAP = 3              # records per source image outside D1 (D1 edits one image many times by design)
@@ -410,7 +412,7 @@ def inputs():
                                            "tokens.jsonl", "multi_tokens.jsonl")]
         files += [run / "ingest" / "rows.jsonl" for run in runs]
     files += list(NEW.values()) + [NEW_PRODUCTION / name for name in
-                                   ("twins_balanced.jsonl", "multi_balanced.jsonl", "singles.jsonl")]
+                                   ("twins_balanced.jsonl", "multi_balanced.jsonl", "singles.jsonl")] + [NEW_SINGLE50K]
     return files
 
 

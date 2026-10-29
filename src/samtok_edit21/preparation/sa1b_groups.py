@@ -7,6 +7,10 @@ with absolute paths into the production folder:
   from the source on its own (one record per member, ``twin`` names the partner);
 * D13 multi-object: 39,814 images with 2-4 targets of different operations fused into one target image;
 * D14 salvaged singles: 12,363 members / targets of groups that did not ship as groups (user 10-29: use them too).
+And the single-target v2.1 production of 2026-10-28..29 (same branch, ``docs/SINGLE_TARGET_ZH.md``),
+``SINGLE50K/singles_balanced.jsonl``, in the salvaged singles' schema:
+* D15 single targets: 50,000 targets, 12,500 per operation, each edited from the source on its own (run ``RUN_D15``,
+  ``--set single50k``; user 10-29: "当前sa1b_single_twins_target分支又更新了单目标数据，请你查看。然后合板数据。").
 Every target is pasted back: outside the supports of its units it equals the source.
 
 Stages, in the run folder ``RUN`` (multi-machine: README there):
@@ -44,8 +48,14 @@ from samtok_edit21.preparation import round2_data as rd
 
 PRODUCTION = md.RUNS / "sa1b_samtok_group_twins50k_multi100k_20261025/final"
 RUN = md.RUNS / "merge_sa1b_groups_20261029"
-FILES = {"twins": "twins_balanced.jsonl", "multi": "multi_balanced.jsonl", "singles": "singles.jsonl"}
-FAMILY = {"twins": "D12", "multi": "D13", "singles": "D14"}
+SINGLE50K = md.RUNS / "sa1b_samtok_single50k_20261026/final"
+RUN_D15 = md.RUNS / "merge_sa1b_single50k_20261029"
+FILES = {"twins": "twins_balanced.jsonl", "multi": "multi_balanced.jsonl", "singles": "singles.jsonl",
+         "single50k": "singles_balanced.jsonl"}
+FAMILY = {"twins": "D12", "multi": "D13", "singles": "D14", "single50k": "D15"}
+SINGLE_KINDS = ("singles", "single50k")        # single-target records in the salvaged singles' schema
+# a set: (production folder, run folder, kinds)
+SETS = {"groups": (PRODUCTION, RUN, ("twins", "multi", "singles")), "single50k": (SINGLE50K, RUN_D15, ("single50k",))}
 SHARD_JOBS = 250
 STALE = 1200          # seconds without heartbeat before a claim is taken over
 SEED = 20261029
@@ -61,22 +71,23 @@ def _unit(u, target=None):
     return out
 
 
-def jobs(production=PRODUCTION):
-    """One job per source image: its units, masks, supports, targets and dense labels (for the add hosts)."""
+def jobs(production=PRODUCTION, kinds=SETS["groups"][2]):
+    """One job per source image (per record for single targets): its units, masks, supports, targets and dense
+    labels (for the add hosts)."""
     out = []
-    for line in open(production / FILES["twins"]):
+    for line in (open(production / FILES["twins"]) if "twins" in kinds else ()):
         g = json.loads(line)
         out.append({"kind": "twins", "rid": g["twin_id"], "source_id": g["source_id"], "source": g["source_image"],
                     "dense": g["source_provenance"]["dense_record"],
                     "units": [_unit(m, m["edited_image"]) for m in g["members"]]})
-    for line in open(production / FILES["multi"]):
+    for line in (open(production / FILES["multi"]) if "multi" in kinds else ()):
         g = json.loads(line)
         out.append({"kind": "multi", "rid": g["multi_id"], "source_id": g["source_id"], "source": g["source_image"],
                     "dense": g["source_provenance"]["dense_record"], "target": g["joint_target"],
                     "units": [_unit(u) for u in g["units"]]})
-    for line in open(production / FILES["singles"]):
+    for kind, line in ((k, line) for k in SINGLE_KINDS if k in kinds for line in open(production / FILES[k])):
         s = json.loads(line)
-        out.append({"kind": "singles", "rid": s["job_id"], "source_id": s["source_id"], "source": s["source_image"],
+        out.append({"kind": kind, "rid": s["job_id"], "source_id": s["source_id"], "source": s["source_image"],
                     "dense": str(Path(s["source_image"]).parent / "dense.json"),
                     "units": [{"uid": s["unit_id"], "op": s["operation"], "mask": s["mask"],
                                "support": s["support_mask"], "object_id": str(s.get("object_id")),
@@ -85,16 +96,16 @@ def jobs(production=PRODUCTION):
     return out
 
 
-def prepare(run=RUN, production=PRODUCTION, shard_jobs=SHARD_JOBS):
+def prepare(run=RUN, production=PRODUCTION, shard_jobs=SHARD_JOBS, kinds=SETS["groups"][2]):
     run.mkdir(parents=True, exist_ok=True)
-    js = jobs(production)
+    js = jobs(production, kinds)
     with open(run / "jobs.jsonl", "w") as f:
         for j in js:
             f.write(json.dumps(j) + "\n")
     shards = [[start, min(start + shard_jobs, len(js))] for start in range(0, len(js), shard_jobs)]
     info = {"jobs": len(js), "units": sum(len(j["units"]) for j in js), "by_kind": dict(Counter(j["kind"] for j in js)),
             "shards": shards, "shard_jobs": shard_jobs, "production": str(production),
-            "files": {k: md._file_entry(production / v) for k, v in FILES.items()}}
+            "files": {k: md._file_entry(production / FILES[k]) for k in kinds}}
     (run / "shards.json").write_text(json.dumps(info, indent=1))
     return info
 
@@ -425,8 +436,9 @@ def _recompose_job(job):
     return recompose(*job)
 
 
-def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
-    """Merge-schema records of the three families (``records_D12/13/14.jsonl``) and ``assemble.json``."""
+def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32, kinds=SETS["groups"][2]):
+    """Merge-schema records of the set's families (``records_D12/13/14.jsonl``, ``records_D15.jsonl``) and
+    ``assemble.json``."""
     toks, regs = load_stage(run, "tokens"), load_stage(run, "regions")
     bench_ids = bench if bench is not None else {json.loads(l)["source"]["image_id"]
                                                  for l in open(md.DS / "samtok_edit_benchmark_v2/benchmark/cases.jsonl")}
@@ -454,10 +466,10 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
         return ["benchmark_overlap"] if source_id in bench_ids else []
 
     files, recompose_jobs = {}, []
-    for kind in ("twins", "multi", "singles"):
+    for kind in kinds:
         files[kind] = open(run / f"records_{FAMILY[kind]}.jsonl.tmp", "w")
     try:
-        for line in open(production / FILES["twins"]):
+        for line in (open(production / FILES["twins"]) if "twins" in kinds else ()):
             g = json.loads(line)
             tok, reg = toks.get(("twins", g["twin_id"]), {}), regs.get(("twins", g["twin_id"]), {})
             units, why = base("twins", g, g["members"], tok, reg)
@@ -479,7 +491,7 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
                 files["twins"].write(json.dumps(rec, ensure_ascii=False) + "\n")
                 stats["twins"]["records"] += 1
                 stats["twins"]["bad_units"] += bool(why[m["unit_id"]])
-        for line in open(production / FILES["singles"]):
+        for kind, line in ((k, line) for k in SINGLE_KINDS if k in kinds for line in open(production / FILES[k])):
             s = json.loads(line)
             # a salvaged single keeps no generation context; its generation folder does (the OCR text check):
             # generation.json (twin members) or render.json (multi-object steps)
@@ -490,13 +502,13 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
                     context = (info.get("row") or {}).get("generation_context") or info.get("generation_context")
                     if context:
                         s["generation_context"] = context
-                        stats["singles"]["generation_context"] += 1
+                        stats[kind]["generation_context"] += 1
                         break
-            tok, reg = toks.get(("singles", s["job_id"]), {}), regs.get(("singles", s["job_id"]), {})
-            units, why = base("singles", s, [s], tok, reg)
+            tok, reg = toks.get((kind, s["job_id"]), {}), regs.get((kind, s["job_id"]), {})
+            units, why = base(kind, s, [s], tok, reg)
             tinfo = (reg.get("targets") or [{}])[0]
             ref = s["job_id"].replace("/", "-")
-            rec = record("D14", s["job_id"], ref, s["source_image"], s["edited_image"], tok.get("size"), units,
+            rec = record(FAMILY[kind], s["job_id"], ref, s["source_image"], s["edited_image"], tok.get("size"), units,
                          {"group": f"sha1:{tok['sha1']}" if tok.get("sha1") else None, "dhash": tok.get("dhash"),
                           "split": "dev" if s["source_id"] in dev_ids else "train",
                           "prior_exclude": (prior(s["source_id"]) + ([] if outside_ok(tinfo) else ["outside_change"])
@@ -504,12 +516,13 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
                           "size_ok": bool(tinfo.get("size_ok")) and "size_mismatch" not in why[s["unit_id"]],
                           "sa1b": {"source_id": s["source_id"], "object_id": str(s.get("object_id")),
                                    "operation": s["operation"]},
-                          "salvage": s.get("provenance"),
-                          "production": {"run": prod, "file": FILES["singles"], "id": s["job_id"]}})
-            files["singles"].write(json.dumps(rec, ensure_ascii=False) + "\n")
-            stats["singles"]["records"] += 1
-            stats["singles"]["bad_units"] += bool(why[s["unit_id"]])
-        for line in open(production / FILES["multi"]):
+                          ("salvage" if kind == "singles" else "export"): s.get("provenance"),
+                          "production": {"run": prod, "file": FILES[kind], "id": s["job_id"],
+                                         **({"rank": s.get("rank"), "wave": s.get("wave")} if kind == "single50k" else {})}})
+            files[kind].write(json.dumps(rec, ensure_ascii=False) + "\n")
+            stats[kind]["records"] += 1
+            stats[kind]["bad_units"] += bool(why[s["unit_id"]])
+        for line in (open(production / FILES["multi"]) if "multi" in kinds else ()):
             g = json.loads(line)
             tok, reg = toks.get(("multi", g["multi_id"]), {}), regs.get(("multi", g["multi_id"]), {})
             units, why = base("multi", g, g["units"], tok, reg)
@@ -556,8 +569,9 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
     from concurrent.futures import ProcessPoolExecutor
     with ProcessPoolExecutor(workers) as pool:
         restored = list(pool.map(_recompose_job, recompose_jobs, chunksize=4))
-    stats["multi"]["restored_pixels"] = int(sum(restored))
-    for kind in FILES:
+    if "multi" in kinds:
+        stats["multi"]["restored_pixels"] = int(sum(restored))
+    for kind in kinds:
         os.replace(run / f"records_{FAMILY[kind]}.jsonl.tmp", run / f"records_{FAMILY[kind]}.jsonl")
     summary = {k: dict(v) for k, v in stats.items()}
     summary["missing"] = {"tokens": sum(1 for j in map(json.loads, open(run / "jobs.jsonl"))
@@ -575,19 +589,23 @@ def assemble(run=RUN, production=PRODUCTION, bench=None, dev=None, workers=32):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="samtok-edit sa1b-groups", description=__doc__.split("\n\n")[0])
     p.add_argument("command", choices=("prepare", "work", "assemble", "status"))
-    p.add_argument("--run", type=Path, default=RUN)
+    p.add_argument("--set", choices=tuple(SETS), default="groups",
+                   help="groups: twins, multi-object, salvaged singles (D12-D14); single50k: single targets (D15)")
+    p.add_argument("--run", type=Path, help="default: the set's run folder")
     p.add_argument("--stage", choices=("tokens", "regions"))
     p.add_argument("--device", default="cuda")
     p.add_argument("--name")
     p.add_argument("--limit-shards", type=int, default=0)
     p.add_argument("--workers", type=int, default=32, help="assemble: processes that write the recomposed targets")
     a = p.parse_args(argv)
+    production, run, kinds = SETS[a.set]
+    a.run = a.run or run
     if a.command == "prepare":
-        print(json.dumps({k: v for k, v in prepare(a.run).items() if k != "shards"}, indent=1))
+        print(json.dumps({k: v for k, v in prepare(a.run, production, kinds=kinds).items() if k != "shards"}, indent=1))
     elif a.command == "work":
         print(json.dumps({"stage": a.stage, "shards_done": work(a.stage, a.run, a.device, a.name, a.limit_shards)}))
     elif a.command == "assemble":
-        print(json.dumps(assemble(a.run, workers=a.workers), indent=1))
+        print(json.dumps(assemble(a.run, production, workers=a.workers, kinds=kinds), indent=1))
     else:
         info = json.load(open(a.run / "shards.json"))
         n = len(info["shards"])
