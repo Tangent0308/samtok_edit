@@ -10,6 +10,8 @@ COMMANDS = {
     "round2-data": ("samtok_edit21.preparation.round2_data",
                     "Round-2 data: development split, mask pool and token caches, training rows, evaluation set"),
     "merge-data": ("samtok_edit21.preparation.merge_data", "Merge the protocol-2.0 edit data into one training set"),
+    "sa1b-groups": ("samtok_edit21.preparation.sa1b_groups",
+                    "Twins / multi-object / salvaged singles of the data line as merge families D12-D14"),
     "round2-train": ("samtok_edit21.training.round2_engine", "Round-2 trainer (torchrun)"),
     "round2-eval": ("samtok_edit21.evaluation.round2_eval", "Development-set probes of an adapter (torchrun)"),
     "round2-report": ("samtok_edit21.evaluation.round2_report", "Paired report of a development-set evaluation"),
