@@ -1247,7 +1247,7 @@ v4 的代码核对写在[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，本文�
 | `V3/reports/progress_20261020/` | 10.20 进度汇报的草稿和图（图 2、3、5、8、9 的原图） |
 | `V3/legacy_code/` | E-A1、E-A2 当时的脚本、等价核对与 GPU 回归（只作留档，不要再运行） |
 | `datasets/samtok_edit_benchmark_v2/benchmark/cases.jsonl` | benchmark v2 2.6.0 的 1,084 例清单 |
-| `datasets/SAMTokEdit_Merged_20261029/` | 合板训练数据的 10-29 版：加入 D12–D14（孪生、多目标、附带单目标），旧记录不变（文档 01 §2.7）。两次 OPSD 试训用的 10-26 版是它的子集，10-29 已删 |
+| `datasets/SAMTokEdit_Merged_20261029/` | 合板训练数据的 10-29 版：加入 D12–D15（孪生、多目标、附带单目标、单目标 v2.1），旧记录不变（文档 01 §2.7）。两次 OPSD 试训用的 10-26 版是它的子集，10-29 已删 |
 | `experiments2/SAMTokEdit/cleanup_20261029/` | 10-29 经用户同意的清理：删掉的文件清单（`*.tsv.gz`）、日志、删除脚本。包括各决策子集评测判分输入里的裁图 `judge_inputs/*/details/`（判分结果、`judge_jobs.jsonl` 都在，要重判时用各目录的 `prepare_judge.py` 重新生成）、7 个 `resume.pt`、没用到的中间权重、合板 10-26 版 |
 | `docs/assets/v4/` | 本文的 18 张图（缩小、节选版） |
 
