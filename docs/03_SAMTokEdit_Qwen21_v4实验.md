@@ -1247,7 +1247,8 @@ v4 的代码核对写在[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，本文�
 | `V3/reports/progress_20261020/` | 10.20 进度汇报的草稿和图（图 2、3、5、8、9 的原图） |
 | `V3/legacy_code/` | E-A1、E-A2 当时的脚本、等价核对与 GPU 回归（只作留档，不要再运行） |
 | `datasets/samtok_edit_benchmark_v2/benchmark/cases.jsonl` | benchmark v2 2.6.0 的 1,084 例清单 |
-| `datasets/SAMTokEdit_Merged_20261024/` | 合板训练数据（OPSD 试训用的是 10-26 重建版） |
+| `datasets/SAMTokEdit_Merged_20261024/` | 合板训练数据的 10-26 重建版（两次 OPSD 试训用的就是它） |
+| `datasets/SAMTokEdit_Merged_20261029/` | 合板训练数据的 10-29 版：加入 D12–D14（孪生、多目标、附带单目标），旧记录不变（文档 01 §2.7） |
 | `docs/assets/v4/` | 本文的 18 张图（缩小、节选版） |
 
 - 运行环境：按仓库 README 用 `requirements.txt`（验证过的版本见 `constraints-tested.txt`）建环境，在仓库根目录设 `PYTHONPATH=src:third_party/diffsynth:third_party`。原来的本机环境 `/tmp/samtok21-fixes-dUnbt5/venv` 已随机器回收，依赖清单和判分环境的记录在 `experiments2/SAMTokEdit/handoff_20261028/envs/`。

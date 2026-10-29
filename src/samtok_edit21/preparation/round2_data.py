@@ -914,7 +914,9 @@ def build_rows_c2(out, seed=20261019, world=8, accumulation=4):
 # Stage C (C3; docs/03): 1,500 updates continued from C2.  The C2 mix is kept by drawing its rows (pairs stay
 # pairs); "half done" targets are left out first; the data variant replaces a quarter of the rows by extedit batch 1.
 EXT_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/ExtEdit_Protocol2_20261021")
-MERGED_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261024")   # docs/01
+# docs/01.  The 10-29 build adds D12-D14 and keeps every record of the 10-26 build byte for byte (same ids, same
+# relative image paths), so rows written against SAMTokEdit_Merged_20261024 read the same records here.
+MERGED_ROOT = Path("/mnt/bn/strategy-mllm-train/user/tanyue/datasets/SAMTokEdit_Merged_20261029")
 MERGED_FORMS = ("noref_token", "ref_token")   # how a merged unit with a blind sentence can read
 EXT_MANIFEST = EXT_ROOT / "manifest_protocol_v2.jsonl"
 EXT_MULTI_MANIFEST = EXT_ROOT / "manifest_multi_protocol_v2.jsonl"

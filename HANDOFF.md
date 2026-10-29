@@ -23,7 +23,7 @@
   - 第二次（10-28/29）按诊断修了选行、损失和选状态，事先写定的两条判据都没过：开发集不执行 P1′ 45 对 P0′ 47。
   - 根子在极小区域：剩下的不执行集中在改动 < 0.1% 的区域，模型在那里读 token 的 IoU 只有 0.1–0.2。老师的优势来自物体名和回填，学生推不出来。
   - 全部写在 `docs/03_SAMTokEdit_Qwen21_v4实验.md` §7。
-- **当前：**等用户定下一步（§4.2）。新数据（多目标、孪生）在打标，ready 后用户会告知（§4.1b）。
+- **当前：**新数据（孪生、多目标、附带单目标）10-29 已并入合板，即 `NAS/datasets/SAMTokEdit_Merged_20261029/`，D12–D14（§4.1b）。下一步（C4 续训、全量评测等）等用户定（§4.2）。
 
 ## 1. 协作约定（用户的规则，必须遵守）
 
@@ -93,7 +93,7 @@
 | `docs/01_SAMTokEdit_Qwen21_v4数据.md` | 合板训练数据（来源、格式、默认视图、统计）、训练行构建（含 OPSD 行）、评测数据；§6 是已知问题与待办 | 取行、动数据之前 |
 | `V3/README.md` | 实验树索引 | 找某次运行的产物 |
 | `V3/analysis/opsd_pilot_20261026/README.md` | 试训的全过程：设计、判定口径、结果、诊断、下一步、运行方法 | 继续 OPSD 之前 |
-| `NAS/datasets/SAMTokEdit_Merged_20261024/README.md` | 合板数据说明（10-26 重建） | 取行 |
+| `NAS/datasets/SAMTokEdit_Merged_20261029/README.md` | 合板数据说明（10-29，含 D12–D14） | 取行 |
 | `NAS/experiments2/SAMTokEdit/data_pipeline/README.md` | 数据管线产物的目录规范 | 动数据管线 |
 | `qwen-image-2.1-v3:docs/05_SAMTokEdit_Qwen21_四机实验运行指南.md` | 在 ARNOLD 上提交四机训练 | 需要多机时 |
 
@@ -101,7 +101,8 @@
 
 | 路径 | 内容 |
 |---|---|
-| `NAS/datasets/SAMTokEdit_Merged_20261024/` | 合板训练数据：五个来源 D1、D3、D4、D10、D11；默认视图 259,078 条记录、278,748 个单元。图片是指向各来源的硬链接，不要原地改 |
+| `NAS/datasets/SAMTokEdit_Merged_20261029/` | 合板训练数据（10-29）：八个来源 D1、D3、D4、D10、D11、D12、D13、D14；默认视图 335,444 条记录、413,184 个单元。代码的 `MERGED_ROOT` 指向它。图片是指向各来源的硬链接，不要原地改 |
+| `NAS/datasets/SAMTokEdit_Merged_20261024/` | 合板的 10-26 版（五个来源），新版的子集，两次 OPSD 试训用的是它 |
 | `NAS/datasets/samtok_edit_benchmark_v2/` | benchmark v2 2.6.0：`benchmark/cases.jsonl`，1,084 例 |
 | `NAS/datasets/ExtEdit_Protocol2_20261021/`、`NAS/datasets/ExtEdit_Protocol2_20261022/` | D10、D11：外部编辑数据，协议 2.0 |
 | `NAS/datasets/SAMTokEdit_Cleaned_20261009/` | 早期清洗与协议 1.0 适配的产物 |
@@ -170,8 +171,13 @@
 - **结论：**按事先写定的判定停掉 OPSD。两次试训的权重都不换上去，代码里的 OPSD 选项保留、默认关闭。
 - **详情：**`V3/analysis/opsd_pilot2_20261028/README.md`（含结果和多机运行）；文档 03 §7.2；文档 02 §5.11。
 
-### 4.1b 新数据（用户在打标，ready 后用户会告知）
-- 10 万条多目标、2.5 万条孪生在打标；另计划 10 万条单目标。
+### 4.1b 新数据（10-29 已并入合板）
+- **已完成：**数据线的孪生 12,511 组、多目标 39,814 张图（100,117 个目标）、附带单目标 12,363 条，10-29 并入合板，成为 D12、D13、D14。
+  - 默认视图新增 76,366 条记录、134,436 个单元；旧来源逐字节不变。
+  - 用户的决定：添加的选区在落点还原不了时改用宿主物体；尽可能用上全部生产数据；附带单目标也用。
+  - 详见文档 01 §2.7；转换的运行目录 `NAS/experiments2/SAMTokEdit/data_pipeline/02_production_runs/merge_sa1b_groups_20261029/`；盘点 `V3/analysis/new_data_inventory_20261029/README.md`。
+- **还在产：**单目标 v2.1（5 万条），`NAS/experiments2/SAMTokEdit/data_pipeline/02_production_runs/sa1b_samtok_single50k_20261026/`。
+- **以下是 10-28 时的计划：**10 万条多目标、2.5 万条孪生在打标；另计划 10 万条单目标。
 - 用户 10-28 问过"是否用 scale 后的数据从头重训第一阶段、再调第二阶段"。我的建议（记忆 `samtokedit-data-scaling-question-20261028.md`）：
   - 不串行：先在 C3-D 上修好第二阶段（即 §4.1）；
   - 新数据先按标志分层抽检（孪生要查两个实例能否被 token 区分、改的是不是对的那个），再并进合板数据；
