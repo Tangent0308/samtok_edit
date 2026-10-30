@@ -23,7 +23,7 @@
   - 第二次（10-28/29）按诊断修了选行、损失和选状态，事先写定的两条判据都没过：开发集不执行 P1′ 45 对 P0′ 47。
   - 根子在极小区域：剩下的不执行集中在改动 < 0.1% 的区域，模型在那里读 token 的 IoU 只有 0.1–0.2。老师的优势来自物体名和回填，学生推不出来。
   - 全部写在 `docs/03_SAMTokEdit_Qwen21_v4实验.md` §7。
-- **当前：**新数据（孪生、多目标、附带单目标、单目标 v2.1）10-29 已并入合板，即 `NAS/datasets/SAMTokEdit_Merged_20261029/`，D12–D15（§4.1b）。用户 10-29 定下一步：不用 OPSD，用现在最好的方法从原版分两阶段重训，每阶段扩数据；计划草案 `V3/analysis/plan_scaleup_20261030/README.md`，待用户确认（§4.2）。
+- **当前：**两阶段重训（文档 03 §11）。用户 10-30 同意计划 `V3/analysis/plan_scaleup_20261030/README.md`：扩区域池（`V3/data/round2_scaleup_20261030/pool_ext/entry.sh`，用户的机器 + 本机）→ 自动生成并核对 `rows_s1.jsonl`、`rows_s2.jsonl`（`pool_ext/build_rows_after_pool.sh`）→ 用户按 `scripts/round2/settings/s1_4n.sh`、`s2_4n.sh` 开四机。代码修复、取行、两阶段冒烟、推理冒烟都已在本机做完。合板数据 D12–D15 10-29 并入（§4.1b）。
 
 ## 1. 协作约定（用户的规则，必须遵守）
 
@@ -195,7 +195,7 @@
 - **还没解决的问题**（文档 03 §9）：大目标改属性没到 0.90；盲指代改到旁边的同类物体；写字拼错；替换做成叠加。
 
 ### 4.3 其他（优先级较低）
-- **仓库修复（待用户同意）：**`scripts/round2/setup_env.sh` 最后一步调用的 `scripts/round2/cuda_readiness.py` 仍按 v3 的模块名 `samtok_edit21.distributed.cuda_readiness` 起探测，v4 已删掉这个模块。新机器建环境必然在这一步失败，`run_arnold.sh` 也受影响。第二次试训的 `entry.sh` 绕开了它（文档 03 §9 第 7 条）。
+- **仓库修复（10-30 已修）：**`scripts/round2/cuda_readiness.py` 原来按 v3 已删的模块名起探测，新机器建环境必然失败；v4 `e6d3887b` 改为以脚本自身起探测（文档 03 §9 第 7 条）。
 - **保持损失：**区域项只算改动处，同时给外圈单独加保持项（文档 03 §9 第 3 条）。
 - **双路条件：**原版 TE 管文字语义，SAMTok TE 只给 token。这会改变用户 10-18 定的"第二遍只用 SAMTok TE"，需要用户拍板。
 - **TE LoRA：**从纯文字指令生成第一遍 token，是用户定的后续方向。
