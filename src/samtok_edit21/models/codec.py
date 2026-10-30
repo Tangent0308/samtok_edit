@@ -77,14 +77,17 @@ class SamtokCodec:
         self.device = torch.device(device)
 
     def _pixel_values(self, images) -> torch.Tensor:
-        tensors = []
+        # encode/decode repeat one image per mask: resize each distinct image once (same tensor, same result)
+        tensors, done = [], {}
         for image in images:
-            rgba = image.convert("RGBA")
-            rgb = Image.alpha_composite(
-                Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba
-            ).convert("RGB")
-            array = self.resize.apply_image(np.asarray(rgb))
-            tensors.append(torch.from_numpy(array).permute(2, 0, 1).contiguous())
+            if id(image) not in done:
+                rgba = image.convert("RGBA")
+                rgb = Image.alpha_composite(
+                    Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba
+                ).convert("RGB")
+                array = self.resize.apply_image(np.asarray(rgb))
+                done[id(image)] = torch.from_numpy(array).permute(2, 0, 1).contiguous()
+            tensors.append(done[id(image)])
         return torch.stack(tensors).to(device=self.device, dtype=self.vq.dtype)
 
     @staticmethod

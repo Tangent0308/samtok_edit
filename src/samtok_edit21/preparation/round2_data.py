@@ -252,6 +252,158 @@ def run_pool(args):
     dist.destroy_process_group()
 
 
+# ---------------------------------------------------------------- scaled pool (GPU, one worker per process)
+#
+# The two-stage retrain (docs/03) reads tokens on many more images than the 1,132 of the 50k: every D12 image (twins,
+# two confusable targets per image) and D15 images in a fixed order, 20,000 in all, with the same per-image entry as
+# ``pool``.  The data directory gets the round-2 files the trainer reads (hard links) and the old pool entries;
+# workers on any number of machines share the shards through claims on NAS:
+#
+#     python -m samtok_edit21 round2-data pool-ext-prepare --out <dir> --base <round2 dir>
+#     CUDA_VISIBLE_DEVICES=g python -m samtok_edit21 round2-data pool-ext-work --out <dir> --name <worker>
+#     python -m samtok_edit21 round2-data pool-ext-check --out <dir>
+
+POOL_EXT_IMAGES, POOL_EXT_SHARD = 20000, 40
+POOL_EXT_FAMILIES = ("D12", "D15")              # in this order: all of D12, then D15 up to the count
+BASE_FILES = ("dev_split.json", "edit_tokens.jsonl", "support_cache.jsonl", "eval_c1.json", "eval_c1_quick_idx.json",
+              "eval_c2_quick_idx.json", "v1_tokens.jsonl", "d4_tokens.jsonl")
+
+
+def pool_ext_images(merged=None, count=POOL_EXT_IMAGES):
+    """[(source_id, image, dense)] of the scaled pool: default-view images of POOL_EXT_FAMILIES (every image of the
+    first family, the next in a fixed order), none that shares a source with the benchmark or the dev split."""
+    from samtok_edit21.preparation import sa1b_groups as sg
+    merged = Path(merged or MERGED_ROOT)
+    images, blocked = defaultdict(dict), set()
+    for line in open(merged / "records.jsonl"):
+        if line[8:line.index('"', 8)].split(":", 1)[0] not in POOL_EXT_FAMILIES:   # {"id": "<family>:...
+            continue
+        r = json.loads(line)
+        sid = r["sa1b"]["source_id"]
+        if "benchmark_overlap" in r["exclude"] or "dev_overlap" in r["exclude"]:
+            blocked.add(sid)
+        elif r["default"]:
+            images[r["family"]][sid] = str(merged / r["source_image"])
+    dense = {}
+    for production, _, kinds in sg.SETS.values():
+        for job in sg.jobs(production, kinds):
+            dense.setdefault(job["source_id"], job["dense"])
+    chosen, out = set(), []
+    for family in POOL_EXT_FAMILIES:
+        for sid in stable_order(sorted(set(images[family]) - blocked - chosen), f"pool-ext-{family}"):
+            if len(out) == count:
+                return out
+            chosen.add(sid)
+            out.append((sid, images[family][sid], dense[sid]))
+    return out
+
+
+def pool_ext_prepare(out, base, merged=None, count=POOL_EXT_IMAGES, shard=POOL_EXT_SHARD):
+    out, base, merged = Path(out), Path(base), Path(merged or MERGED_ROOT)
+    (out / "pool").mkdir(parents=True, exist_ok=True)
+    for name in BASE_FILES:                       # hard links: the trainer and the evaluation read them here
+        if not (out / name).exists():
+            os.link(base / name, out / name)
+    dev = set(json.load(open(base / "dev_split.json"))["sa1b_sources"])
+    for path in sorted((base / "pool").glob("*.json")):
+        if not (out / "pool" / path.name).exists():
+            os.link(path, out / "pool" / path.name)
+    images = [i for i in pool_ext_images(merged, count) if i[0] not in dev]
+    run = out / "pool_ext"
+    run.mkdir(exist_ok=True)
+    info = {"base": str(base), "merged": str(merged), "families": POOL_EXT_FAMILIES, "count": len(images),
+            "by_family_rule": "all D12 default-view images, then D15 in stable order", "shard_images": shard,
+            "images": images, "shards": [[s, min(s + shard, len(images))] for s in range(0, len(images), shard)]}
+    (run / "jobs.json").write_text(json.dumps(info))
+    return {k: v for k, v in info.items() if k not in ("images", "shards")} | {"shards": len(info["shards"]),
+                                                                                "base_pool": len(list((base / "pool").glob("*.json")))}
+
+
+def pool_ext_work(out, name, limit_shards=0):
+    """Pool entries of unclaimed shards (``pool/<source_id>.json``) until none is left."""
+    import time
+    import torch
+    from samtok_edit21.models.codec import load_codec
+    from samtok_edit21.models.pipeline import DEFAULT_SAMTOK
+    from samtok_edit21.preparation.sa1b_groups import Claims
+    out = Path(out)
+    run = out / "pool_ext"
+    info = json.load(open(run / "jobs.json"))
+    claims = Claims(run, "pool", name)
+    torch.set_num_threads(4)
+    codec = load_codec(DEFAULT_SAMTOK, "cuda")
+    (run / "logs").mkdir(exist_ok=True)
+    (run / "done").mkdir(exist_ok=True)
+    log, done = open(run / "logs" / f"work-{name}.log", "a"), 0
+    for index, (start, end) in enumerate(info["shards"]):
+        marker = run / "done" / f"{index:04d}.json"
+        if marker.exists() or not claims.take(index):
+            continue
+        stop = claims.beating(index)
+        started, errors, masks = time.time(), [], 0
+        try:
+            for sid, image, dense in info["images"][start:end]:
+                path = out / "pool" / f"{sid}.json"
+                if path.exists():
+                    continue
+                try:
+                    entry = pool_image(codec, sid, image, dense)
+                except Exception as exc:          # one broken image must not stop the shard; the check lists it
+                    errors.append({"source_id": sid, "error": f"{type(exc).__name__}: {exc}"[:300]})
+                    continue
+                masks += len(entry["masks"])
+                tmp = path.with_suffix(f".{name}.tmp")
+                tmp.write_text(json.dumps(entry))
+                os.replace(tmp, path)
+            tmp = marker.with_suffix(f".{name}.tmp")
+            tmp.write_text(json.dumps({"shard": index, "worker": name, "errors": errors, "masks": masks,
+                                       "sec": round(time.time() - started, 1)}))
+            os.replace(tmp, marker)
+        finally:
+            stop.set()
+        done += 1
+        log.write(json.dumps({"shard": index, "images": end - start, "errors": len(errors), "masks": masks,
+                              "sec": round(time.time() - started, 1), "time": time.strftime("%H:%M:%S")}) + "\n")
+        log.flush()
+        if limit_shards and done >= limit_shards:
+            break
+    return done
+
+
+def pool_ext_check(out):
+    """Progress, or once every shard is done the pool's statistics (``pool_ext/summary.json``)."""
+    out = Path(out)
+    run = out / "pool_ext"
+    info = json.load(open(run / "jobs.json"))
+    markers = [json.load(open(p)) for p in sorted((run / "done").glob("*.json"))] if (run / "done").exists() else []
+    status = {"shards": len(info["shards"]), "done": len(markers), "errors": sum(len(m["errors"]) for m in markers)}
+    if len(markers) < len(info["shards"]):
+        return status
+    dev = set(json.load(open(out / "dev_split.json"))["sa1b_sources"])
+    new = {sid for sid, _, _ in info["images"]}
+    counts, buckets, roundtrips = Counter(), Counter(), []
+    for path in sorted((out / "pool").glob("*.json")):
+        entry = json.load(open(path))
+        part = "new" if path.stem in new else ("base_dev" if path.stem in dev else "base_train")
+        counts[f"{part}_images"] += 1
+        counts[f"{part}_masks"] += len(entry["masks"])
+        for m in entry["masks"]:
+            if usable(m):
+                counts[f"{part}_usable"] += 1
+                if part == "new":
+                    buckets[bucket(m["area"])] += 1
+            if part == "new" and "roundtrip" in m:
+                roundtrips.append(m["roundtrip"])
+    summary = status | dict(counts) | {
+        "missing_new": len(new - {p.stem for p in (out / "pool").glob("*.json")}),
+        "new_usable_by_bucket": {f"{BUCKETS[b]}-{BUCKETS[b + 1]}": buckets[b] for b in sorted(buckets)},
+        "new_roundtrip_median": round(float(np.median(roundtrips)), 4) if roundtrips else None,
+        "new_roundtrip_low_share": round(float(np.mean(np.asarray(roundtrips) < MIN_ROUNDTRIP)), 4) if roundtrips else None,
+        "errors_list": [e for m in markers for e in m["errors"]]}
+    (run / "summary.json").write_text(json.dumps(summary, indent=1))
+    return summary
+
+
 # ---------------------------------------------------------------- C1 training rows (CPU)
 
 HL_SINGLE = (
@@ -1319,13 +1471,25 @@ def build_eval(out, seed=20261017):
 def main(argv=None):
     p = argparse.ArgumentParser(prog="samtok-edit round2-data", description=__doc__.split("\n\n")[0])
     p.add_argument("step", choices=["pool", "rows", "rows-c1b", "rows-c2", "rows-c3m", "rows-c3d", "rows-merged",
-                                    "quick-c2", "eval"])
+                                    "quick-c2", "eval", "pool-ext-prepare", "pool-ext-work", "pool-ext-check"])
     p.add_argument("--out", required=True)
     p.add_argument("--spec", help="rows-merged: the JSON spec of the draws (see build_rows_merged)")
+    p.add_argument("--base", help="pool-ext-prepare: the round-2 data directory whose files and pool are linked")
+    p.add_argument("--count", type=int, default=POOL_EXT_IMAGES, help="pool-ext-prepare: new images")
+    p.add_argument("--name", help="pool-ext-work: worker name (claims and logs)")
+    p.add_argument("--limit-shards", type=int, default=0, help="pool-ext-work: stop after this many shards (tests)")
     args = p.parse_args(argv)
     out = Path(args.out)
     if args.step == "pool":
         run_pool(args)
+    elif args.step == "pool-ext-prepare":
+        print(json.dumps(pool_ext_prepare(out, args.base, count=args.count), indent=1))
+    elif args.step == "pool-ext-work":
+        import socket
+        print(json.dumps({"shards": pool_ext_work(out, args.name or f"{socket.gethostname()}-{os.getpid()}",
+                                                  args.limit_shards)}))
+    elif args.step == "pool-ext-check":
+        print(json.dumps(pool_ext_check(out), indent=1)[:4000])
     elif args.step == "rows":
         print(json.dumps(build_rows(out), indent=1))
     elif args.step == "rows-c1b":

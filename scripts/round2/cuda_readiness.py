@@ -20,6 +20,21 @@ def atomic_json(path, value):
     tmp.replace(path)
 
 
+def record_failure(path, value):
+    """Publish complete JSON without replacing an earlier, more useful failure."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.failure.tmp")
+    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    try:
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            pass
+    finally:
+        tmp.unlink()
+
+
 def probe(expected):
     import torch
 
@@ -57,8 +72,8 @@ def wait_for_cuda(output, expected=8, timeout=600, interval=15, probe_command=No
         raise ValueError("CUDA timeout, interval and GPU count must be positive")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
-    command = probe_command or [sys.executable, "-m", "samtok_edit21.distributed.cuda_readiness",
-                                "--probe", "--expected", str(expected)]
+    # this script itself in probe mode (it is not a package module)
+    command = probe_command or [sys.executable, str(Path(__file__).resolve()), "--probe", "--expected", str(expected)]
     started = time.monotonic()
     report = {"hostname": socket.gethostname(), "node_rank": os.environ.get("ARNOLD_ID"),
               "expected_gpus": expected, "timeout_seconds": timeout, "attempts": [], "ready": False}
@@ -125,7 +140,6 @@ def main():
             if os.environ.get("SAMTOK_RUN_ROOT") and os.environ.get("ARNOLD_ID"):
                 target = Path(os.environ["SAMTOK_RUN_ROOT"]) / "nodes" / os.environ["ARNOLD_ID"] / "failure.json"
                 target.parent.mkdir(parents=True, exist_ok=True)
-                from samtok_edit21.distributed.training import record_failure
                 record_failure(target, json.loads(failure.read_text()))
             raise
 
