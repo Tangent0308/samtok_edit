@@ -1,0 +1,11 @@
+{"name": "rows_s2", "seed": 20261031, "updates": 16000, "world": 8, "accumulation": 4,
+ "negatives": ["D1", "D12", "D14", "D15"],
+ "payload_cap": {"limit": 50, "families": ["D12", "D13", "D14", "D15"]},
+ "draws": [{"family": "D12", "pairs": true, "share": 0.08},
+           {"op": "multi", "share": 0.25},
+           {"family": ["D1", "D12", "D13", "D14", "D15"], "op": "single", "share": 0.20},
+           {"family": ["D10", "D11"], "op": "single", "share": 0.30},
+           {"family": "D3", "rest": true}],
+ "highlights": {"single": 0.04, "multi": 0.04, "pairs": 0.02, "named": 0.30,
+                "buckets": [0.15, 0.175, 0.175, 0.125, 0.125, 0.15, 0.10],
+                "pair_kinds": {"adjacent": 0.4, "same": 0.3, "part_host": 0.3}}}

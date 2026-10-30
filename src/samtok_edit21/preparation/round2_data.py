@@ -456,8 +456,8 @@ def negatives_of(entry, index):
     return sorted(set(rel["same"][:3] + rel["hosts"][:1]))
 
 
-def pick_regions(entries, rng, count, *, replace=True):
-    """``count`` (image, mask) draws following BUCKET_SHARE; every other draw, where possible, has a negative.
+def pick_regions(entries, rng, count, *, replace=True, shares=BUCKET_SHARE):
+    """``count`` (image, mask) draws following ``shares`` of BUCKETS; every other draw, where possible, has a negative.
 
     Without ``replace`` (evaluation) a region is drawn at most once and a short bucket gives what it has.
     """
@@ -471,7 +471,7 @@ def pick_regions(entries, rng, count, *, replace=True):
             if negatives_of(entry, m_index):
                 with_negative[b].append((e_index, m_index))
     draws, taken = [], set()
-    for b, share in enumerate(BUCKET_SHARE):
+    for b, share in enumerate(shares):
         for k in range(round(count * share)):
             pool = with_negative[b] if (k % 2 == 0 and with_negative[b]) else by_bucket[b]
             if not replace:
@@ -647,17 +647,22 @@ def edit_negatives(entry, token_dec):
 
 
 def pair_partner(entry, index, rng, part_host):
-    """The second region of a counterfactual pair: the host of a part or a part of a host (``part_host``), else
-    an adjacent usable region of similar size (any category, decoded regions disjoint).  None if there is none."""
+    """The second region of a counterfactual pair: the host of a part or a part of a host (``part_host`` True or
+    "part_host"), another instance of the same category and similar size ("same"), else an adjacent usable region of
+    similar size (any category).  Decoded regions disjoint except for part and host.  None if there is none."""
     dec, _, diag = geometry(entry)
     m = entry["masks"][index]
-    if part_host:
+    similar = lambda o: max(m["area"], o["area"]) <= PAIR_AREA_RATIO * min(m["area"], o["area"])  # noqa: E731
+    if part_host is True or part_host == "part_host":
         options = [j for j in m["rel"]["hosts"] + m["rel"]["parts"] if usable(entry["masks"][j])]
+    elif part_host == "same":
+        options = [j for j in m["rel"]["same"] if usable(entry["masks"][j]) and similar(entry["masks"][j])]
+        rng.shuffle(options)
+        options = [j for j in options[:8] if overlap_frac(entry, index, j) <= DISJOINT]
     else:
         skip = set(m["rel"]["hosts"]) | set(m["rel"]["parts"]) | set(m["rel"]["duplicate"]) | {index}
         options = [j for j, o in enumerate(entry["masks"])
-                   if j not in skip and usable(o) and max(m["area"], o["area"]) <= PAIR_AREA_RATIO * min(m["area"], o["area"])
-                   and box_gap(dec[index], dec[j]) <= NEAR_GAP * diag]
+                   if j not in skip and usable(o) and similar(o) and box_gap(dec[index], dec[j]) <= NEAR_GAP * diag]
         rng.shuffle(options)
         options = [j for j in options[:8] if overlap_frac(entry, index, j) <= DISJOINT]
     return rng.choice(options) if options else None
@@ -720,14 +725,20 @@ def place_in_slots(units, rng, updates, world, accumulation):
     return rows
 
 
-def highlight_pairs(train, rng, n_pairs, key_prefix):
-    """Counterfactual highlight pairs: same prompt, template and colour, an adjacent region or a part and its host."""
+def highlight_pairs(train, rng, n_pairs, key_prefix, shares=BUCKET_SHARE, kinds=None):
+    """Counterfactual highlight pairs: same prompt, template and colour, an adjacent region or a part and its host
+    (PAIR_PART_HOST of the pairs), or with ``kinds`` (weights of "adjacent", "same", "part_host") each pair's kind
+    drawn by weight; an anchor without a partner of its kind is skipped."""
     units = []
-    for e_index, m_index in pick_regions(train, rng, 4 * n_pairs):
+    for e_index, m_index in pick_regions(train, rng, 4 * n_pairs, shares=shares):
         if len(units) == n_pairs:
             break
         entry = train[e_index]
-        part_host = rng.random() < PAIR_PART_HOST
+        if kinds is None:
+            part_host = rng.random() < PAIR_PART_HOST
+            kind = "part_host" if part_host else "adjacent"
+        else:
+            kind = part_host = rng.choices(list(kinds), weights=list(kinds.values()))[0]
         partner = pair_partner(entry, m_index, rng, part_host)
         if partner is None:
             continue
@@ -739,16 +750,16 @@ def highlight_pairs(train, rng, n_pairs, key_prefix):
                 negatives.add(b)
             members.append({"kind": "hl", "source_id": entry["source_id"], "masks": [a], "negatives": [sorted(negatives)],
                             "neg_ann": True, "colors": [color], "template": template, "phrase": None,
-                            "pair_key": key, "pair_kind": "part_host" if part_host else "adjacent"})
+                            "pair_key": key, "pair_kind": kind})
         units.append(members)
     if len(units) < n_pairs:
         raise RuntimeError(f"only {len(units)} of {n_pairs} counterfactual pairs found")
     return units
 
 
-def highlight_singles(train, rng, need, n_named):
+def highlight_singles(train, rng, need, n_named, shares=BUCKET_SHARE):
     """``need`` single-token highlights with near negatives; ``n_named`` of them name the object (``hl_ref``)."""
-    singles = pick_regions(train, rng, need + 16)[:need]      # the per-bucket rounding can fall a few draws short
+    singles = pick_regions(train, rng, need + 16, shares=shares)[:need]   # per-bucket rounding can fall a few short
     if len(singles) != need:
         raise RuntimeError(f"{len(singles)} of {need} single-token regions drawn")
     named = [k for k, (e, m) in enumerate(singles) if train[e]["masks"][m]["category"]]
@@ -1228,14 +1239,25 @@ def build_rows_c3(out, variant, seed=20261023, world=8, accumulation=4):
 
 # Rows from the merged dataset (docs/01).  A spec (JSON) lists draws over the default-view records, then the shares
 # of highlight rows and of joined 50k multi-target rows; forms, the near negatives and twins of the SA-1B records as
-# in C2.  A draw: {"family": "D11" or [...], "op": "add" | "remove" | "replace" | "attribute" | "text" | "multi",
-# "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true}; with
-# "opsd": true its rows are on-policy self-distillation rows (kind opsd_merged, training/opsd.py: no target image is
-# read, no negatives or twins; place_in_slots gives them whole step pairs on every rank); "forms" gives the draw its
+# in C2.  A draw: {"family": "D11" or [...], "op": "add" | "remove" | "replace" | "attribute" | "text" | "multi" |
+# "single", "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true};
+# with "opsd": true its rows are on-policy self-distillation rows (kind opsd_merged, training/opsd.py: no target image
+# is read, no negatives or twins; place_in_slots gives them whole step pairs on every rank); "forms" gives the draw its
 # own weights of the two forms for units with a blind sentence (default: the spec's "forms"); "area_max" keeps the
-# records whose every unit changes at most this share of the image (edited_region.area_frac).  Records are drawn
-# without replacement over all draws; a draw larger than what is left repeats its records.  The spec's "exclude"
-# names a file of record ids (one per line, or a JSON list) kept out of every draw, for example held-out rows.
+# records whose every unit changes at most this share of the image (edited_region.area_frac); "pool_only" keeps the
+# SA-1B records whose source image is in the mask pool (so they get near negatives); "pairs": true draws D12 twins as
+# pairs (both members, blind sentence + token, each the other's S as a negative, one update; the draw's rows are
+# twice its pairs).  Records are drawn without replacement over all draws; a draw larger than what is left repeats
+# its records.  The spec's "exclude" names a file of record ids (one per line, or a JSON list) kept out of every draw,
+# for example held-out rows.
+#
+# Spec options for the two-stage retrain (docs/03): "negatives" lists the families whose single-unit records get near
+# negatives when their image is in the pool (default ["D1"]); "payload_cap": {"limit": 50, "families": [...]} applies
+# the merge's new-object description cap (merge_data.apply_caps: multi-unit records counted first and kept, single
+# records in a fixed order) to families the merge did not cap; "highlights" may give "pairs" (share of rows that are
+# counterfactual highlight pairs; without it they are PAIR_SHARE of the single share), "buckets" (shares of BUCKETS),
+# "named" (share of the single highlights that name the object) and "pair_kinds" (weights of "adjacent", "same",
+# "part_host").
 def merged_match(record, draw):
     families = draw.get("family")
     if families is not None and record["family"] not in ([families] if isinstance(families, str) else families):
@@ -1243,7 +1265,9 @@ def merged_match(record, draw):
     op = draw.get("op")
     if op == "multi" and len(record["units"]) < 2:
         return False
-    if op not in (None, "multi") and (len(record["units"]) != 1 or record["units"][0]["op"] != op):
+    if op == "single" and len(record["units"]) != 1:
+        return False
+    if op not in (None, "multi", "single") and (len(record["units"]) != 1 or record["units"][0]["op"] != op):
         return False
     area = draw.get("area_max")
     if area is not None and any((u.get("edited_region") or {}).get("area_frac") is None
@@ -1261,6 +1285,37 @@ def excluded_ids(spec):
     return set(json.loads(text)) if text.lstrip().startswith("[") else {line.strip() for line in text.splitlines() if line.strip()}
 
 
+def payload_capped(records, cap):
+    """Ids of the records of ``cap["families"]`` over the new-object description cap (``cap["limit"]`` records per
+    description, counted as merge_data.apply_caps does: multi-unit records first and never dropped, then the single
+    records in the merge's fixed order)."""
+    from samtok_edit21.preparation.merge_data import payload_key, stable
+    live = [r for r in records if r["family"] in cap["families"]]
+    counts, out = Counter(), set()
+    for r in live:
+        if len(r["units"]) > 1:
+            for u in r["units"]:
+                key = payload_key(u["instruction_spec"])
+                if key:
+                    counts[key] += 1
+    for r in sorted((r for r in live if len(r["units"]) == 1), key=lambda r: stable(r["id"])):
+        key = payload_key(r["units"][0]["instruction_spec"])
+        if key is None:
+            continue
+        if counts[key] >= cap["limit"]:
+            out.add(r["id"])
+        else:
+            counts[key] += 1
+    return out
+
+
+def twin_pairs(options):
+    """D12 twins among ``options`` whose partner is there too, as (member, partner) pairs in id order."""
+    by_id = {r["id"]: r for r in options}
+    return [(r, by_id[r["twin"]["partner"]]) for r in sorted(by_id.values(), key=lambda r: r["id"])
+            if r.get("twin") and r["twin"]["partner"] in by_id and r["id"] < r["twin"]["partner"]]
+
+
 def build_rows_merged(out, spec_path):
     spec = json.load(open(spec_path))
     name, rng = spec["name"], random.Random(spec.get("seed", 20261025))
@@ -1271,17 +1326,28 @@ def build_rows_merged(out, spec_path):
         if not weights or set(weights) - set(MERGED_FORMS):
             raise ValueError(f"forms must weigh {MERGED_FORMS}, got {weights}")
     records = [r for r in map(json.loads, open(Path(spec.get("merged", MERGED_ROOT)) / "records.jsonl")) if r["default"]]
+    capped = payload_capped(records, spec["payload_cap"]) if spec.get("payload_cap") else set()
+    records = [r for r in records if r["id"] not in capped]
     dev = set(json.load(open(out / "dev_split.json"))["sa1b_sources"])
     train = [json.load(open(p)) for p in sorted((out / "pool").glob("*.json")) if p.stem not in dev]
     pool = {e["source_id"]: e for e in train}
+    negative_families = set(spec.get("negatives", ["D1"] if spec.get("d1_negatives", True) else []))
     hl = spec.get("highlights", {})
     n_hl, n_hlm = round(total * hl.get("single", 0.0)), round(total * hl.get("multi", 0.0))
+    n_pairs = round(total * hl["pairs"] / 2) if "pairs" in hl else round(PAIR_SHARE * n_hl / 2)
+    n_named = round(hl.get("named", C2_HL_NAMED) * n_hl)
+    if "pairs" in hl:
+        n_hl += 2 * n_pairs                   # the single-token highlight rows: singles and both members of the pairs
+    shares = tuple(hl.get("buckets", BUCKET_SHARE))
+    if len(shares) != len(BUCKETS) - 1 or abs(sum(shares) - 1) > 1e-6:
+        raise ValueError(f"highlight buckets must give {len(BUCKETS) - 1} shares summing to 1, got {shares}")
     n_join = round(total * spec.get("joined_multi", 0.0))
     draws = spec["draws"]
     sizes = [d.get("rows", round(total * d.get("share", 0.0))) for d in draws]
+    sizes = [s - s % 2 if d.get("pairs") else s for s, d in zip(sizes, draws)]
     rest = [k for k, d in enumerate(draws) if d.get("rest")]
     left = total - n_hl - n_hlm - n_join - sum(s for k, s in enumerate(sizes) if k not in rest)
-    if len(rest) > 1 or left < 0 or (not rest and left):
+    if len(rest) > 1 or left < 0 or (not rest and left) or any(draws[k].get("pairs") for k in rest):
         raise ValueError(f"draws do not add up: {left} rows left for {len(rest)} 'rest' draws")
     for k in rest:
         sizes[k] = left
@@ -1292,9 +1358,36 @@ def build_rows_merged(out, spec_path):
         weights = weights or forms
         return rng.choices(list(weights), weights=list(weights.values()))[0]
 
+    def negatives(r):
+        if r["family"] not in negative_families or not r.get("sa1b") or r["sa1b"]["source_id"] not in pool:
+            return None
+        return edit_negatives(pool[r["sa1b"]["source_id"]], r["units"][0]["token"]["dec"])
+
     used, singles, units, report = excluded_ids(spec), [], [], []
-    for draw, need in zip(draws, sizes):
-        options = [r for r in records if r["id"] not in used and merged_match(r, draw)]
+    for k, (draw, need) in enumerate(zip(draws, sizes)):
+        options = [r for r in records if r["id"] not in used and merged_match(r, draw)
+                   and (not draw.get("pool_only") or (r.get("sa1b") and r["sa1b"]["source_id"] in pool))]
+        if draw.get("pairs"):
+            pairs = twin_pairs(options)
+            if not pairs and need:
+                raise ValueError(f"no twin pair for draw {draw}")
+            picks = rng.sample(pairs, min(need // 2, len(pairs)))
+            while len(picks) < need // 2:
+                picks += rng.sample(pairs, min(need // 2 - len(picks), len(pairs)))
+            used |= {r["id"] for pair in picks for r in pair}
+            report.append({"draw": draw, "rows": need, "available_pairs": len(pairs), "repeated_pairs": max(0, need // 2 - len(pairs))})
+            for j, (a, b) in enumerate(picks):
+                key = f"{name}-d{k}-pair-{j}"
+                members = []
+                for x, y in ((a, b), (b, a)):
+                    row = {"kind": "edit_merged", "id": x["id"], "form": "noref_token", "partners": [y["id"]],
+                           "pair_key": key, "pair_kind": "twin"}
+                    found = negatives(x)
+                    if found:
+                        row["negatives"] = found
+                    members.append(row)
+                units.append(members)
+            continue
         if not options and need:
             raise ValueError(f"no record for draw {draw}")
         picks = rng.sample(options, min(need, len(options)))
@@ -1314,8 +1407,9 @@ def build_rows_merged(out, spec_path):
             if row["kind"] == "opsd_merged":
                 units.append([row])
                 continue
-            if r["family"] == "D1" and spec.get("d1_negatives", True) and r["sa1b"]["source_id"] in pool:
-                row["negatives"] = edit_negatives(pool[r["sa1b"]["source_id"]], r["units"][0]["token"]["dec"])
+            found = negatives(r)
+            if found is not None:
+                row["negatives"] = found
             singles.append((r, row))
     # SA-1B twins among the drawn rows: same image, same blind sentence; both read blind with their token
     twins = defaultdict(list)
@@ -1357,25 +1451,39 @@ def build_rows_merged(out, spec_path):
                 raise RuntimeError(f"no {size}-unit composite found")
             rng.shuffle(group)
             entry = pool.get(group[0]["source_id"])
-            negatives = sorted({j for r in group for j in edit_negatives(entry, dec[r["sample_id"]])}) if entry else []
+            negatives_ = sorted({j for r in group for j in edit_negatives(entry, dec[r["sample_id"]])}) if entry else []
             units.append([{"kind": "edit_multi", "source_id": group[0]["source_id"], "sample_ids": [r["sample_id"] for r in group],
-                           "forms": [form(r) for r in group], "negatives": negatives}])
-    n_pairs = round(PAIR_SHARE * n_hl / 2)
-    units += highlight_pairs(train, rng, n_pairs, f"{name}-hlpair")
-    units += highlight_singles(train, rng, n_hl - 2 * n_pairs, round(C2_HL_NAMED * n_hl))
+                           "forms": [form(r) for r in group], "negatives": negatives_}])
+    units += highlight_pairs(train, rng, n_pairs, f"{name}-hlpair", shares=shares, kinds=hl.get("pair_kinds"))
+    units += highlight_singles(train, rng, n_hl - 2 * n_pairs, n_named, shares=shares)
     units += highlight_multis(train, rng, n_hlm)
     rows = place_in_slots(units, rng, updates, world, accumulation)
     with open(out / f"{name}.jsonl", "w") as f:
         for row in rows:
             f.write(json.dumps(row) + "\n")
     family = {r["id"]: r["family"] for r in records}
+    by_id = {r["id"]: r for r in records}
+    merged_rows = [r for r in rows if r["kind"] == "edit_merged"]
+    single_hl = [r for r in rows if r["kind"] in ("hl", "hl_ref")]
+    hl_area = Counter(bucket(pool[r["source_id"]]["masks"][r["masks"][0]]["area"]) for r in single_hl)
     stats = {"name": name, "rows": len(rows), "updates": updates, "world": world, "accumulation": accumulation,
              "kinds": dict(Counter(r["kind"] for r in rows)), "draws": report,
-             "merged_rows_by_family": dict(Counter(family[r["id"]] for r in rows if r["kind"] == "edit_merged")),
+             "merged_rows_by_family": dict(Counter(family[r["id"]] for r in merged_rows)),
+             "merged_rows_multi": sum(1 for r in merged_rows if len(by_id[r["id"]]["units"]) > 1),
+             "merged_units_by_op": dict(Counter(u["op"] for r in merged_rows for u in by_id[r["id"]]["units"])),
              "opsd_rows_by_family": dict(Counter(family[r["id"]] for r in rows if r["kind"] == "opsd_merged")),
+             "merged_records_distinct": len({r["id"] for r in merged_rows}),
              "twin_pairs": sum(1 for r in rows if r.get("pair_kind") == "twin") // 2,
-             "d1_rows_with_negatives": sum(1 for r in rows if r["kind"] == "edit_merged" and r.get("negatives")),
-             "forms": dict(Counter(r.get("form") for r in rows if r["kind"] == "edit_merged" and "form" in r))}
+             "twin_pairs_by_family": {f: n // 2 for f, n in Counter(family[r["id"]] for r in merged_rows if r.get("pair_kind") == "twin").items()},
+             "rows_with_negatives_by_family": dict(Counter(family[r["id"]] for r in merged_rows if r.get("negatives"))),
+             "d1_rows_with_negatives": sum(1 for r in merged_rows if r.get("negatives") and family[r["id"]] == "D1"),
+             "forms": dict(Counter(r.get("form") for r in merged_rows if "form" in r)),
+             "payload_capped_records": len(capped),
+             "highlight_pairs_by_kind": {k: n // 2 for k, n in Counter(r["pair_kind"] for r in rows if r["kind"] == "hl" and r.get("pair_key")).items()},
+             "highlight_single_named": sum(1 for r in single_hl if r["kind"] == "hl_ref"),
+             "highlight_single_by_bucket": {f"{BUCKETS[b]}-{BUCKETS[b + 1]}": hl_area[b] for b in sorted(hl_area)},
+             "highlight_images": len({r["source_id"] for r in rows if r["kind"] in ("hl", "hl_ref", "hlm")}),
+             "pool_train_images": len(train)}
     (out / f"{name}_stats.json").write_text(json.dumps(stats, indent=1))
     return stats
 

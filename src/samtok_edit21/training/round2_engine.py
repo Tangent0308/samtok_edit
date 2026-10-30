@@ -188,12 +188,15 @@ def main(argv=None):
 
     ctx = Context(data)
     rows = [json.loads(line) for line in open(data / args.rows)]
-    merged = [r for r in rows if r["kind"] in ("edit_merged", "opsd_merged")]
-    if merged:   # load only the merged records these rows use (twins name their partner)
-        ctx.merged_ids = {r["id"] for r in merged} | {p for r in merged for p in r.get("partners", ())}
     needed = args.updates * args.accumulation * world
     if needed > len(rows):
         raise ValueError(f"{needed} rows needed, {args.rows} has {len(rows)}")
+    # load only the merged records of this rank's rows (twins name their partner): a large rows file uses nearly the
+    # whole merged dataset, which every rank would otherwise hold in memory
+    mine = (rows[(u * args.accumulation + s) * world + rank] for u in range(args.updates) for s in range(args.accumulation))
+    merged = [r for r in mine if r["kind"] in ("edit_merged", "opsd_merged")]
+    if merged:
+        ctx.merged_ids = {r["id"] for r in merged} | {p for r in merged for p in r.get("partners", ())}
     items = json.load(open(data / args.eval_items))
     quick = [items[i] | {"idx": i} for i in json.load(open(data / args.quick_items))]
     quick = quick[rank::world][:args.quick_limit]

@@ -1,0 +1,9 @@
+{"name": "rows_s1", "seed": 20261030, "updates": 6000, "world": 8, "accumulation": 4,
+ "negatives": ["D1", "D12", "D15"],
+ "payload_cap": {"limit": 50, "families": ["D12", "D13", "D14", "D15"]},
+ "draws": [{"family": "D12", "pairs": true, "rows": 12800},
+           {"family": "D15", "op": "single", "pool_only": true, "rows": 12800},
+           {"family": "D1", "op": "single", "rest": true}],
+ "highlights": {"single": 0.35, "multi": 0.20, "pairs": 0.25, "named": 0.30,
+                "buckets": [0.15, 0.175, 0.175, 0.125, 0.125, 0.15, 0.10],
+                "pair_kinds": {"adjacent": 0.4, "same": 0.3, "part_host": 0.3}}}

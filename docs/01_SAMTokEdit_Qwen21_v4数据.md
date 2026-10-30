@@ -550,20 +550,24 @@ D13 另有 955 条去掉坏单元后只剩一个单元，按单目标计。
 | `merged` | 合板目录 | `datasets/SAMTokEdit_Merged_20261029/`（10-29 起；之前是 10-26 版 SAMTokEdit_Merged_20261024，旧记录在两版里相同，10-26 版已删） |
 | `draws` | 依次从默认视图抽记录，见下 | 必填 |
 | `forms` | 有盲指代句的单元的写法比例 | `{"noref_token": 0.65, "ref_token": 0.35}`，同 C2 |
-| `highlights` | `{"single": 比例, "multi": 比例}`：单 token、多 token 高亮行占全部行的比例 | 0 |
+| `highlights` | `{"single": 比例, "multi": 比例}`：单 token、多 token 高亮行占全部行的比例。两阶段重训另加（10-30）：`pairs`（反事实成对高亮行占全部行的比例；不写时成对占单 token 的 30%）、`buckets`（单 token 区域按面积分 7 档的比例，档界同 C1：0.05%、0.1%、0.25%、0.5%、1%、2%、5%）、`named`（单 token 里带名的比例，默认 0.27）、`pair_kinds`（成对种类的权重：`adjacent` 相邻、`same` 同类实例、`part_host` 部件与宿主；不写时同 C1b：部件/宿主 30%、相邻 70%） | 0 |
 | `joined_multi` | D1 拼合多目标行占全部行的比例 | 0 |
 | `d1_negatives`、`d1_twins` | D1 的近邻负例、孪生 | 都开 |
+| `negatives` | 哪些来源的单目标行带近邻负例（源图在区域池里时）；10-30 加入 | `["D1"]` |
+| `payload_cap` | `{"limit": 50, "families": [...]}`：对合板没有封顶的来源再按新物体描述封顶，算法同合板（多目标记录先计入且不去掉，单目标按固定顺序）；10-30 加入 | 无 |
 | `exclude` | 一个记录 id 文件（每行一个，或 JSON 列表），这些记录不进任何一项，例如诊断用的留出行（10-28 加入） | 无 |
 
 **抽取（`draws` 的每一项）**
 - **筛选**（`merged_match`）：
   - `family`：一个或几个来源（D1、D3、D4、D10、D11、D12、D13、D14、D15）；
-  - `op`：add、remove、replace、attribute、text 只取该操作的单目标记录，multi 只取多目标记录，不写则不限；
+  - `op`：add、remove、replace、attribute、text 只取该操作的单目标记录，multi 只取多目标记录，single 只取单目标记录（10-30 加入），不写则不限；
   - `text_role`：change、render、remove，取至少有一个单元带该标记的记录；
   - `area_max`：每个单元的改动面积（`edited_region.area_frac`，占全图）都不超过该值，没有改动区域的记录不取（10-28 加入，第二次 OPSD 试训用来只取 D1 小区域）。
 - **数量三选一：**`rows`（行数）、`share`（占全部行的比例）、`rest: true`（剩下的全部，最多一项）。高亮行、拼合多目标行先按比例扣除，各项加起来必须正好填满总行数。
 - **不放回：**各项依次从尚未被抽过的记录里随机取；要的比剩下的多时重复抽，`<name>_stats.json` 记下每项的 `available` 和 `repeated`。
 - **`"opsd": true`：**这一项的行是 `opsd_merged`。
+- **`"pool_only": true`**（10-30）：只取源图在区域池里的 SA-1B 记录，保证它们有近邻负例。
+- **`"pairs": true`**（10-30）：D12 孪生成对抽，两个成员都在可抽范围里才成对；行数是对数的两倍。两行都用盲指代 + token，对方的 S 并入负例，放进同一次更新（`pair_key`、`pair_kind: twin`、`partners`）。要的对数比可抽的多时重复抽。
 - **`"forms"`：**这一项自己的写法比例（v4 提交 `0856f593`），不写时用配置的 `forms`。OPSD 抽取项宜多用盲指代；写法名只能是 `noref_token`、`ref_token`，写错会报错。
 
 **例子**（冒烟用，10-26；3 次更新、96 行）：
@@ -592,7 +596,8 @@ D13 另有 955 条去掉坏单元后只剩一个单元，按单目标计。
   - 取区域池里 token 解码区域周围的标注区域：框间距 ≤ 对角线的 5%，最近的至多 6 个，加上宿主至多 2 个；
   - 不含被编辑物体本身（IoU ≥ 0.5）和它的部件（≥ 90% 在其内）；
   - 训练时这些区域必须保持不变。
-- **D12 的孪生（还没做进取行）：**D12 记录现在和其他单目标记录一样按单行抽，两个成员不保证放进同一次更新；`twin.partner` 已记下对方，成对取行要另加。
+- **D12 的孪生：**抽取项写 `"pairs": true` 时成对取行（10-30，见 §3.2）；不写时与其他单目标记录一样按单行抽。
+- **其他 SA-1B 来源的近邻负例：**配置的 `negatives` 列出的来源（两阶段重训：D1、D12、D14、D15），源图在区域池里时同 D1 取近邻负例。扩大后的区域池含全部 D12 图和 7,509 张 D15 图（§3.7）。
 - **D1 孪生：**
   - 在抽到的 D1 单目标行里，同一张图、盲指代句逐字相同的成组，组内按框距最近两两配对（`pair_key`、`pair_kind: twin`、`partners`）；
   - 两行都改成盲指代 + token，只有 token 能区分它们；对方的 S 并入负例；
@@ -638,7 +643,7 @@ python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-train
 
 - `samtok-edit` 与 `python -m samtok_edit21` 是同一个命令行。
 - `<name>_stats.json` 记下行的种类计数、每项抽取的 `available` / `repeated`、各来源的行数、孪生对数、带负例的 D1 行数和写法计数。
-- 训练器只加载行里用到的合板记录（孪生的对方也加载）；有 `opsd_merged` 行时会建 OPSD 老师。训练参数见文档 02。
+- 训练器每张卡只加载自己要处理的行用到的合板记录（孪生的对方也加载；10-30 起按卡分，第二阶段的行几乎用到整份合板，全部加载每卡约 10 GB）；有 `opsd_merged` 行时会建 OPSD 老师。训练参数见文档 02。
 
 ### 3.7 round-2 数据目录与已有的行文件
 
@@ -668,6 +673,17 @@ C1–C3 的行文件（每次更新 32 行 = 8 卡 × 累积 4 步）：
 | `rows_c3d.jsonl` | C3-D、C3-MD | 48,000（1,500 次） | 同上，但四分之一换成 D10：`edit_ext` 10,500（替换 5,000、改属性 4,000、改字 1,500）、`edit_multi_ext` 1,500；其余 `edit` 14,913、`edit_v1` 12,703、`edit_multi` 3,600、`edit_multi_v1` 1,176、高亮 3,608 |
 
 - C3-D 从 D10 抽的替换要求 `s_covered` ≥ 0.85，改属性要求 `s_covered` ≥ 0.9 且改动 ≥ 1%；可抽的有替换 10,725、改属性 6,609、改字 12,228、多目标 1,916。
+
+**两阶段重训的数据目录 `V3/data/round2_scaleup_20261030/`（10-30）**
+- 用户 10-29 定下一步：不用 OPSD，用现在最好的方法从原版分两阶段重训（先学 token 理解，再加强编辑），每阶段扩数据；计划 `V3/analysis/plan_scaleup_20261030/README.md`。
+- **区域池扩大：**`pool/` = 旧的 1,132 张（硬链接）+ 新的 20,000 张 SA-1B 图：全部 D12 默认视图图 12,491 张，再按固定顺序取 D15 7,509 张；与 benchmark、开发集共用原图的不进。每张图的条目与 D2 相同（`pool_image`）。
+  - 代码 `round2-data pool-ext-prepare / pool-ext-work / pool-ext-check`（v4 `e6d3887b`）；500 片、每片 40 张，多台机器按片认领（`pool_ext/claims/`），入口 `pool_ext/entry.sh`（一台 8 卡，每卡 3 个进程，约 2.5 小时）。
+  - 编解码器把每张图只缩放一次（`codec._pixel_values`），算出的条目与原来逐字节相同，快约一倍。
+- 其余文件（`dev_split.json`、`edit_tokens.jsonl`、`support_cache.jsonl`、评测集、`v1_tokens.jsonl`、`d4_tokens.jsonl`）是 `round2_20261016/` 的硬链接。
+- **行：**`scripts/round2/specs/rows_s1.json`、`rows_s2.json` → `rows_s1.jsonl`（192,000 行）、`rows_s2.jsonl`（512,000 行）。扩池完成后由 `pool_ext/build_rows_after_pool.sh` 生成，并用 `scripts/round2/check_rows.py` 不带模型核对，结果在 `rows_build/`。
+  - S1：单 token 高亮 35%（带名 30%；面积 < 0.1% 15%、0.1–0.5% 35%、0.5–2% 25%、≥ 2% 25%），多 token 高亮 20%，反事实成对 25%（相邻 40%、同类实例 30%、部件/宿主 30%），SA-1B 编辑 20%（D12 孪生成对、D15 池内单目标、D1 各三分之一）。
+  - S2：D12 孪生成对 8%，多目标 25%，SA-1B 单目标（D1、D12–D15）20%，extedit 单目标（D10、D11）30%，D3 7%，高亮回放 10%（单 4%、成对 2%、多 4%）。
+  - 两阶段都对 D12–D15 再按新物体描述封顶（每个描述 50 条记录；冒烟时去掉 8,858 条单目标记录）。
 - **OPSD 试训的行**（10-26，由 10-26 重建的数据生成；配置、P0 的生成方式和核对见 `V3/analysis/opsd_pilot_20261026/README.md`）：
   - `rows_opsd_pilot_p1.jsonl`：16,000 行，`opsd_merged` 8,000（D11 4,550、D1 1,600、D10 1,289、D4 561），`edit_merged` 6,800，拼合多目标 600，高亮 600；500 个 OPSD 步对在 8 张卡上全部整齐，每次更新各卡的 OPSD 行数相同；OPSD 单元的盲指代占 0.849；
   - `rows_opsd_pilot_p0.jsonl`：P1 的行，OPSD 行改为同一条记录的 `edit_merged`（D1 行补近邻负例），位置不变。
