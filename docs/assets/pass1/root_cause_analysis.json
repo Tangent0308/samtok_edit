@@ -1,0 +1,801 @@
+{
+  "benchmark": {
+    "models": {
+      "base": {
+        "requests": 200,
+        "targets": 720,
+        "unknown_outputs": 509,
+        "strict_requests": 0,
+        "unknown_raw_iou": 0.5251256577818922,
+        "unknown_compatible_iou": 0.5221678962013757,
+        "known_exact_copy": 204,
+        "known_outputs": 211,
+        "point_hits": 161,
+        "point_outputs": 208,
+        "possible_requested_target_swaps": 12,
+        "matched_mixing": {
+          "S4-ref": {
+            "outputs": 49,
+            "sources": 20,
+            "mixed_iou": 0.569824120667667,
+            "matched_homogeneous_iou": 0.5629451971049675,
+            "mean_delta": 0.006878923562699476,
+            "delta_source_bootstrap95": [
+              -0.041128519662035685,
+              0.049037549410294194
+            ],
+            "changes_over_005": 7
+          },
+          "S4-noref": {
+            "outputs": 49,
+            "sources": 20,
+            "mixed_iou": 0.48012165624328024,
+            "matched_homogeneous_iou": 0.5043960319685279,
+            "mean_delta": -0.024274375725247595,
+            "delta_source_bootstrap95": [
+              -0.1090570659029128,
+              0.060341818703571797
+            ],
+            "changes_over_005": 13
+          },
+          "S5": {
+            "outputs": 51,
+            "sources": 20,
+            "mixed_iou": 0.4145343190382402,
+            "matched_homogeneous_iou": 0.5137103355248318,
+            "mean_delta": -0.09917601648659172,
+            "delta_source_bootstrap95": [
+              -0.2249401390539367,
+              0.018832123558854094
+            ],
+            "changes_over_005": 20
+          }
+        }
+      },
+      "step2000": {
+        "requests": 200,
+        "targets": 720,
+        "unknown_outputs": 509,
+        "strict_requests": 200,
+        "unknown_raw_iou": 0.7059879530799084,
+        "unknown_compatible_iou": 0.7059879530799084,
+        "known_exact_copy": 211,
+        "known_outputs": 211,
+        "point_hits": 204,
+        "point_outputs": 208,
+        "possible_requested_target_swaps": 0,
+        "matched_mixing": {
+          "S4-ref": {
+            "outputs": 49,
+            "sources": 20,
+            "mixed_iou": 0.722561883350499,
+            "matched_homogeneous_iou": 0.7257159189396818,
+            "mean_delta": -0.003154035589182966,
+            "delta_source_bootstrap95": [
+              -0.008575981530528631,
+              7.126545441721039e-05
+            ],
+            "changes_over_005": 1
+          },
+          "S4-noref": {
+            "outputs": 49,
+            "sources": 20,
+            "mixed_iou": 0.7308506950805859,
+            "matched_homogeneous_iou": 0.7281403219073732,
+            "mean_delta": 0.0027103731732126927,
+            "delta_source_bootstrap95": [
+              -0.0009590896467802667,
+              0.009491015867332288
+            ],
+            "changes_over_005": 1
+          },
+          "S5": {
+            "outputs": 51,
+            "sources": 20,
+            "mixed_iou": 0.6889929554914744,
+            "matched_homogeneous_iou": 0.6868239672483262,
+            "mean_delta": 0.0021689882431481554,
+            "delta_source_bootstrap95": [
+              -0.03183954838868295,
+              0.04037985503583129
+            ],
+            "changes_over_005": 3
+          }
+        }
+      }
+    },
+    "failure_breakdown": {
+      "unique_targets": 72,
+      "sources": 20,
+      "canonical_reference_iou": 0.7444391858538738,
+      "canonical_below05": 8,
+      "canonical_below07": 20,
+      "unknown_below05_outputs": 86,
+      "unknown_below05_unique_targets": 19,
+      "low_outputs_and_canonical_below05": 52,
+      "low_outputs_and_canonical_atleast07": 18,
+      "predictions_above_canonical_by005": 17,
+      "unknown_iou50_rate": 0.831041257367387,
+      "unknown_iou75_rate": 0.5736738703339882,
+      "benchmark_unique_area_bins": {
+        "0.1–0.5%": 39,
+        "0.05–0.1%": 2,
+        "0.5–1%": 9,
+        "1–5%": 19,
+        "<0.05%": 2,
+        ">=5%": 1
+      },
+      "unknown_by_area": {
+        "<0.05%": {
+          "outputs": 16,
+          "unique_targets": 2,
+          "iou": 0.09289272960465732,
+          "canonical": 0.1725611067902102,
+          "precision": 0.1055656030583009,
+          "recall": 0.37121498149209653,
+          "below05": 16
+        },
+        "0.05–0.1%": {
+          "outputs": 16,
+          "unique_targets": 2,
+          "iou": 0.5607392037187938,
+          "canonical": 0.6517700563360644,
+          "precision": 0.6261881765436057,
+          "recall": 0.8720906088240064,
+          "below05": 2
+        },
+        "0.1–0.5%": {
+          "outputs": 268,
+          "unique_targets": 39,
+          "iou": 0.6388939880977456,
+          "canonical": 0.6670240419463377,
+          "precision": 0.7624215255742237,
+          "recall": 0.7977813656898919,
+          "below05": 55
+        },
+        "0.5–1%": {
+          "outputs": 60,
+          "unique_targets": 9,
+          "iou": 0.7938608910916071,
+          "canonical": 0.8661843900423761,
+          "precision": 0.8913735658941097,
+          "recall": 0.8728235347534632,
+          "below05": 3
+        },
+        "1–5%": {
+          "outputs": 141,
+          "unique_targets": 19,
+          "iou": 0.8809667598019235,
+          "canonical": 0.9105574161913104,
+          "precision": 0.9260309182266244,
+          "recall": 0.9494589021477264,
+          "below05": 8
+        },
+        ">=5%": {
+          "outputs": 8,
+          "unique_targets": 1,
+          "iou": 0.7272752220918315,
+          "canonical": 0.9577433422413678,
+          "precision": 0.9843192527462006,
+          "recall": 0.7375422745833236,
+          "below05": 2
+        }
+      },
+      "unknown_by_operation": {
+        "add": {
+          "outputs": 143,
+          "unique_targets": 19,
+          "iou": 0.6155081595730352,
+          "canonical": 0.6777246445513283,
+          "precision": 0.706243182675179,
+          "recall": 0.7873100645965482,
+          "below05": 45
+        },
+        "attribute": {
+          "outputs": 125,
+          "unique_targets": 18,
+          "iou": 0.7360191460940246,
+          "canonical": 0.779259991450754,
+          "precision": 0.8246238845982208,
+          "recall": 0.8810160207118781,
+          "below05": 13
+        },
+        "remove": {
+          "outputs": 97,
+          "unique_targets": 15,
+          "iou": 0.6813713646243287,
+          "canonical": 0.720361378664694,
+          "precision": 0.7882011042352394,
+          "recall": 0.8057006016271496,
+          "below05": 25
+        },
+        "replace": {
+          "outputs": 144,
+          "unique_targets": 20,
+          "iou": 0.7863526782528915,
+          "canonical": 0.804001186405748,
+          "precision": 0.8849867289232374,
+          "recall": 0.8678920191008874,
+          "below05": 3
+        }
+      },
+      "unknown_by_locator": {
+        "none": {
+          "outputs": 86,
+          "unique_targets": 72,
+          "iou": 0.6980332013665467,
+          "canonical": 0.7571320202865208,
+          "precision": 0.7937068812191146,
+          "recall": 0.8123018025078317,
+          "below05": 15
+        },
+        "point": {
+          "outputs": 208,
+          "unique_targets": 72,
+          "iou": 0.6970849132872097,
+          "canonical": 0.7401348926173968,
+          "precision": 0.7918373912127923,
+          "recall": 0.8475157813270451,
+          "below05": 40
+        },
+        "box": {
+          "outputs": 215,
+          "unique_targets": 72,
+          "iou": 0.7177830271460964,
+          "canonical": 0.7484276105396647,
+          "precision": 0.8139692447255256,
+          "recall": 0.8358163414090863,
+          "below05": 31
+        }
+      }
+    },
+    "examples": [
+      {
+        "request_id": "v2-sa_455310--S1",
+        "label": "U2",
+        "prompt": {
+          "label": "U2",
+          "instruction": "Add a narrow planter of green foliage on the long top-floor balcony railing on the left.",
+          "has_ref": true,
+          "locator": "none"
+        },
+        "before": 0.0,
+        "after": 0.0,
+        "reference": 0.7357707109580717,
+        "area": 0.0025041371158392436,
+        "precision": 0.0,
+        "recall": 0.0,
+        "point_hit": null
+      },
+      {
+        "request_id": "v2-sa_8415518--S1",
+        "label": "U4",
+        "prompt": {
+          "label": "U4",
+          "instruction": "Replace the uniform top of the headscarf-wearing person in the middle with a knee-length utility coat with large patch pockets.",
+          "has_ref": true,
+          "locator": "none"
+        },
+        "before": 0.0,
+        "after": 0.006023625127121959,
+        "reference": 0.7998776366390864,
+        "area": 0.009490442054958184,
+        "precision": 0.03394064061122539,
+        "recall": 0.007270095046264241,
+        "point_hit": null
+      },
+      {
+        "request_id": "v2-sa_5447626--S2-point",
+        "label": "U4",
+        "prompt": {
+          "label": "U4",
+          "instruction": "Add a small price tag reading 50 on the large woven sack of white flowers in the foreground.",
+          "has_ref": true,
+          "locator": "point",
+          "region": {
+            "point": [
+              807,
+              935
+            ]
+          }
+        },
+        "before": 0.9577433422413678,
+        "after": 0.21738604763631966,
+        "reference": 0.9577433422413678,
+        "area": 0.08736868463691265,
+        "precision": 0.98205155436877,
+        "recall": 0.21825317881263634,
+        "point_hit": false
+      },
+      {
+        "request_id": "v2-sa_5447626--S3-point",
+        "label": "U4",
+        "prompt": {
+          "label": "U4",
+          "instruction": "Add a small price tag reading 50 on the selected region.",
+          "has_ref": false,
+          "locator": "point",
+          "region": {
+            "point": [
+              807,
+              935
+            ]
+          }
+        },
+        "before": 0.9599175386000093,
+        "after": 0.2863317089564779,
+        "reference": 0.9577433422413678,
+        "area": 0.08736868463691265,
+        "precision": 0.9886626051639107,
+        "recall": 0.28727497108637673,
+        "point_hit": true
+      },
+      {
+        "request_id": "v2-sa_10831959--S1",
+        "label": "U5",
+        "prompt": {
+          "label": "U5",
+          "instruction": "Change the color of the visible canopy of the multicolored umbrella on the right to white.",
+          "has_ref": true,
+          "locator": "none"
+        },
+        "before": 0.2244859401076928,
+        "after": 0.4043601737387237,
+        "reference": 0.8817576879158956,
+        "area": 0.006993777777777778,
+        "precision": 0.9660746358012373,
+        "recall": 0.41018471445517707,
+        "point_hit": null
+      },
+      {
+        "request_id": "v2-sa_5831338--S2-mask",
+        "label": "U4",
+        "prompt": {
+          "label": "U4",
+          "instruction": "Add a small gold star emblem on the upper-left corner of the dark banner behind the rightmost spectator.",
+          "has_ref": true,
+          "locator": "mask",
+          "region": {
+            "mask_2d": "<|mt_start|><|mt_0034|><|mt_0488|><|mt_end|>"
+          }
+        },
+        "before": 0.017304296645085343,
+        "after": 0.017304296645085343,
+        "reference": 0.017304296645085343,
+        "area": 0.0019842962962962965,
+        "precision": 0.07557840616966581,
+        "recall": 0.021950126922502613,
+        "point_hit": null
+      }
+    ],
+    "interpretation": "Both sides of mixing comparison are joint multi-target requests. Only own target public input is identical; other targets may differ. Raw IoU avoids request-format gating. Repeated setting outputs are not independent targets. Canonical codec roundtrip is a reference, not an upper bound."
+  },
+  "training": {
+    "stats": {
+      "seen_step2000": {
+        "requests": 127829,
+        "targets": 356145,
+        "area_bins": {
+          "1–5%": 96669,
+          "0.5–1%": 64026,
+          "0.1–0.5%": 122577,
+          "0.05–0.1%": 24656,
+          ">=5%": 46826,
+          "<0.05%": 1391
+        },
+        "quality_bins": {
+          ">=.8": 274707,
+          ".7–.8": 81438
+        },
+        "modes": {
+          "ref_none": 52439,
+          "ref_box": 43956,
+          "noref_mask": 29829,
+          "noref_point": 76583,
+          "noref_box": 48266,
+          "ref_point": 71015,
+          "ref_mask": 34057
+        },
+        "point_policies": {
+          "uniform": 55525,
+          "deep": 78226,
+          "inner_boundary": 13847
+        },
+        "origins": {
+          "D15": 49547,
+          "pool_new_D12": 78338,
+          "D12": 46143,
+          "D11": 22754,
+          "D3": 4777,
+          "pool_new_D15": 48482,
+          "D13": 67854,
+          "D10": 5300,
+          "D14": 1370,
+          "D4": 7295,
+          "pool_base": 2004,
+          "D1": 22281
+        },
+        "operation_modes": {
+          "replace|ref_none": 15812,
+          "attribute|ref_box": 13059,
+          "add|noref_mask": 777,
+          "None|noref_mask": 24660,
+          "None|noref_point": 64408,
+          "add|noref_box": 2572,
+          "attribute|ref_point": 21315,
+          "attribute|ref_none": 15576,
+          "replace|ref_box": 13133,
+          "replace|ref_point": 21282,
+          "remove|ref_box": 14004,
+          "remove|ref_none": 16919,
+          "remove|ref_mask": 2146,
+          "replace|noref_point": 3527,
+          "text|ref_point": 924,
+          "remove|ref_point": 22498,
+          "remove|noref_point": 3944,
+          "None|noref_box": 39756,
+          "text|ref_none": 608,
+          "replace|noref_mask": 1424,
+          "add|ref_none": 3524,
+          "add|ref_mask": 28021,
+          "attribute|noref_point": 3674,
+          "remove|noref_box": 1972,
+          "attribute|ref_mask": 1901,
+          "add|noref_point": 854,
+          "replace|noref_box": 1871,
+          "add|ref_point": 4996,
+          "replace|ref_mask": 1921,
+          "attribute|noref_box": 1995,
+          "add|ref_box": 3189,
+          "remove|noref_mask": 1546,
+          "text|ref_box": 571,
+          "attribute|noref_mask": 1365,
+          "text|ref_mask": 68,
+          "text|noref_point": 176,
+          "text|noref_box": 100,
+          "text|noref_mask": 57
+        },
+        "host_fallback_modes": {
+          "noref_mask": 473,
+          "noref_box": 2085,
+          "ref_mask": 27623
+        },
+        "dense_parent_modes": {
+          "noref_box": 11725,
+          "noref_mask": 6882
+        },
+        "dense_targets": 128824,
+        "counterfactual_requests": 18322,
+        "K": {
+          "3": 25608,
+          "1": 30360,
+          "2": 24017,
+          "5": 9551,
+          "4": 38293
+        },
+        "dense_target_fraction": 0.36171783964396526,
+        "area_below1pct_fraction": 0.597088264611324,
+        "area_below005pct_fraction": 0.003905712560895141
+      },
+      "seen_step2000_main": {
+        "requests": 95856,
+        "targets": 301792,
+        "area_bins": {
+          ">=5%": 36996,
+          "0.5–1%": 54742,
+          "0.1–0.5%": 105902,
+          "1–5%": 81128,
+          "0.05–0.1%": 21657,
+          "<0.05%": 1367
+        },
+        "quality_bins": {
+          ">=.8": 231751,
+          ".7–.8": 70041
+        },
+        "modes": {
+          "ref_none": 48906,
+          "ref_point": 59506,
+          "noref_mask": 26247,
+          "noref_point": 59646,
+          "ref_box": 36347,
+          "noref_box": 40612,
+          "ref_mask": 30528
+        },
+        "point_policies": {
+          "uniform": 44148,
+          "inner_boundary": 10976,
+          "deep": 64028
+        },
+        "origins": {
+          "D12": 41809,
+          "pool_new_D12": 66375,
+          "D1": 22169,
+          "pool_new_D15": 41389,
+          "D15": 42801,
+          "D11": 15666,
+          "D13": 55807,
+          "pool_base": 1877,
+          "D10": 3581,
+          "D4": 6349,
+          "D3": 3176,
+          "D14": 793
+        },
+        "operation_modes": {
+          "attribute|ref_none": 14571,
+          "attribute|ref_point": 18020,
+          "None|noref_mask": 22212,
+          "None|noref_point": 52007,
+          "attribute|noref_mask": 1176,
+          "remove|ref_none": 15772,
+          "remove|ref_box": 11640,
+          "replace|ref_none": 14736,
+          "None|noref_box": 35422,
+          "attribute|ref_box": 10838,
+          "add|ref_mask": 25913,
+          "replace|ref_box": 10893,
+          "replace|ref_point": 17900,
+          "remove|noref_box": 1492,
+          "remove|ref_point": 18852,
+          "replace|noref_point": 2219,
+          "attribute|noref_point": 2357,
+          "replace|noref_mask": 1232,
+          "add|noref_box": 716,
+          "add|ref_point": 4052,
+          "replace|noref_box": 1404,
+          "remove|noref_point": 2475,
+          "replace|ref_mask": 1482,
+          "add|ref_box": 2554,
+          "add|ref_none": 3275,
+          "attribute|noref_box": 1510,
+          "remove|noref_mask": 1328,
+          "attribute|ref_mask": 1465,
+          "remove|ref_mask": 1625,
+          "add|noref_mask": 256,
+          "text|ref_box": 422,
+          "text|ref_point": 682,
+          "add|noref_point": 505,
+          "text|ref_none": 552,
+          "text|noref_point": 83,
+          "text|ref_mask": 43,
+          "text|noref_box": 68,
+          "text|noref_mask": 43
+        },
+        "host_fallback_modes": {
+          "ref_mask": 25598,
+          "noref_box": 371
+        },
+        "dense_parent_modes": {
+          "noref_box": 9681,
+          "noref_mask": 6014
+        },
+        "dense_targets": 109641,
+        "counterfactual_requests": 18322,
+        "K": {
+          "2": 14425,
+          "5": 9551,
+          "4": 38293,
+          "3": 19214,
+          "1": 14373
+        },
+        "dense_target_fraction": 0.3632998886650408,
+        "area_below1pct_fraction": 0.6085913476831725,
+        "area_below005pct_fraction": 0.004529609797476407
+      },
+      "full_warmup": {
+        "requests": 31973,
+        "targets": 54353,
+        "area_bins": {
+          "1–5%": 15541,
+          "0.5–1%": 9284,
+          "0.1–0.5%": 16675,
+          "0.05–0.1%": 2999,
+          ">=5%": 9830,
+          "<0.05%": 24
+        },
+        "quality_bins": {
+          ">=.8": 42956,
+          ".7–.8": 11397
+        },
+        "modes": {
+          "ref_none": 3533,
+          "ref_box": 7609,
+          "noref_mask": 3582,
+          "noref_point": 16937,
+          "noref_box": 7654,
+          "ref_point": 11509,
+          "ref_mask": 3529
+        },
+        "point_policies": {
+          "uniform": 11377,
+          "deep": 14198,
+          "inner_boundary": 2871
+        },
+        "origins": {
+          "D15": 6746,
+          "pool_new_D12": 11963,
+          "D12": 4334,
+          "D11": 7088,
+          "D3": 1601,
+          "pool_new_D15": 7093,
+          "D13": 12047,
+          "D10": 1719,
+          "D14": 577,
+          "D4": 946,
+          "pool_base": 127,
+          "D1": 112
+        },
+        "operation_modes": {
+          "replace|ref_none": 1076,
+          "attribute|ref_box": 2221,
+          "add|noref_mask": 521,
+          "None|noref_mask": 2448,
+          "None|noref_point": 12401,
+          "add|noref_box": 1856,
+          "attribute|ref_point": 3295,
+          "attribute|ref_none": 1005,
+          "replace|ref_box": 2240,
+          "replace|ref_point": 3382,
+          "remove|ref_box": 2364,
+          "remove|ref_none": 1147,
+          "remove|ref_mask": 521,
+          "replace|noref_point": 1308,
+          "text|ref_point": 242,
+          "remove|ref_point": 3646,
+          "remove|noref_point": 1469,
+          "None|noref_box": 4334,
+          "text|ref_none": 56,
+          "replace|noref_mask": 192,
+          "add|ref_none": 249,
+          "add|ref_mask": 2108,
+          "attribute|noref_point": 1317,
+          "remove|noref_box": 480,
+          "attribute|ref_mask": 436,
+          "add|noref_point": 349,
+          "replace|noref_box": 467,
+          "add|ref_point": 944,
+          "replace|ref_mask": 439,
+          "attribute|noref_box": 485,
+          "add|ref_box": 635,
+          "remove|noref_mask": 218,
+          "text|ref_box": 149,
+          "attribute|noref_mask": 189,
+          "text|ref_mask": 25,
+          "text|noref_point": 93,
+          "text|noref_box": 32,
+          "text|noref_mask": 14
+        },
+        "host_fallback_modes": {
+          "noref_mask": 473,
+          "noref_box": 1714,
+          "ref_mask": 2025
+        },
+        "dense_parent_modes": {
+          "noref_box": 2044,
+          "noref_mask": 868
+        },
+        "dense_targets": 19183,
+        "counterfactual_requests": 0,
+        "K": {
+          "3": 6394,
+          "1": 15987,
+          "2": 9592
+        },
+        "dense_target_fraction": 0.3529336007212113,
+        "area_below1pct_fraction": 0.5332180376428164,
+        "area_below005pct_fraction": 0.0004415579636818575
+      },
+      "full_main": {
+        "requests": 127888,
+        "targets": 402833,
+        "area_bins": {
+          "0.1–0.5%": 141366,
+          ">=5%": 49385,
+          "1–5%": 107973,
+          "0.5–1%": 73157,
+          "0.05–0.1%": 29107,
+          "<0.05%": 1845
+        },
+        "quality_bins": {
+          ">=.8": 309378,
+          ".7–.8": 93455
+        },
+        "modes": {
+          "ref_point": 79311,
+          "ref_mask": 40666,
+          "ref_none": 65144,
+          "noref_mask": 35089,
+          "noref_point": 79959,
+          "ref_box": 48425,
+          "noref_box": 54239
+        },
+        "point_policies": {
+          "uniform": 58870,
+          "inner_boundary": 14730,
+          "deep": 85670
+        },
+        "origins": {
+          "D12": 55923,
+          "D11": 20865,
+          "pool_new_D12": 88943,
+          "D1": 29342,
+          "pool_new_D15": 55301,
+          "D15": 56988,
+          "D3": 4245,
+          "D13": 74491,
+          "pool_base": 2424,
+          "D10": 4779,
+          "D4": 8467,
+          "D14": 1065
+        },
+        "operation_modes": {
+          "remove|ref_point": 25258,
+          "remove|ref_mask": 2176,
+          "attribute|ref_none": 19331,
+          "attribute|ref_point": 24018,
+          "replace|ref_none": 19712,
+          "None|noref_mask": 29621,
+          "None|noref_point": 69741,
+          "attribute|noref_mask": 1609,
+          "remove|ref_none": 21046,
+          "remove|ref_box": 15566,
+          "None|noref_box": 47306,
+          "attribute|ref_box": 14455,
+          "text|ref_none": 724,
+          "add|ref_mask": 34493,
+          "replace|ref_box": 14500,
+          "replace|ref_point": 23691,
+          "remove|noref_box": 2016,
+          "replace|noref_box": 1865,
+          "add|ref_point": 5423,
+          "replace|noref_point": 3020,
+          "attribute|noref_point": 3106,
+          "replace|noref_mask": 1651,
+          "add|noref_box": 957,
+          "remove|noref_point": 3279,
+          "replace|ref_mask": 1986,
+          "add|ref_box": 3324,
+          "add|ref_none": 4331,
+          "attribute|noref_box": 2015,
+          "remove|noref_mask": 1779,
+          "attribute|ref_mask": 1951,
+          "add|noref_mask": 371,
+          "text|ref_box": 580,
+          "text|ref_point": 921,
+          "add|noref_point": 694,
+          "text|noref_point": 119,
+          "text|ref_mask": 60,
+          "text|noref_box": 80,
+          "text|noref_mask": 58
+        },
+        "host_fallback_modes": {
+          "ref_mask": 34089,
+          "noref_box": 492
+        },
+        "dense_parent_modes": {
+          "noref_box": 12847,
+          "noref_mask": 8035
+        },
+        "dense_targets": 146668,
+        "counterfactual_requests": 24424,
+        "K": {
+          "2": 19182,
+          "1": 19183,
+          "5": 12779,
+          "4": 51159,
+          "3": 25585
+        },
+        "dense_target_fraction": 0.3640913232034118,
+        "area_below1pct_fraction": 0.6093716254626607,
+        "area_below005pct_fraction": 0.004580061712918256
+      }
+    },
+    "seen_step2000_requests": 127829,
+    "seen_counterfactual_pairs": 9161,
+    "pair_row_counts": {
+      "2": 9161
+    },
+    "all_training_requests": 159861,
+    "unused_small_low_quality_reserve": 85554,
+    "exposure_definition": "Observed train.jsonl IDs intersected with first 2000 frozen batch-plan indices; target metadata comes from original selection and selected_regions. No RLE, image, labels, model or prior results changed."
+  }
+}

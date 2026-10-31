@@ -1,5 +1,7 @@
 # SAMTokEdit 交接说明
 
+> **2026-10-31：Pass1 已合入本分支。**混合目标的第一轮定位 LoRA（在 `pass1` 分支开发，基于 v4 `6aa4e10`）：MLLM 用独立的 LM LoRA 一次生成全部目标（文本、point、box、给定 mask 混合）的 mask token，训练是 NTP 交叉熵；Pass2 关闭该 LoRA，用原 SAMTok TE。已完成试训、正式训练和 IF-Bench dev20 定位评测，见 [Pass1 方法](docs/pass1_localization.md)、[实现](docs/pass1_implementation.md)、[结果与可视化](docs/pass1_experiments.md)、[复现](docs/pass1_reproduction.md)。Pass1 是可选部件，不改变 v4 编辑管线、训练器和 benchmark 适配器的默认行为；它要单独的环境（`transformers==5.19.0`，见 `configs/pass1/requirements-tested.txt`），不要与 v4 的 `constraints-tested.txt` 混用。Pass1 的开发工作区 `/opt/tiger/tanyue/samtok_edit_pass1/` 和试训目录在另一台开发机上，本机没有。下文 v4 的“当前”状态仍有效。
+
 写于 2026-10-28，原开发机回收之前。读者是没有上下文的新会话：先读完本文，再按 §2.2 的指引读文档。本文只给方向和入口，细节以文档和 NAS 上的 README 为准，两者不一致时以盘上的结果文件为准。
 
 **路径记号**

@@ -1,0 +1,37 @@
+{
+  "version": "pass1_formal_selection_v1",
+  "seed": 2026103003,
+  "quality": {"core_min_roundtrip": 0.7, "reserve_min_roundtrip": 0.6, "reserve_max_area": 0.001, "min_area": 0.00003, "max_area": 0.3},
+  "source_request_cap": 8,
+  "region_exposure_cap": 8,
+  "d1_request_fraction_cap": 0.05,
+  "old_pool_request_fraction_cap": 0.05,
+  "holdout_per_split": 1000,
+  "main_requests": 128000,
+  "main_cells": {
+    "real": {"1": 19200, "2": 16000, "3": 19200, "4": 12800, "5": 3200},
+    "hybrid": {"2": 3200, "3": 6400, "4": 32000, "5": 8000},
+    "dense": {"4": 6400, "5": 1600}
+  },
+  "warmup_requests": 32000,
+  "warmup_k": {"1": 16000, "2": 9600, "3": 6400},
+  "main_modes": {"ref_none": 0.16, "ref_point": 0.20, "noref_point": 0.20, "ref_box": 0.12, "noref_box": 0.12, "ref_mask": 0.10, "noref_mask": 0.10},
+  "warmup_modes": {"ref_none": 0.05, "ref_point": 0.25, "noref_point": 0.35, "ref_box": 0.125, "noref_box": 0.125, "ref_mask": 0.05, "noref_mask": 0.05},
+  "eval_modes": {"ref_none": 0.142857142857, "ref_point": 0.142857142857, "noref_point": 0.142857142857, "ref_box": 0.142857142857, "noref_box": 0.142857142857, "ref_mask": 0.142857142857, "noref_mask": 0.142857142857},
+  "area_target": {"micro_lt_0.0005": 0.03, "tiny_0.0005_0.001": 0.07, "small_0.001_0.005": 0.35, "small_0.005_0.01": 0.23, "medium_0.01_0.05": 0.25, "large_ge_0.05": 0.07},
+  "point_train": {"deep": 0.5, "uniform": 0.4, "inner_boundary": 0.1},
+  "point_eval": {"deep": 0.5, "uniform": 0.4, "inner_boundary": 0.1},
+  "box_train": {"tight": 1.0},
+  "nonsequential_label_fraction": 0.25,
+  "counterfactual_main_row_fraction": 0.20,
+  "known_host_fallback_modes": ["noref_box", "ref_mask", "noref_mask"],
+  "dense_parent_modes": ["noref_box", "noref_mask"],
+  "notes": [
+    "Counts are exact request-selection goals; mode and area fractions are soft target margins and must be reported after selection.",
+    "Core only: reserve_min_roundtrip does not silently lower the main-data threshold; reserve is a separate optional ablation.",
+    "Plans reference real source regions. Coordinates and training JSONL are not present until explicit materialization and geometry audit.",
+    "Training points must survive 0-1000 quantization and lie in S and canonical decode; evaluation points are sampled from S without looking at canonical decode.",
+    "Dense category/relations and all supervision fields are never model-visible. Dense rows use the same neutral no-ref instruction.",
+    "No image-changing augmentation; original canonical tokens remain attached to the unmodified source image."
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "protocol": "samtok_pass1_v2",
+  "seed": 2026103001,
+  "source_groups": {"train": 2048, "dev": 64, "test": 128},
+  "train_requests": 8192,
+  "model": "Qwen3-VL-8B-SAMTok",
+  "max_pixels": 2097152,
+  "max_context": 8192,
+  "lora": {"rank": 64, "alpha": 128, "dropout": 0.05, "target": "LM attention q/k/v/o and MLP gate/up/down", "trainable_parameters": 174587904},
+  "optimizer": {"name": "AdamW", "lr": 0.00002, "weight_decay": 0.01, "betas": [0.9,0.999], "eps": 1e-8, "clip_grad_norm": 1.0},
+  "scheduler": {"name": "cosine", "warmup_fraction": 0.03, "final_lr_fraction": 0.1},
+  "training": {"gpus": 8, "microbatch": 1, "accumulation": 8, "updates": 128, "checkpoint_updates": [64,128], "base_dtype": "bfloat16", "adapter_dtype": "float32", "gradient_checkpointing": "nonreentrant"},
+  "loss": {"type": "assistant_only_grouped_cross_entropy", "unknown_code": 1.0, "known_mask_copy_code": 0.25, "format": 0.25, "normalization": "per-present-group mean, divided by present weight sum"},
+  "decode": {"generations_per_image": 1, "do_sample": false, "max_new_tokens": 512, "candidate_selection": false, "sam2_for_point_box_text": false},
+  "checkpoint_selection": {"split": "dev", "metric": "unknown.strict_iou", "direction": "max", "tie_break": "smaller step", "candidates": [64,128]},
+  "test_policy": "Choose checkpoint on dev and write selection.json before scoring test. No prompt/seed/threshold tuning on test."
+}

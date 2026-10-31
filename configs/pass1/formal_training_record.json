@@ -1,0 +1,52 @@
+{
+  "experiment": "pass1_localization_lora_formal_20261030_0939",
+  "base_model": "/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok",
+  "pilot_reference_adapter": "/opt/tiger/tanyue/visualization_tmp/pass1_lora_pilot_20261030_0556/runs/pilot/step_0128",
+  "initialization": "fresh LM LoRA on frozen SAMTok base; do not initialize from pilot or smoke",
+  "protocol": "samtok_pass1_v2",
+  "gpus": "0,1,2,3,4,5,6,7",
+  "world_size": 8,
+  "microbatch_per_gpu": 1,
+  "gradient_accumulation": 8,
+  "effective_batch": 64,
+  "lora_rank": 64,
+  "lora_alpha": 128,
+  "lora_dropout": 0.05,
+  "lora_dtype": "float32",
+  "base_dtype": "bfloat16",
+  "attention": "sdpa",
+  "max_pixels": 2097152,
+  "max_context_tokens": 8192,
+  "peak_learning_rate": 2e-05,
+  "optimizer": "AdamW",
+  "weight_decay": 0.01,
+  "clip_grad_norm": 1.0,
+  "lr_schedule": "3% global-update linear warmup; continuous cosine to 10% peak, without reset at data-stage boundary",
+  "curriculum": "one pass over accepted warmup, then one pass over accepted main; no repeated full epochs",
+  "pair_policy": "counterfactual partners in the same global optimizer update",
+  "last_batch": "keep all real requests; zero-loss padding and normalize by real request count",
+  "seed": 2026103005,
+  "save_every_updates": 100,
+  "dev_evaluation": "after data warmup, every 500 main updates, and final update",
+  "checkpoint_selection": "dev unknown.strict_iou; exact ties choose earlier update",
+  "references": [
+    "base",
+    "pilot_step128"
+  ],
+  "test_policy": "evaluate only after the dev-selected checkpoint has been recorded",
+  "decoding": {
+    "do_sample": false,
+    "max_new_tokens": 512,
+    "joint_generate_per_request": 1
+  },
+  "materialization": {
+    "workers": 24,
+    "quarantine_conflicting_requests_and_partners": true,
+    "max_rejection_fraction_before_review": 0.01
+  },
+  "frozen_checks": "base parameter SHA256 and exact adapter-off logits / pre-norm TE probe for every training segment",
+  "no_dit_training": true,
+  "dataloader_workers": 0,
+  "dataloader_note": "Load in each GPU training process; NAS TMPDIR exceeds AF_UNIX socket path length for multiprocessing DataLoader",
+  "resume_guarantee": "FP32 adapter, optimizer, sample position and per-rank RNG restored; GPU training is numerically nondeterministic, not bitwise replay"
+}

@@ -1,0 +1,1117 @@
+{
+  "metrics": {
+    "base_test": {
+      "requests": 999,
+      "targets": 3547,
+      "strict_rate": 0.0,
+      "compatible_rate": 0.7817817817817818,
+      "all_targets_iou50": 0.0,
+      "compatible_all_targets_iou50": 0.2992992992992993,
+      "unknown": {
+        "n": 2535,
+        "iou": 0.49865467334168606,
+        "strict_iou": 0.0,
+        "compatible_iou": 0.42696662314814066,
+        "iou50": 0.0,
+        "compatible_iou50": 0.4796844181459566,
+        "canonical_iou": 0.8392442089284128,
+        "exact_code": 0.12781065088757396,
+        "possible_id_swap": 0.045364891518737675
+      },
+      "known": {
+        "n": 1012,
+        "iou": 0.7888457558770414,
+        "strict_iou": 0.0,
+        "compatible_iou": 0.6058671667396369,
+        "iou50": 0.0,
+        "compatible_iou50": 0.7144268774703557,
+        "canonical_iou": 0.8465221693902503,
+        "exact_code": 0.9140316205533597,
+        "possible_id_swap": 0.008893280632411068
+      },
+      "all": {
+        "n": 3547,
+        "iou": 0.5814495353450071,
+        "strict_iou": 0.0,
+        "compatible_iou": 0.4780090111139129,
+        "iou50": 0.0,
+        "compatible_iou50": 0.5466591485762616,
+        "canonical_iou": 0.8413206949693993,
+        "exact_code": 0.35212855934592613,
+        "possible_id_swap": 0.03495912038342261
+      },
+      "multi_unknown": {
+        "n": 2535,
+        "iou": 0.49865467334168606,
+        "strict_iou": 0.0,
+        "compatible_iou": 0.42696662314814066,
+        "iou50": 0.0,
+        "compatible_iou50": 0.4796844181459566,
+        "canonical_iou": 0.8392442089284128,
+        "exact_code": 0.12781065088757396,
+        "possible_id_swap": 0.045364891518737675
+      },
+      "single_unknown": {
+        "n": 0,
+        "iou": null,
+        "strict_iou": null,
+        "compatible_iou": null,
+        "iou50": null,
+        "compatible_iou50": null,
+        "canonical_iou": null,
+        "exact_code": null,
+        "possible_id_swap": null
+      },
+      "by_mode": {
+        "noref_box": {
+          "n": 508,
+          "iou": 0.4189047411028598,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.3575827051775104,
+          "iou50": 0.0,
+          "compatible_iou50": 0.41141732283464566,
+          "canonical_iou": 0.8279017225935075,
+          "exact_code": 0.09055118110236221,
+          "possible_id_swap": 0.031496062992125984
+        },
+        "noref_mask": {
+          "n": 506,
+          "iou": 0.7490729376476023,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.582694246368038,
+          "iou50": 0.0,
+          "compatible_iou50": 0.7015810276679841,
+          "canonical_iou": 0.826545172677444,
+          "exact_code": 0.883399209486166,
+          "possible_id_swap": 0.01383399209486166
+        },
+        "noref_point": {
+          "n": 507,
+          "iou": 0.3448757619740589,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.3005027474911531,
+          "iou50": 0.0,
+          "compatible_iou50": 0.34516765285996054,
+          "canonical_iou": 0.8133489707855599,
+          "exact_code": 0.0631163708086785,
+          "possible_id_swap": 0.08086785009861933
+        },
+        "ref_box": {
+          "n": 506,
+          "iou": 0.5788701475522995,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.4953396774913251,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5474308300395256,
+          "canonical_iou": 0.8480856839422448,
+          "exact_code": 0.16996047430830039,
+          "possible_id_swap": 0.03359683794466403
+        },
+        "ref_mask": {
+          "n": 506,
+          "iou": 0.8286185741064805,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.629040087111236,
+          "iou50": 0.0,
+          "compatible_iou50": 0.7272727272727273,
+          "canonical_iou": 0.8664991661030564,
+          "exact_code": 0.9446640316205533,
+          "possible_id_swap": 0.003952569169960474
+        },
+        "ref_none": {
+          "n": 508,
+          "iou": 0.5566564267844634,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.46529941660636037,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5137795275590551,
+          "canonical_iou": 0.8518548502252634,
+          "exact_code": 0.11220472440944881,
+          "possible_id_swap": 0.03346456692913386
+        },
+        "ref_point": {
+          "n": 506,
+          "iou": 0.5943561613677918,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5164812292998124,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5810276679841897,
+          "canonical_iou": 0.8550759809852491,
+          "exact_code": 0.20355731225296442,
+          "possible_id_swap": 0.04743083003952569
+        }
+      },
+      "by_locator": {
+        "box": {
+          "n": 1014,
+          "iou": 0.49872968751648555,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.426325336332136,
+          "iou50": 0.0,
+          "compatible_iou50": 0.47928994082840237,
+          "canonical_iou": 0.8379737979805499,
+          "exact_code": 0.1301775147928994,
+          "possible_id_swap": 0.03254437869822485
+        },
+        "mask": {
+          "n": 1012,
+          "iou": 0.7888457558770414,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.6058671667396369,
+          "iou50": 0.0,
+          "compatible_iou50": 0.7144268774703557,
+          "canonical_iou": 0.8465221693902503,
+          "exact_code": 0.9140316205533597,
+          "possible_id_swap": 0.008893280632411068
+        },
+        "none": {
+          "n": 508,
+          "iou": 0.5566564267844634,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.46529941660636037,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5137795275590551,
+          "canonical_iou": 0.8518548502252634,
+          "exact_code": 0.11220472440944881,
+          "possible_id_swap": 0.03346456692913386
+        },
+        "point": {
+          "n": 1013,
+          "iou": 0.469492822283268,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.4083853849987361,
+          "iou50": 0.0,
+          "compatible_iou50": 0.4629812438302073,
+          "canonical_iou": 0.8341918801251874,
+          "exact_code": 0.1332675222112537,
+          "possible_id_swap": 0.06416584402764067
+        }
+      },
+      "by_K_unknown": {
+        "2": {
+          "n": 232,
+          "iou": 0.5945722126410906,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5326767530683335,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5818965517241379,
+          "canonical_iou": 0.8609130941565736,
+          "exact_code": 0.1853448275862069,
+          "possible_id_swap": 0.05603448275862069
+        },
+        "3": {
+          "n": 536,
+          "iou": 0.5685751633999172,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.4963455472936224,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5541044776119403,
+          "canonical_iou": 0.8591986279222411,
+          "exact_code": 0.14365671641791045,
+          "possible_id_swap": 0.04291044776119403
+        },
+        "4": {
+          "n": 1405,
+          "iou": 0.47553255309063125,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.40601828487863056,
+          "iou50": 0.0,
+          "compatible_iou50": 0.4583629893238434,
+          "canonical_iou": 0.8326101993074442,
+          "exact_code": 0.11814946619217082,
+          "possible_id_swap": 0.038434163701067614
+        },
+        "5": {
+          "n": 362,
+          "iou": 0.42339590860151527,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.3377969043227226,
+          "iou50": 0.0,
+          "compatible_iou50": 0.3867403314917127,
+          "canonical_iou": 0.8215592187732621,
+          "exact_code": 0.10497237569060773,
+          "possible_id_swap": 0.06906077348066299
+        }
+      },
+      "by_operation_unknown": {
+        "add": {
+          "n": 203,
+          "iou": 0.2602052877074547,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.22531797786533678,
+          "iou50": 0.0,
+          "compatible_iou50": 0.22167487684729065,
+          "canonical_iou": 0.7315186972278882,
+          "exact_code": 0.029556650246305417,
+          "possible_id_swap": 0.054187192118226604
+        },
+        "attribute": {
+          "n": 567,
+          "iou": 0.589859770160204,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5110702359386502,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5590828924162258,
+          "canonical_iou": 0.8800831473345204,
+          "exact_code": 0.14462081128747795,
+          "possible_id_swap": 0.04056437389770723
+        },
+        "remove": {
+          "n": 617,
+          "iou": 0.5796643259219024,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.4936090983136334,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5737439222042139,
+          "canonical_iou": 0.849619272034274,
+          "exact_code": 0.16369529983792544,
+          "possible_id_swap": 0.04213938411669368
+        },
+        "replace": {
+          "n": 571,
+          "iou": 0.603953478862506,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5100101077442947,
+          "iou50": 0.0,
+          "compatible_iou50": 0.574430823117338,
+          "canonical_iou": 0.8674506601122218,
+          "exact_code": 0.17688266199649738,
+          "possible_id_swap": 0.03152364273204904
+        },
+        "segmentation": {
+          "n": 562,
+          "iou": 0.2932301879384633,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.25239794461618287,
+          "iou50": 0.0,
+          "compatible_iou50": 0.2900355871886121,
+          "canonical_iou": 0.7956519536492692,
+          "exact_code": 0.05871886120996441,
+          "possible_id_swap": 0.06583629893238434
+        },
+        "text": {
+          "n": 15,
+          "iou": 0.6341161793336055,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.6149190893906469,
+          "iou50": 0.0,
+          "compatible_iou50": 0.6,
+          "canonical_iou": 0.8861875891651338,
+          "exact_code": 0.06666666666666667,
+          "possible_id_swap": 0.0
+        }
+      },
+      "by_area_unknown": {
+        "tiny": {
+          "n": 1432,
+          "iou": 0.41868902565827637,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.36338949023125405,
+          "iou50": 0.0,
+          "compatible_iou50": 0.42108938547486036,
+          "canonical_iou": 0.7938806893180193,
+          "exact_code": 0.10963687150837989,
+          "possible_id_swap": 0.04120111731843575
+        },
+        "medium": {
+          "n": 753,
+          "iou": 0.5798112994784199,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.499290845244629,
+          "iou50": 0.0,
+          "compatible_iou50": 0.549800796812749,
+          "canonical_iou": 0.8864935121007868,
+          "exact_code": 0.1394422310756972,
+          "possible_id_swap": 0.05046480743691899
+        },
+        "large": {
+          "n": 350,
+          "iou": 0.6512257247750635,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5314875234290715,
+          "iou50": 0.0,
+          "compatible_iou50": 0.5685714285714286,
+          "canonical_iou": 0.9231923083378006,
+          "exact_code": 0.17714285714285713,
+          "possible_id_swap": 0.05142857142857143
+        }
+      },
+      "point_hit": 0.6130306021717671,
+      "minimum_canonical_cached_agreement": 0.8820246343341032
+    },
+    "pilot_test": {
+      "requests": 999,
+      "targets": 3547,
+      "strict_rate": 0.963963963963964,
+      "compatible_rate": 0.963963963963964,
+      "all_targets_iou50": 0.6396396396396397,
+      "compatible_all_targets_iou50": 0.6396396396396397,
+      "unknown": {
+        "n": 2535,
+        "iou": 0.7075355576665084,
+        "strict_iou": 0.6866302366742265,
+        "compatible_iou": 0.6866302366742265,
+        "iou50": 0.7838264299802762,
+        "compatible_iou50": 0.7838264299802762,
+        "canonical_iou": 0.8392442089284128,
+        "exact_code": 0.21972386587771203,
+        "possible_id_swap": 0.024063116370808678
+      },
+      "known": {
+        "n": 1012,
+        "iou": 0.8346584944115084,
+        "strict_iou": 0.8181255618273909,
+        "compatible_iou": 0.8181255618273909,
+        "iou50": 0.9634387351778656,
+        "compatible_iou50": 0.9634387351778656,
+        "canonical_iou": 0.8465221693902503,
+        "exact_code": 0.9861660079051383,
+        "possible_id_swap": 0.004940711462450593
+      },
+      "all": {
+        "n": 3547,
+        "iou": 0.7438051973580619,
+        "strict_iou": 0.7241473691960766,
+        "compatible_iou": 0.7241473691960766,
+        "iou50": 0.8350718917394981,
+        "compatible_iou50": 0.8350718917394981,
+        "canonical_iou": 0.8413206949693993,
+        "exact_code": 0.4383986467437271,
+        "possible_id_swap": 0.018607273752466874
+      },
+      "multi_unknown": {
+        "n": 2535,
+        "iou": 0.7075355576665084,
+        "strict_iou": 0.6866302366742265,
+        "compatible_iou": 0.6866302366742265,
+        "iou50": 0.7838264299802762,
+        "compatible_iou50": 0.7838264299802762,
+        "canonical_iou": 0.8392442089284128,
+        "exact_code": 0.21972386587771203,
+        "possible_id_swap": 0.024063116370808678
+      },
+      "single_unknown": {
+        "n": 0,
+        "iou": null,
+        "strict_iou": null,
+        "compatible_iou": null,
+        "iou50": null,
+        "compatible_iou50": null,
+        "canonical_iou": null,
+        "exact_code": null,
+        "possible_id_swap": null
+      },
+      "by_mode": {
+        "noref_box": {
+          "n": 508,
+          "iou": 0.6886171177395509,
+          "strict_iou": 0.6667457033965819,
+          "compatible_iou": 0.6667457033965819,
+          "iou50": 0.781496062992126,
+          "compatible_iou50": 0.781496062992126,
+          "canonical_iou": 0.8279017225935075,
+          "exact_code": 0.2047244094488189,
+          "possible_id_swap": 0.015748031496062992
+        },
+        "noref_mask": {
+          "n": 506,
+          "iou": 0.8202987801948662,
+          "strict_iou": 0.8075345770882036,
+          "compatible_iou": 0.8075345770882036,
+          "iou50": 0.9723320158102767,
+          "compatible_iou50": 0.9723320158102767,
+          "canonical_iou": 0.826545172677444,
+          "exact_code": 0.9920948616600791,
+          "possible_id_swap": 0.0
+        },
+        "noref_point": {
+          "n": 507,
+          "iou": 0.5402672287920024,
+          "strict_iou": 0.516205880392606,
+          "compatible_iou": 0.516205880392606,
+          "iou50": 0.5739644970414202,
+          "compatible_iou50": 0.5739644970414202,
+          "canonical_iou": 0.8133489707855599,
+          "exact_code": 0.1222879684418146,
+          "possible_id_swap": 0.03944773175542406
+        },
+        "ref_box": {
+          "n": 506,
+          "iou": 0.7959299810814093,
+          "strict_iou": 0.7811370831650787,
+          "compatible_iou": 0.7811370831650787,
+          "iou50": 0.8932806324110671,
+          "compatible_iou50": 0.8932806324110671,
+          "canonical_iou": 0.8480856839422448,
+          "exact_code": 0.30632411067193677,
+          "possible_id_swap": 0.009881422924901186
+        },
+        "ref_mask": {
+          "n": 506,
+          "iou": 0.8490182086281509,
+          "strict_iou": 0.8287165465665781,
+          "compatible_iou": 0.8287165465665781,
+          "iou50": 0.9545454545454546,
+          "compatible_iou50": 0.9545454545454546,
+          "canonical_iou": 0.8664991661030564,
+          "exact_code": 0.9802371541501976,
+          "possible_id_swap": 0.009881422924901186
+        },
+        "ref_none": {
+          "n": 508,
+          "iou": 0.7375876647391745,
+          "strict_iou": 0.7092616001913568,
+          "compatible_iou": 0.7092616001913568,
+          "iou50": 0.8031496062992126,
+          "compatible_iou50": 0.8031496062992126,
+          "canonical_iou": 0.8518548502252634,
+          "exact_code": 0.21850393700787402,
+          "possible_id_swap": 0.03346456692913386
+        },
+        "ref_point": {
+          "n": 506,
+          "iou": 0.7755623592108067,
+          "strict_iou": 0.7601268662172139,
+          "compatible_iou": 0.7601268662172139,
+          "iou50": 0.8675889328063241,
+          "compatible_iou50": 0.8675889328063241,
+          "canonical_iou": 0.8550759809852491,
+          "exact_code": 0.24703557312252963,
+          "possible_id_swap": 0.021739130434782608
+        }
+      },
+      "by_locator": {
+        "box": {
+          "n": 1014,
+          "iou": 0.7421677181843047,
+          "strict_iou": 0.7238285812692243,
+          "compatible_iou": 0.7238285812692243,
+          "iou50": 0.8372781065088757,
+          "compatible_iou50": 0.8372781065088757,
+          "canonical_iou": 0.8379737979805499,
+          "exact_code": 0.25542406311637084,
+          "possible_id_swap": 0.01282051282051282
+        },
+        "mask": {
+          "n": 1012,
+          "iou": 0.8346584944115084,
+          "strict_iou": 0.8181255618273909,
+          "compatible_iou": 0.8181255618273909,
+          "iou50": 0.9634387351778656,
+          "compatible_iou50": 0.9634387351778656,
+          "canonical_iou": 0.8465221693902503,
+          "exact_code": 0.9861660079051383,
+          "possible_id_swap": 0.004940711462450593
+        },
+        "none": {
+          "n": 508,
+          "iou": 0.7375876647391745,
+          "strict_iou": 0.7092616001913568,
+          "compatible_iou": 0.7092616001913568,
+          "iou50": 0.8031496062992126,
+          "compatible_iou50": 0.8031496062992126,
+          "canonical_iou": 0.8518548502252634,
+          "exact_code": 0.21850393700787402,
+          "possible_id_swap": 0.03346456692913386
+        },
+        "point": {
+          "n": 1013,
+          "iou": 0.657798656227259,
+          "strict_iou": 0.6380459779515908,
+          "compatible_iou": 0.6380459779515908,
+          "iou50": 0.7206317867719645,
+          "compatible_iou50": 0.7206317867719645,
+          "canonical_iou": 0.8341918801251874,
+          "exact_code": 0.18460019743336623,
+          "possible_id_swap": 0.03060217176702863
+        }
+      },
+      "by_K_unknown": {
+        "2": {
+          "n": 232,
+          "iou": 0.7921338420887238,
+          "strict_iou": 0.7921338420887238,
+          "compatible_iou": 0.7921338420887238,
+          "iou50": 0.8879310344827587,
+          "compatible_iou50": 0.8879310344827587,
+          "canonical_iou": 0.8609130941565736,
+          "exact_code": 0.2629310344827586,
+          "possible_id_swap": 0.017241379310344827
+        },
+        "3": {
+          "n": 536,
+          "iou": 0.7927593965626782,
+          "strict_iou": 0.7846380071747034,
+          "compatible_iou": 0.7846380071747034,
+          "iou50": 0.8992537313432836,
+          "compatible_iou50": 0.8992537313432836,
+          "canonical_iou": 0.8591986279222411,
+          "exact_code": 0.2574626865671642,
+          "possible_id_swap": 0.011194029850746268
+        },
+        "4": {
+          "n": 1405,
+          "iou": 0.6826364978126115,
+          "strict_iou": 0.6598247087457083,
+          "compatible_iou": 0.6598247087457083,
+          "iou50": 0.7537366548042704,
+          "compatible_iou50": 0.7537366548042704,
+          "canonical_iou": 0.8326101993074442,
+          "exact_code": 0.20569395017793593,
+          "possible_id_swap": 0.026334519572953737
+        },
+        "5": {
+          "n": 362,
+          "iou": 0.6237687053472389,
+          "strict_iou": 0.5779362181525385,
+          "compatible_iou": 0.5779362181525385,
+          "iou50": 0.6629834254143646,
+          "compatible_iou50": 0.6629834254143646,
+          "canonical_iou": 0.8215592187732621,
+          "exact_code": 0.19060773480662985,
+          "possible_id_swap": 0.03867403314917127
+        }
+      },
+      "by_operation_unknown": {
+        "add": {
+          "n": 203,
+          "iou": 0.512178944358052,
+          "strict_iou": 0.5064579579218176,
+          "compatible_iou": 0.5064579579218176,
+          "iou50": 0.541871921182266,
+          "compatible_iou50": 0.541871921182266,
+          "canonical_iou": 0.7315186972278882,
+          "exact_code": 0.10344827586206896,
+          "possible_id_swap": 0.04433497536945813
+        },
+        "attribute": {
+          "n": 567,
+          "iou": 0.8045756896701554,
+          "strict_iou": 0.7780419579125524,
+          "compatible_iou": 0.7780419579125524,
+          "iou50": 0.873015873015873,
+          "compatible_iou50": 0.873015873015873,
+          "canonical_iou": 0.8800831473345204,
+          "exact_code": 0.24162257495590828,
+          "possible_id_swap": 0.02292768959435626
+        },
+        "remove": {
+          "n": 617,
+          "iou": 0.7724972631194932,
+          "strict_iou": 0.7518216864830779,
+          "compatible_iou": 0.7518216864830779,
+          "iou50": 0.8784440842787682,
+          "compatible_iou50": 0.8784440842787682,
+          "canonical_iou": 0.849619272034274,
+          "exact_code": 0.28363047001620745,
+          "possible_id_swap": 0.014586709886547812
+        },
+        "replace": {
+          "n": 571,
+          "iou": 0.7978657429928125,
+          "strict_iou": 0.7823786376975113,
+          "compatible_iou": 0.7823786376975113,
+          "iou50": 0.9001751313485113,
+          "compatible_iou50": 0.9001751313485113,
+          "canonical_iou": 0.8674506601122218,
+          "exact_code": 0.2521891418563923,
+          "possible_id_swap": 0.01576182136602452
+        },
+        "segmentation": {
+          "n": 562,
+          "iou": 0.5151568769845605,
+          "strict_iou": 0.4898314120222754,
+          "compatible_iou": 0.4898314120222754,
+          "iou50": 0.5604982206405694,
+          "compatible_iou50": 0.5604982206405694,
+          "canonical_iou": 0.7956519536492692,
+          "exact_code": 0.1387900355871886,
+          "possible_id_swap": 0.037366548042704624
+        },
+        "text": {
+          "n": 15,
+          "iou": 0.780372098532676,
+          "strict_iou": 0.716630542184079,
+          "compatible_iou": 0.716630542184079,
+          "iou50": 0.7333333333333333,
+          "compatible_iou50": 0.7333333333333333,
+          "canonical_iou": 0.8861875891651338,
+          "exact_code": 0.13333333333333333,
+          "possible_id_swap": 0.0
+        }
+      },
+      "by_area_unknown": {
+        "tiny": {
+          "n": 1432,
+          "iou": 0.6343633983822793,
+          "strict_iou": 0.6185896745702744,
+          "compatible_iou": 0.6185896745702744,
+          "iou50": 0.7332402234636871,
+          "compatible_iou50": 0.7332402234636871,
+          "canonical_iou": 0.7938806893180193,
+          "exact_code": 0.20949720670391062,
+          "possible_id_swap": 0.025139664804469275
+        },
+        "medium": {
+          "n": 753,
+          "iou": 0.7826093217533088,
+          "strict_iou": 0.7460736116517713,
+          "compatible_iou": 0.7460736116517713,
+          "iou50": 0.8300132802124834,
+          "compatible_iou50": 0.8300132802124834,
+          "canonical_iou": 0.8864935121007868,
+          "exact_code": 0.2350597609561753,
+          "possible_id_swap": 0.029216467463479414
+        },
+        "large": {
+          "n": 350,
+          "iou": 0.8453983797740956,
+          "strict_iou": 0.8371251611735641,
+          "compatible_iou": 0.8371251611735641,
+          "iou50": 0.8914285714285715,
+          "compatible_iou50": 0.8914285714285715,
+          "canonical_iou": 0.9231923083378006,
+          "exact_code": 0.22857142857142856,
+          "possible_id_swap": 0.008571428571428572
+        }
+      },
+      "point_hit": 0.8321816386969397,
+      "minimum_canonical_cached_agreement": 0.8820246343341032
+    },
+    "selected_test": {
+      "requests": 999,
+      "targets": 3547,
+      "strict_rate": 0.997997997997998,
+      "compatible_rate": 0.997997997997998,
+      "all_targets_iou50": 0.7637637637637638,
+      "compatible_all_targets_iou50": 0.7637637637637638,
+      "unknown": {
+        "n": 2535,
+        "iou": 0.7688507477190248,
+        "strict_iou": 0.7688507477190248,
+        "compatible_iou": 0.7688507477190248,
+        "iou50": 0.8907297830374753,
+        "compatible_iou50": 0.8907297830374753,
+        "canonical_iou": 0.8392442089284128,
+        "exact_code": 0.27613412228796846,
+        "possible_id_swap": 0.00631163708086785
+      },
+      "known": {
+        "n": 1012,
+        "iou": 0.8465221693902503,
+        "strict_iou": 0.8447528267759811,
+        "compatible_iou": 0.8447528267759811,
+        "iou50": 0.9950592885375494,
+        "compatible_iou50": 0.9950592885375494,
+        "canonical_iou": 0.8465221693902503,
+        "exact_code": 1.0,
+        "possible_id_swap": 0.0
+      },
+      "all": {
+        "n": 3547,
+        "iou": 0.7910112999409814,
+        "strict_iou": 0.7905064860910689,
+        "compatible_iou": 0.7905064860910689,
+        "iou50": 0.9204961939667324,
+        "compatible_iou50": 0.9204961939667324,
+        "canonical_iou": 0.8413206949693993,
+        "exact_code": 0.48266140400338314,
+        "possible_id_swap": 0.004510854243022272
+      },
+      "multi_unknown": {
+        "n": 2535,
+        "iou": 0.7688507477190248,
+        "strict_iou": 0.7688507477190248,
+        "compatible_iou": 0.7688507477190248,
+        "iou50": 0.8907297830374753,
+        "compatible_iou50": 0.8907297830374753,
+        "canonical_iou": 0.8392442089284128,
+        "exact_code": 0.27613412228796846,
+        "possible_id_swap": 0.00631163708086785
+      },
+      "single_unknown": {
+        "n": 0,
+        "iou": null,
+        "strict_iou": null,
+        "compatible_iou": null,
+        "iou50": null,
+        "compatible_iou50": null,
+        "canonical_iou": null,
+        "exact_code": null,
+        "possible_id_swap": null
+      },
+      "by_mode": {
+        "noref_box": {
+          "n": 508,
+          "iou": 0.7773740320904338,
+          "strict_iou": 0.7773740320904338,
+          "compatible_iou": 0.7773740320904338,
+          "iou50": 0.9192913385826772,
+          "compatible_iou50": 0.9192913385826772,
+          "canonical_iou": 0.8279017225935075,
+          "exact_code": 0.3090551181102362,
+          "possible_id_swap": 0.0
+        },
+        "noref_mask": {
+          "n": 506,
+          "iou": 0.826545172677444,
+          "strict_iou": 0.826545172677444,
+          "compatible_iou": 0.826545172677444,
+          "iou50": 0.9960474308300395,
+          "compatible_iou50": 0.9960474308300395,
+          "canonical_iou": 0.826545172677444,
+          "exact_code": 1.0,
+          "possible_id_swap": 0.0
+        },
+        "noref_point": {
+          "n": 507,
+          "iou": 0.674165977746502,
+          "strict_iou": 0.674165977746502,
+          "compatible_iou": 0.674165977746502,
+          "iou50": 0.7889546351084813,
+          "compatible_iou50": 0.7889546351084813,
+          "canonical_iou": 0.8133489707855599,
+          "exact_code": 0.20907297830374755,
+          "possible_id_swap": 0.011834319526627219
+        },
+        "ref_box": {
+          "n": 506,
+          "iou": 0.8132840704372746,
+          "strict_iou": 0.8132840704372746,
+          "compatible_iou": 0.8132840704372746,
+          "iou50": 0.9387351778656127,
+          "compatible_iou50": 0.9387351778656127,
+          "canonical_iou": 0.8480856839422448,
+          "exact_code": 0.3201581027667984,
+          "possible_id_swap": 0.0
+        },
+        "ref_mask": {
+          "n": 506,
+          "iou": 0.8664991661030564,
+          "strict_iou": 0.8629604808745182,
+          "compatible_iou": 0.8629604808745182,
+          "iou50": 0.9940711462450593,
+          "compatible_iou50": 0.9940711462450593,
+          "canonical_iou": 0.8664991661030564,
+          "exact_code": 1.0,
+          "possible_id_swap": 0.0
+        },
+        "ref_none": {
+          "n": 508,
+          "iou": 0.7765677885435598,
+          "strict_iou": 0.7765677885435598,
+          "compatible_iou": 0.7765677885435598,
+          "iou50": 0.8917322834645669,
+          "compatible_iou50": 0.8917322834645669,
+          "canonical_iou": 0.8518548502252634,
+          "exact_code": 0.2795275590551181,
+          "possible_id_swap": 0.015748031496062992
+        },
+        "ref_point": {
+          "n": 506,
+          "iou": 0.8029848028200038,
+          "strict_iou": 0.8029848028200038,
+          "compatible_iou": 0.8029848028200038,
+          "iou50": 0.9150197628458498,
+          "compatible_iou50": 0.9150197628458498,
+          "canonical_iou": 0.8550759809852491,
+          "exact_code": 0.2628458498023715,
+          "possible_id_swap": 0.003952569169960474
+        }
+      },
+      "by_locator": {
+        "box": {
+          "n": 1014,
+          "iou": 0.7952936370248533,
+          "strict_iou": 0.7952936370248533,
+          "compatible_iou": 0.7952936370248533,
+          "iou50": 0.9289940828402367,
+          "compatible_iou50": 0.9289940828402367,
+          "canonical_iou": 0.8379737979805499,
+          "exact_code": 0.3145956607495069,
+          "possible_id_swap": 0.0
+        },
+        "mask": {
+          "n": 1012,
+          "iou": 0.8465221693902503,
+          "strict_iou": 0.8447528267759811,
+          "compatible_iou": 0.8447528267759811,
+          "iou50": 0.9950592885375494,
+          "compatible_iou50": 0.9950592885375494,
+          "canonical_iou": 0.8465221693902503,
+          "exact_code": 1.0,
+          "possible_id_swap": 0.0
+        },
+        "none": {
+          "n": 508,
+          "iou": 0.7765677885435598,
+          "strict_iou": 0.7765677885435598,
+          "compatible_iou": 0.7765677885435598,
+          "iou50": 0.8917322834645669,
+          "compatible_iou50": 0.8917322834645669,
+          "canonical_iou": 0.8518548502252634,
+          "exact_code": 0.2795275590551181,
+          "possible_id_swap": 0.015748031496062992
+        },
+        "point": {
+          "n": 1013,
+          "iou": 0.7385118074475799,
+          "strict_iou": 0.7385118074475799,
+          "compatible_iou": 0.7385118074475799,
+          "iou50": 0.8519249753208292,
+          "compatible_iou50": 0.8519249753208292,
+          "canonical_iou": 0.8341918801251874,
+          "exact_code": 0.23593287265547877,
+          "possible_id_swap": 0.007897334649555774
+        }
+      },
+      "by_K_unknown": {
+        "2": {
+          "n": 232,
+          "iou": 0.7977113791273934,
+          "strict_iou": 0.7977113791273934,
+          "compatible_iou": 0.7977113791273934,
+          "iou50": 0.896551724137931,
+          "compatible_iou50": 0.896551724137931,
+          "canonical_iou": 0.8609130941565736,
+          "exact_code": 0.29310344827586204,
+          "possible_id_swap": 0.008620689655172414
+        },
+        "3": {
+          "n": 536,
+          "iou": 0.8084350949575986,
+          "strict_iou": 0.8084350949575986,
+          "compatible_iou": 0.8084350949575986,
+          "iou50": 0.9309701492537313,
+          "compatible_iou50": 0.9309701492537313,
+          "canonical_iou": 0.8591986279222411,
+          "exact_code": 0.2835820895522388,
+          "possible_id_swap": 0.0018656716417910447
+        },
+        "4": {
+          "n": 1405,
+          "iou": 0.7597881095502723,
+          "strict_iou": 0.7597881095502723,
+          "compatible_iou": 0.7597881095502723,
+          "iou50": 0.8861209964412812,
+          "compatible_iou50": 0.8861209964412812,
+          "canonical_iou": 0.8326101993074442,
+          "exact_code": 0.2697508896797153,
+          "possible_id_swap": 0.004270462633451958
+        },
+        "5": {
+          "n": 362,
+          "iou": 0.7269174052341639,
+          "strict_iou": 0.7269174052341639,
+          "compatible_iou": 0.7269174052341639,
+          "iou50": 0.8453038674033149,
+          "compatible_iou50": 0.8453038674033149,
+          "canonical_iou": 0.8215592187732621,
+          "exact_code": 0.27900552486187846,
+          "possible_id_swap": 0.019337016574585635
+        }
+      },
+      "by_operation_unknown": {
+        "add": {
+          "n": 203,
+          "iou": 0.5727703387866591,
+          "strict_iou": 0.5727703387866591,
+          "compatible_iou": 0.5727703387866591,
+          "iou50": 0.6354679802955665,
+          "compatible_iou50": 0.6354679802955665,
+          "canonical_iou": 0.7315186972278882,
+          "exact_code": 0.1921182266009852,
+          "possible_id_swap": 0.014778325123152709
+        },
+        "attribute": {
+          "n": 567,
+          "iou": 0.8296389793499181,
+          "strict_iou": 0.8296389793499181,
+          "compatible_iou": 0.8296389793499181,
+          "iou50": 0.9400352733686067,
+          "compatible_iou50": 0.9400352733686067,
+          "canonical_iou": 0.8800831473345204,
+          "exact_code": 0.2857142857142857,
+          "possible_id_swap": 0.005291005291005291
+        },
+        "remove": {
+          "n": 617,
+          "iou": 0.8145861089714673,
+          "strict_iou": 0.8145861089714673,
+          "compatible_iou": 0.8145861089714673,
+          "iou50": 0.9529983792544571,
+          "compatible_iou50": 0.9529983792544571,
+          "canonical_iou": 0.849619272034274,
+          "exact_code": 0.3095623987034036,
+          "possible_id_swap": 0.006482982171799027
+        },
+        "replace": {
+          "n": 571,
+          "iou": 0.8254130379003162,
+          "strict_iou": 0.8254130379003162,
+          "compatible_iou": 0.8254130379003162,
+          "iou50": 0.9509632224168126,
+          "compatible_iou50": 0.9509632224168126,
+          "canonical_iou": 0.8674506601122218,
+          "exact_code": 0.29772329246935203,
+          "possible_id_swap": 0.0017513134851138354
+        },
+        "segmentation": {
+          "n": 562,
+          "iou": 0.6693571364854753,
+          "strict_iou": 0.6693571364854753,
+          "compatible_iou": 0.6693571364854753,
+          "iou50": 0.8042704626334519,
+          "compatible_iou50": 0.8042704626334519,
+          "canonical_iou": 0.7956519536492692,
+          "exact_code": 0.2402135231316726,
+          "possible_id_swap": 0.008896797153024912
+        },
+        "text": {
+          "n": 15,
+          "iou": 0.8179853880879763,
+          "strict_iou": 0.8179853880879763,
+          "compatible_iou": 0.8179853880879763,
+          "iou50": 0.8666666666666667,
+          "compatible_iou50": 0.8666666666666667,
+          "canonical_iou": 0.8861875891651338,
+          "exact_code": 0.2,
+          "possible_id_swap": 0.0
+        }
+      },
+      "by_area_unknown": {
+        "tiny": {
+          "n": 1432,
+          "iou": 0.7171363468643925,
+          "strict_iou": 0.7171363468643925,
+          "compatible_iou": 0.7171363468643925,
+          "iou50": 0.86731843575419,
+          "compatible_iou50": 0.86731843575419,
+          "canonical_iou": 0.7938806893180193,
+          "exact_code": 0.2702513966480447,
+          "possible_id_swap": 0.00558659217877095
+        },
+        "medium": {
+          "n": 753,
+          "iou": 0.823304302015778,
+          "strict_iou": 0.823304302015778,
+          "compatible_iou": 0.823304302015778,
+          "iou50": 0.9189907038512616,
+          "compatible_iou50": 0.9189907038512616,
+          "canonical_iou": 0.8864935121007868,
+          "exact_code": 0.28021248339973437,
+          "possible_id_swap": 0.00796812749003984
+        },
+        "large": {
+          "n": 350,
+          "iou": 0.8632835924001064,
+          "strict_iou": 0.8632835924001064,
+          "compatible_iou": 0.8632835924001064,
+          "iou50": 0.9257142857142857,
+          "compatible_iou50": 0.9257142857142857,
+          "canonical_iou": 0.9231923083378006,
+          "exact_code": 0.2914285714285714,
+          "possible_id_swap": 0.005714285714285714
+        }
+      },
+      "point_hit": 0.8874629812438302,
+      "minimum_canonical_cached_agreement": 0.8820246343341032
+    }
+  },
+  "paired_strict_source_bootstrap": {
+    "base_test": {
+      "unknown": {
+        "source_images": 999,
+        "metric": "strict_iou",
+        "target_delta": 0.7688507477190244,
+        "paired_source_bootstrap_95ci": [
+          0.7586828725379419,
+          0.7785715410023648
+        ]
+      },
+      "point": {
+        "source_images": 699,
+        "metric": "strict_iou",
+        "target_delta": 0.7385118074475796,
+        "paired_source_bootstrap_95ci": [
+          0.7225944062358246,
+          0.754112365126267
+        ]
+      },
+      "box": {
+        "source_images": 708,
+        "metric": "strict_iou",
+        "target_delta": 0.7952936370248538,
+        "paired_source_bootstrap_95ci": [
+          0.7829959257712418,
+          0.8076339138233635
+        ]
+      },
+      "none": {
+        "source_images": 430,
+        "metric": "strict_iou",
+        "target_delta": 0.77656778854356,
+        "paired_source_bootstrap_95ci": [
+          0.7544586603979191,
+          0.7970030861213633
+        ]
+      },
+      "mask": {
+        "source_images": 708,
+        "metric": "strict_iou",
+        "target_delta": 0.8447528267759812,
+        "paired_source_bootstrap_95ci": [
+          0.8366936976437889,
+          0.8523152398723569
+        ]
+      }
+    },
+    "pilot_test": {
+      "unknown": {
+        "source_images": 999,
+        "metric": "strict_iou",
+        "target_delta": 0.08222051104479729,
+        "paired_source_bootstrap_95ci": [
+          0.06817623304736357,
+          0.09649712887801842
+        ]
+      },
+      "point": {
+        "source_images": 699,
+        "metric": "strict_iou",
+        "target_delta": 0.10046582949598916,
+        "paired_source_bootstrap_95ci": [
+          0.08122023759740023,
+          0.11994116148226526
+        ]
+      },
+      "box": {
+        "source_images": 708,
+        "metric": "strict_iou",
+        "target_delta": 0.071465055755629,
+        "paired_source_bootstrap_95ci": [
+          0.05457099989424014,
+          0.08976196466950516
+        ]
+      },
+      "none": {
+        "source_images": 430,
+        "metric": "strict_iou",
+        "target_delta": 0.06730618835220291,
+        "paired_source_bootstrap_95ci": [
+          0.041432755561170986,
+          0.0932758429696215
+        ]
+      },
+      "mask": {
+        "source_images": 708,
+        "metric": "strict_iou",
+        "target_delta": 0.026627264948589722,
+        "paired_source_bootstrap_95ci": [
+          0.013964667773491705,
+          0.040538022333030714
+        ]
+      }
+    }
+  }
+}

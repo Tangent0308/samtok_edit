@@ -1,0 +1,36 @@
+{
+  "selected_step": 2000,
+  "metric": "dev unknown.strict_iou; exact ties choose earlier update",
+  "candidates": [
+    {
+      "step": 500,
+      "unknown_strict_iou": 0.7207943074590599,
+      "strict_rate": 0.97
+    },
+    {
+      "step": 1000,
+      "unknown_strict_iou": 0.7508445151827209,
+      "strict_rate": 0.996
+    },
+    {
+      "step": 1500,
+      "unknown_strict_iou": 0.7535256705396419,
+      "strict_rate": 0.996
+    },
+    {
+      "step": 2000,
+      "unknown_strict_iou": 0.7595372412686028,
+      "strict_rate": 0.998
+    },
+    {
+      "step": 2500,
+      "unknown_strict_iou": 0.7579828361738558,
+      "strict_rate": 0.998
+    },
+    {
+      "step": 2502,
+      "unknown_strict_iou": 0.7589631296496405,
+      "strict_rate": 0.999
+    }
+  ]
+}
