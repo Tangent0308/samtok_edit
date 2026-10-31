@@ -1,0 +1,9 @@
+# Pass1 formal run: Python 3.11, CUDA 12.8, H100. Independent of the older v4 lock.
+torch==2.8.0
+transformers==5.19.0
+peft==0.20.0
+accelerate==1.14.0
+safetensors==0.8.0
+pyarrow==26.0.0
+Pillow==12.3.0
+matplotlib==3.11.2

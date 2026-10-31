@@ -14,9 +14,11 @@ dependencies = ["numpy", "Pillow"]
 training = ["diffsynth==2.1.12", "mmengine==0.10.7", "pycocotools==2.0.11", "hydra-core", "opencv-python", "scipy"]
 data = ["pyarrow"]
 test = ["pytest"]
+pass1 = ["torch", "transformers>=5.19,<6", "peft>=0.20,<0.21", "safetensors", "pyarrow", "pycocotools", "scipy", "matplotlib"]
 
 [project.scripts]
 samtok-edit = "samtok_edit21.cli:main"
+samtok-pass1 = "samtok_edit21.pass1.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src", "samtok" = "third_party/samtok"}

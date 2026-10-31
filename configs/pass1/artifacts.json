@@ -1,0 +1,100 @@
+{
+  "upstream_commit": "6aa4e1087e73c0488d072eff3cb31f82ffcba043",
+  "branch": "pass1",
+  "formal_root": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/pass1_localization_lora_formal_20261030_0939",
+  "benchmark_root": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/pass1_localization_lora_formal_20261030_0939/benchmark_pass1_v2_20261031_0306",
+  "pilot_root": "/opt/tiger/tanyue/visualization_tmp/pass1_lora_pilot_20261030_0556",
+  "model": "/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok",
+  "selected_checkpoint": {
+    "step": 2000,
+    "requests_seen": 127829,
+    "batch_plan_sha256": "695254742e82260d33c1aeb03f63f90522ae94fecb7a26b485035db330559a46",
+    "adapter_sha256": "c857149a46cd9c14ab47cb1eede5d8ac2cc03d701a96217c1a4fd77565d75a5e",
+    "training_state_bytes": 1397614749,
+    "created_utc": "2026-10-30T18:39:03.415948+00:00"
+  },
+  "benchmark_preflight": {
+    "scope": "Pass1 localization diagnostic, fixed official dev20; not editing or test",
+    "benchmark_commit": "b6ea7e4e8705927ecb7df987c0ebb94d57b57e17",
+    "manifest_sha256": "818ce524a1d1f363dc8ea5caa7a887b2dd0355c17a5600d1cbd696cffcf263fb",
+    "selection_sha256": "6ab9a0f8a6e1fa92bde5111f5a17cd0fc9e3a9b00e57f29b8a25762ee139888d",
+    "cases": 20,
+    "unique_targets": 72,
+    "requests": 200,
+    "settings": [
+      "S1",
+      "S2-point",
+      "S2-box",
+      "S2-mask",
+      "S3-point",
+      "S3-box",
+      "S3-mask",
+      "S4-ref",
+      "S4-noref",
+      "S5"
+    ],
+    "K": {
+      "2": 3,
+      "4": 11,
+      "3": 4,
+      "5": 2
+    },
+    "per_setting": {
+      "S1": {
+        "ref_none": 72
+      },
+      "S2-point": {
+        "ref_point": 72
+      },
+      "S2-box": {
+        "ref_box": 72
+      },
+      "S2-mask": {
+        "ref_mask": 72
+      },
+      "S3-point": {
+        "noref_point": 72
+      },
+      "S3-box": {
+        "noref_box": 72
+      },
+      "S3-mask": {
+        "noref_mask": 72
+      },
+      "S4-ref": {
+        "ref_box": 26,
+        "ref_mask": 23,
+        "ref_point": 23
+      },
+      "S4-noref": {
+        "noref_box": 26,
+        "noref_mask": 23,
+        "noref_point": 23
+      },
+      "S5": {
+        "ref_point": 9,
+        "noref_point": 9,
+        "noref_box": 11,
+        "ref_none": 14,
+        "ref_mask": 10,
+        "ref_box": 8,
+        "noref_mask": 11
+      }
+    },
+    "train_requests": 159861,
+    "train_unique_images": 74881,
+    "train_overlap": [],
+    "point_original_outside_gt": 0,
+    "point_quantized_outside_gt": 0,
+    "adapter_tests": "200 requests, private fields rejected, same S4 geometry, ordered IDs enforced",
+    "adapter": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/pass1_localization_lora_formal_20261030_0939/runs/formal/step_2000",
+    "generation_seed": 42,
+    "do_sample": false,
+    "max_new_tokens": 512,
+    "max_pixels": 2097152,
+    "mask_policy": "encode only supplied mask; no point/box SAM frontend; score raw output before known-mask override",
+    "benchmark_public_sha256": "9b547304dfb8c2b67d41e7759d3c32d7b5c82a54f64bc037f3bc22e781951a3b",
+    "test_assets_opened": 0
+  },
+  "code_snapshot_note": "Reported GPU results use immutable formal code snapshot; this branch reorganizes that implementation and retains legacy entry points."
+}
