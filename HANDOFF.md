@@ -1,5 +1,7 @@
 # SAMTokEdit 交接说明
 
+> **2026-10-31：当前为独立 `pass1` 分支。** 最新工作是混合目标的第一轮定位 LoRA，已完成试训、正式训练和 IF-Bench dev20 定位评测。请先读 [Pass1 方法](docs/pass1_localization.md)、[实现](docs/pass1_implementation.md)、[结果与可视化](docs/pass1_experiments.md)、[复现](docs/pass1_reproduction.md)。本地工作区为 `/opt/tiger/tanyue/samtok_edit_pass1/`。下文保留 v4 编辑项目的历史交接；其中的旧“当前状态”不覆盖上述 Pass1 记录。Pass2 使用原 SAMTok TE 并关闭新 LoRA。
+
 写于 2026-10-28，原开发机回收之前。读者是没有上下文的新会话：先读完本文，再按 §2.2 的指引读文档。本文只给方向和入口，细节以文档和 NAS 上的 README 为准，两者不一致时以盘上的结果文件为准。
 
 **路径记号**

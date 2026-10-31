@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-31",
+  "branch": "pass1",
+  "working_directory": "/opt/tiger/tanyue/samtok_edit_pass1",
+  "cpu_tests": {
+    "passed": 105,
+    "failed": 0,
+    "warnings": 26,
+    "duration_seconds": 13.57
+  },
+  "cli_help_commands": 15,
+  "synced_doc_code_blocks": 15,
+  "missing_doc_paths": 0,
+  "checked_doc_paths": 387,
+  "formatter": "ruff 0.14.0",
+  "lint_rules": [
+    "E4",
+    "E7",
+    "E9",
+    "F",
+    "I"
+  ],
+  "structural_checks": {
+    "critical_functions_AST_identical": [
+      "grouped_loss",
+      "adapter_enabled",
+      "validate_request",
+      "parse_answer",
+      "rank_samples",
+      "lr_for",
+      "pack_batches",
+      "sample_point",
+      "sample_box",
+      "save_adapter",
+      "pass2_probe"
+    ],
+    "markdown_local_link_errors": [],
+    "embedded_image_links_checked": 7
+  },
+  "analysis_reproduction": {
+    "matches_frozen_analysis_exactly": true,
+    "new_output": "/opt/tiger/tanyue/visualization_tmp/pass1_branch_cleanup_20261031/analysis_smoke",
+    "original_inputs_modified": false
+  },
+  "test_environment": {
+    "attention_backend": "torch",
+    "wandb": "official 0.19.11 in isolated test_deps",
+    "WANDB_DISABLE_SERVICE": "false",
+    "original_system_packages_modified": false
+  },
+  "gpu_training_rerun": false,
+  "original_model_or_dataset_modified": false
+}

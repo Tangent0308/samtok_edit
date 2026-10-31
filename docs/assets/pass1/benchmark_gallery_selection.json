@@ -1,0 +1,353 @@
+{
+  "policy": "Illustrations only: improvement examples are selected by gain; S5 selected by four-modality coverage; limitations chosen from prior reported errors. No inference reruns or metric changes.",
+  "rows": [
+    {
+      "sheet": "01_improvements",
+      "request_id": "v2-sa_1046640--S1",
+      "case_id": "v2-sa_1046640",
+      "label": "U3",
+      "locator": "none",
+      "has_ref": true,
+      "instruction": "Remove the beige storage bin above the air conditioner.",
+      "selection_reason": "large improvement",
+      "before_iou": 0.0,
+      "after_iou": 0.9400013969406998,
+      "delta": 0.9400013969406998,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0139|><|mt_0286|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0241|><|mt_0476|><|mt_end|>",
+      "before_mask_sha256": "369ab800e2dde0622cb4b91658a37b2a8ca2506e08b36cfbe9f962ee1a3d2951",
+      "after_mask_sha256": "8e35a86c09cfbe648a62061c02d54d9331e286d1ec5e239970bf87dcb62ff594",
+      "crop_source_xyxy": [
+        30,
+        769,
+        551,
+        1329
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        0.2633424824641659,
+        1.0
+      ]
+    },
+    {
+      "sheet": "01_improvements",
+      "request_id": "v2-sa_3317928--S3-point",
+      "case_id": "v2-sa_3317928",
+      "label": "U3",
+      "locator": "point",
+      "has_ref": false,
+      "instruction": "Add a small ingredient label on the selected region.",
+      "selection_reason": "large improvement",
+      "before_iou": 0.0,
+      "after_iou": 0.9304969228421749,
+      "delta": 0.9304969228421749,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0058|><|mt_0309|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0121|><|mt_0433|><|mt_end|>",
+      "before_mask_sha256": "4047a06382e57a3654c06529e32e1157e8314cc3e1142f07e9b0566d262b8cbb",
+      "after_mask_sha256": "262393462f090c8ad7c52b6031457412820e7543d85080cb1198dbd394256ea2",
+      "crop_source_xyxy": [
+        1000,
+        998,
+        1503,
+        1500
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        0.9944597767434197,
+        1.0
+      ]
+    },
+    {
+      "sheet": "01_improvements",
+      "request_id": "v2-sa_5831338--S3-box",
+      "case_id": "v2-sa_5831338",
+      "label": "U3",
+      "locator": "box",
+      "has_ref": false,
+      "instruction": "Replace the selected region with a red high-top skate shoe.",
+      "selection_reason": "large improvement",
+      "before_iou": 0.0,
+      "after_iou": 0.870722433460076,
+      "delta": 0.870722433460076,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0091|><|mt_0496|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0143|><|mt_0353|><|mt_end|>",
+      "before_mask_sha256": "c25bc73ed1ba02c94ae34b086a3919c18226fc8e102dcc167efb24479f224395",
+      "after_mask_sha256": "db750209737de009fce231321e09201f4319477fd8b0bb948a3080c9ac93a143",
+      "crop_source_xyxy": [
+        368,
+        636,
+        794,
+        971
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "01_improvements",
+      "request_id": "v2-sa_5447626--S4-noref",
+      "case_id": "v2-sa_5447626",
+      "label": "U1",
+      "locator": "box",
+      "has_ref": false,
+      "instruction": "Replace the selected region with a white long-sleeved kurta.",
+      "selection_reason": "large improvement",
+      "before_iou": 0.0,
+      "after_iou": 0.9438795129245887,
+      "delta": 0.9438795129245887,
+      "before_valid_target": false,
+      "before_request_complete_compatible": false,
+      "before_span": null,
+      "after_span": "<|mt_start|><|mt_0222|><|mt_0404|><|mt_end|>",
+      "before_mask_sha256": "8a9d8b02d59d140df0a6772ef098de88016d85dd4019747dfe35397af11e6ea9",
+      "after_mask_sha256": "585f75ee5bb5921d65733b4110ef760fc2c7a51b321d4a5e5c4a11d6e3062adb",
+      "crop_source_xyxy": [
+        468,
+        708,
+        1361,
+        1647
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "02_joint_s5",
+      "request_id": "v2-sa_3042396--S5",
+      "case_id": "v2-sa_3042396",
+      "label": "U1",
+      "locator": "point",
+      "has_ref": false,
+      "instruction": "Replace the selected region with knee-length black running tights.",
+      "selection_reason": "same joint generation",
+      "before_iou": 0.9188294185598768,
+      "after_iou": 0.9188294185598768,
+      "delta": 0.0,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0228|><|mt_0437|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0228|><|mt_0437|><|mt_end|>",
+      "before_mask_sha256": "830d925263a38537b7d6ec9ac2ec497467aadae455e1f812a5bbfb4e53e9cc4c",
+      "after_mask_sha256": "830d925263a38537b7d6ec9ac2ec497467aadae455e1f812a5bbfb4e53e9cc4c",
+      "crop_source_xyxy": [
+        170,
+        802,
+        677,
+        1230
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "02_joint_s5",
+      "request_id": "v2-sa_3042396--S5",
+      "case_id": "v2-sa_3042396",
+      "label": "U2",
+      "locator": "box",
+      "has_ref": true,
+      "instruction": "Change the color of the white-and-orange shirt on the nearest runner on the green carpet to green.",
+      "selection_reason": "same joint generation",
+      "before_iou": 0.39444205628745543,
+      "after_iou": 0.5499571550985433,
+      "delta": 0.15551509881108783,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0163|><|mt_0462|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0119|><|mt_0368|><|mt_end|>",
+      "before_mask_sha256": "5b93acbd40ba0e093c4c585dee3ef62dda8ee0100419b56a658457193d6bcd92",
+      "after_mask_sha256": "1541f4b465040e2e0d49db5b5046dbfe69120805e459ef03d71aa9980832b441",
+      "crop_source_xyxy": [
+        1292,
+        506,
+        1651,
+        885
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        0.8418623730899395,
+        1.0
+      ]
+    },
+    {
+      "sheet": "02_joint_s5",
+      "request_id": "v2-sa_3042396--S5",
+      "case_id": "v2-sa_3042396",
+      "label": "U3",
+      "locator": "mask",
+      "has_ref": false,
+      "instruction": "Remove the selected region.",
+      "selection_reason": "same joint generation",
+      "before_iou": 0.864349140374079,
+      "after_iou": 0.864349140374079,
+      "delta": 0.0,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0148|><|mt_0402|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0148|><|mt_0402|><|mt_end|>",
+      "before_mask_sha256": "4864be57ff2a0d998ad6b8aa3d9013f2ef3cf5baa57599e5588a53425a6e06c0",
+      "after_mask_sha256": "4864be57ff2a0d998ad6b8aa3d9013f2ef3cf5baa57599e5588a53425a6e06c0",
+      "crop_source_xyxy": [
+        1694,
+        554,
+        1955,
+        873
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "02_joint_s5",
+      "request_id": "v2-sa_3042396--S5",
+      "case_id": "v2-sa_3042396",
+      "label": "U4",
+      "locator": "none",
+      "has_ref": true,
+      "instruction": "Add a small black arrow sticker on the cropped traffic cone at the bottom.",
+      "selection_reason": "same joint generation",
+      "before_iou": 0.9006787013713966,
+      "after_iou": 0.9006787013713966,
+      "delta": 0.0,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0221|><|mt_0408|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0221|><|mt_0408|><|mt_end|>",
+      "before_mask_sha256": "3d318f367d8640456ebb783640cfd502efd57eb42e4ba2ce119a7e6e89885612",
+      "after_mask_sha256": "3d318f367d8640456ebb783640cfd502efd57eb42e4ba2ce119a7e6e89885612",
+      "crop_source_xyxy": [
+        889,
+        996,
+        1415,
+        1500
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "03_limits",
+      "request_id": "v2-sa_5447626--S2-point",
+      "case_id": "v2-sa_5447626",
+      "label": "U4",
+      "locator": "point",
+      "has_ref": true,
+      "instruction": "Add a small price tag reading 50 on the large woven sack of white flowers in the foreground.",
+      "selection_reason": "regression",
+      "before_iou": 0.9577433422413678,
+      "after_iou": 0.21738604763631966,
+      "delta": -0.7403572946050482,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0087|><|mt_0457|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0220|><|mt_0493|><|mt_end|>",
+      "before_mask_sha256": "1802d56125ead63993aa2d1a44c8e93440970385154efa0a534118124d08795a",
+      "after_mask_sha256": "a0dc283f6f7631cbfd6b020057105afc7159bc5ec4035e85a70ba8662432df05",
+      "crop_source_xyxy": [
+        0,
+        925,
+        1500,
+        2263
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "03_limits",
+      "request_id": "v2-sa_455310--S2-box",
+      "case_id": "v2-sa_455310",
+      "label": "U1",
+      "locator": "box",
+      "has_ref": true,
+      "instruction": "Remove the unlit streetlamp in front of the building’s left half.",
+      "selection_reason": "small change",
+      "before_iou": 0.40057206815072754,
+      "after_iou": 0.42541845652495924,
+      "delta": 0.024846388374231698,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0212|><|mt_0342|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0157|><|mt_0378|><|mt_end|>",
+      "before_mask_sha256": "b4027ff4e52036ce0e9df3ac0a828ed2160764debfb33c9b38a110884d48df5a",
+      "after_mask_sha256": "35ffd00eb15d2eb6946b6741742f1abcd03a96ff84c91c29d064f432e6002716",
+      "crop_source_xyxy": [
+        347,
+        800,
+        818,
+        1500
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "03_limits",
+      "request_id": "v2-sa_6779549--S2-mask",
+      "case_id": "v2-sa_6779549",
+      "label": "U2",
+      "locator": "mask",
+      "has_ref": true,
+      "instruction": "Tint the four upper panes of the window below the curved cornice on the cream building at image-left dark green.",
+      "selection_reason": "exact mask copy; codec loss",
+      "before_iou": 0.30312124849939975,
+      "after_iou": 0.30312124849939975,
+      "delta": 0.0,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0033|><|mt_0299|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0033|><|mt_0299|><|mt_end|>",
+      "before_mask_sha256": "d4b77dd0db57098c15dd6425802c660343d33d44a8695e34fd18928d6040868c",
+      "after_mask_sha256": "d4b77dd0db57098c15dd6425802c660343d33d44a8695e34fd18928d6040868c",
+      "crop_source_xyxy": [
+        707,
+        396,
+        881,
+        585
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        1.0,
+        1.0
+      ]
+    },
+    {
+      "sheet": "03_limits",
+      "request_id": "v2-sa_455310--S1",
+      "case_id": "v2-sa_455310",
+      "label": "U2",
+      "locator": "none",
+      "has_ref": true,
+      "instruction": "Add a narrow planter of green foliage on the long top-floor balcony railing on the left.",
+      "selection_reason": "both still inaccurate",
+      "before_iou": 0.0,
+      "after_iou": 0.0,
+      "delta": 0.0,
+      "before_valid_target": true,
+      "before_request_complete_compatible": true,
+      "before_span": "<|mt_start|><|mt_0045|><|mt_0348|><|mt_end|>",
+      "after_span": "<|mt_start|><|mt_0197|><|mt_0358|><|mt_end|>",
+      "before_mask_sha256": "32f673c06604ff82df0d1d0c70fd3ac70511cf42f53bdc1ebca3f7d251f533ba",
+      "after_mask_sha256": "8ff6286980c37a8d7e96d6e633ece4fa8e2978835d071a26f316090b79657acf",
+      "crop_source_xyxy": [
+        295,
+        66,
+        915,
+        565
+      ],
+      "before_after_predicted_area_visible_in_crop": [
+        0.0,
+        0.18909997799457198
+      ]
+    }
+  ]
+}

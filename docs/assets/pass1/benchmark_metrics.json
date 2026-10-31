@@ -1,0 +1,1015 @@
+{
+  "scope": "Pass1 localization on fixed dev20, not editing scores",
+  "settings": {
+    "base": {
+      "S1": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.5217252515746611,
+        "all_raw_iou": 0.5217252515746611,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.5217252515746611,
+        "unknown_raw_iou": 0.5217252515746611,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 2,
+        "invalid_target_spans": 0
+      },
+      "S2-point": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.5965658692881459,
+        "all_raw_iou": 0.5965658692881459,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.5965658692881459,
+        "unknown_raw_iou": 0.5965658692881459,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": 0.9166666666666666,
+        "point_hit_strict": 0.0,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S2-box": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.5521910327357408,
+        "all_raw_iou": 0.5521910327357408,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.5521910327357408,
+        "unknown_raw_iou": 0.5521910327357408,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 1,
+        "invalid_target_spans": 0
+      },
+      "S2-mask": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 0,
+        "known_mask_targets": 72,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.7444391858538738,
+        "all_raw_iou": 0.7444391858538738,
+        "unknown_strict_iou": null,
+        "unknown_compatible_iou": null,
+        "unknown_raw_iou": null,
+        "unknown_strict_iou50": null,
+        "unknown_strict_iou75": null,
+        "unknown_reference_iou": null,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 1.0,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": null,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S3-point": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.48363499722519854,
+        "all_raw_iou": 0.48363499722519854,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.48363499722519854,
+        "unknown_raw_iou": 0.48363499722519854,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": 0.7222222222222222,
+        "point_hit_strict": 0.0,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 2,
+        "invalid_target_spans": 0
+      },
+      "S3-box": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.5500546057234273,
+        "all_raw_iou": 0.5500546057234273,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.5500546057234273,
+        "unknown_raw_iou": 0.5500546057234273,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S3-mask": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 0,
+        "known_mask_targets": 72,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.7441619582136969,
+        "all_raw_iou": 0.7441619582136969,
+        "unknown_strict_iou": null,
+        "unknown_compatible_iou": null,
+        "unknown_raw_iou": null,
+        "unknown_strict_iou50": null,
+        "unknown_strict_iou75": null,
+        "unknown_reference_iou": null,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 0.9861111111111112,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": null,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S4-ref": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 49,
+        "known_mask_targets": 23,
+        "strict_format": 0.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.62367294874098,
+        "all_raw_iou": 0.62367294874098,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.569824120667667,
+        "unknown_raw_iou": 0.569824120667667,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7547186049373469,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 0.9565217391304348,
+        "point_hit_raw": 0.8260869565217391,
+        "point_hit_strict": 0.0,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 1,
+        "invalid_target_spans": 0
+      },
+      "S4-noref": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 49,
+        "known_mask_targets": 23,
+        "strict_format": 0.0,
+        "compatible_format": 0.95,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.5313593838447892,
+        "all_raw_iou": 0.557320369428119,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.460583931114958,
+        "unknown_raw_iou": 0.48012165624328024,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7547186049373469,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 0.9565217391304348,
+        "point_hit_raw": 0.6956521739130435,
+        "point_hit_strict": 0.0,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 1
+      },
+      "S5": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 51,
+        "known_mask_targets": 21,
+        "strict_format": 0.0,
+        "compatible_format": 0.9,
+        "all_strict_iou": 0.0,
+        "all_compatible_iou": 0.420397687048389,
+        "all_raw_iou": 0.4730942021802773,
+        "unknown_strict_iou": 0.0,
+        "unknown_compatible_iou": 0.40378623838735467,
+        "unknown_raw_iou": 0.4145343190382402,
+        "unknown_strict_iou50": 0.0,
+        "unknown_strict_iou75": 0.0,
+        "unknown_reference_iou": 0.7453493624280921,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 0.8095238095238095,
+        "point_hit_raw": 0.4444444444444444,
+        "point_hit_strict": 0.0,
+        "all_targets_iou50": 0.0,
+        "unknown_all_targets_iou50": 0.0,
+        "possible_id_swaps": 4,
+        "invalid_target_spans": 2
+      }
+    },
+    "step2000": {
+      "S1": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.682363283304811,
+        "all_compatible_iou": 0.682363283304811,
+        "all_raw_iou": 0.682363283304811,
+        "unknown_strict_iou": 0.682363283304811,
+        "unknown_compatible_iou": 0.682363283304811,
+        "unknown_raw_iou": 0.682363283304811,
+        "unknown_strict_iou50": 0.8055555555555556,
+        "unknown_strict_iou75": 0.5416666666666666,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.45,
+        "unknown_all_targets_iou50": 0.45,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S2-point": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.70710339068668,
+        "all_compatible_iou": 0.70710339068668,
+        "all_raw_iou": 0.70710339068668,
+        "unknown_strict_iou": 0.70710339068668,
+        "unknown_compatible_iou": 0.70710339068668,
+        "unknown_raw_iou": 0.70710339068668,
+        "unknown_strict_iou50": 0.8333333333333334,
+        "unknown_strict_iou75": 0.5694444444444444,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": 0.9722222222222222,
+        "point_hit_strict": 0.9722222222222222,
+        "all_targets_iou50": 0.45,
+        "unknown_all_targets_iou50": 0.45,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S2-box": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.716638302040236,
+        "all_compatible_iou": 0.716638302040236,
+        "all_raw_iou": 0.716638302040236,
+        "unknown_strict_iou": 0.716638302040236,
+        "unknown_compatible_iou": 0.716638302040236,
+        "unknown_raw_iou": 0.716638302040236,
+        "unknown_strict_iou50": 0.8472222222222222,
+        "unknown_strict_iou75": 0.5972222222222222,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.55,
+        "unknown_all_targets_iou50": 0.55,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S2-mask": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 0,
+        "known_mask_targets": 72,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.7444391858538738,
+        "all_compatible_iou": 0.7444391858538738,
+        "all_raw_iou": 0.7444391858538738,
+        "unknown_strict_iou": null,
+        "unknown_compatible_iou": null,
+        "unknown_raw_iou": null,
+        "unknown_strict_iou50": null,
+        "unknown_strict_iou75": null,
+        "unknown_reference_iou": null,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 1.0,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.6,
+        "unknown_all_targets_iou50": null,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S3-point": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.6949292862798488,
+        "all_compatible_iou": 0.6949292862798488,
+        "all_raw_iou": 0.6949292862798488,
+        "unknown_strict_iou": 0.6949292862798488,
+        "unknown_compatible_iou": 0.6949292862798488,
+        "unknown_raw_iou": 0.6949292862798488,
+        "unknown_strict_iou50": 0.7916666666666666,
+        "unknown_strict_iou75": 0.5833333333333334,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": 0.9861111111111112,
+        "point_hit_strict": 0.9861111111111112,
+        "all_targets_iou50": 0.35,
+        "unknown_all_targets_iou50": 0.35,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S3-box": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 72,
+        "known_mask_targets": 0,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.7127436688618268,
+        "all_compatible_iou": 0.7127436688618268,
+        "all_raw_iou": 0.7127436688618268,
+        "unknown_strict_iou": 0.7127436688618268,
+        "unknown_compatible_iou": 0.7127436688618268,
+        "unknown_raw_iou": 0.7127436688618268,
+        "unknown_strict_iou50": 0.8333333333333334,
+        "unknown_strict_iou75": 0.5833333333333334,
+        "unknown_reference_iou": 0.7444391858538738,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": null,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.55,
+        "unknown_all_targets_iou50": 0.55,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S3-mask": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 0,
+        "known_mask_targets": 72,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.7444391858538738,
+        "all_compatible_iou": 0.7444391858538738,
+        "all_raw_iou": 0.7444391858538738,
+        "unknown_strict_iou": null,
+        "unknown_compatible_iou": null,
+        "unknown_raw_iou": null,
+        "unknown_strict_iou50": null,
+        "unknown_strict_iou75": null,
+        "unknown_reference_iou": null,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 1.0,
+        "point_hit_raw": null,
+        "point_hit_strict": null,
+        "all_targets_iou50": 0.6,
+        "unknown_all_targets_iou50": null,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S4-ref": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 49,
+        "known_mask_targets": 23,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.7225547503294911,
+        "all_compatible_iou": 0.7225547503294911,
+        "all_raw_iou": 0.7225547503294911,
+        "unknown_strict_iou": 0.722561883350499,
+        "unknown_compatible_iou": 0.722561883350499,
+        "unknown_raw_iou": 0.722561883350499,
+        "unknown_strict_iou50": 0.8979591836734694,
+        "unknown_strict_iou75": 0.5714285714285714,
+        "unknown_reference_iou": 0.7547186049373469,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 1.0,
+        "point_hit_raw": 1.0,
+        "point_hit_strict": 1.0,
+        "all_targets_iou50": 0.6,
+        "unknown_all_targets_iou50": 0.75,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S4-noref": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 49,
+        "known_mask_targets": 23,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.7281957472013558,
+        "all_compatible_iou": 0.7281957472013558,
+        "all_raw_iou": 0.7281957472013558,
+        "unknown_strict_iou": 0.7308506950805859,
+        "unknown_compatible_iou": 0.7308506950805859,
+        "unknown_raw_iou": 0.7308506950805859,
+        "unknown_strict_iou50": 0.8571428571428571,
+        "unknown_strict_iou75": 0.6122448979591837,
+        "unknown_reference_iou": 0.7547186049373469,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 1.0,
+        "point_hit_raw": 0.9565217391304348,
+        "point_hit_strict": 0.9565217391304348,
+        "all_targets_iou50": 0.6,
+        "unknown_all_targets_iou50": 0.75,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      },
+      "S5": {
+        "requests": 20,
+        "targets": 72,
+        "unknown_targets": 51,
+        "known_mask_targets": 21,
+        "strict_format": 1.0,
+        "compatible_format": 1.0,
+        "all_strict_iou": 0.7045200642737696,
+        "all_compatible_iou": 0.7045200642737696,
+        "all_raw_iou": 0.7045200642737696,
+        "unknown_strict_iou": 0.6889929554914744,
+        "unknown_compatible_iou": 0.6889929554914744,
+        "unknown_raw_iou": 0.6889929554914744,
+        "unknown_strict_iou50": 0.803921568627451,
+        "unknown_strict_iou75": 0.5294117647058824,
+        "unknown_reference_iou": 0.7453493624280921,
+        "all_reference_iou": 0.7444391858538738,
+        "known_mask_exact_copy": 1.0,
+        "point_hit_raw": 1.0,
+        "point_hit_strict": 1.0,
+        "all_targets_iou50": 0.45,
+        "unknown_all_targets_iou50": 0.5,
+        "possible_id_swaps": 0,
+        "invalid_target_spans": 0
+      }
+    }
+  },
+  "overall_repeated_requests": {
+    "base": {
+      "requests": 200,
+      "targets": 720,
+      "unknown_targets": 509,
+      "known_mask_targets": 211,
+      "strict_format": 0.0,
+      "compatible_format": 0.985,
+      "all_strict_iou": 0.0,
+      "all_compatible_iou": 0.5768202920248902,
+      "all_raw_iou": 0.584686042096412,
+      "unknown_strict_iou": 0.0,
+      "unknown_compatible_iou": 0.5221678962013757,
+      "unknown_raw_iou": 0.5251256577818922,
+      "unknown_strict_iou50": 0.0,
+      "unknown_strict_iou75": 0.0,
+      "unknown_reference_iou": 0.7465095239196212,
+      "all_reference_iou": 0.7444391858538738,
+      "known_mask_exact_copy": 0.966824644549763,
+      "point_hit_raw": 0.7740384615384616,
+      "point_hit_strict": 0.0,
+      "all_targets_iou50": 0.0,
+      "unknown_all_targets_iou50": 0.0,
+      "possible_id_swaps": 10,
+      "invalid_target_spans": 3
+    },
+    "step2000": {
+      "requests": 200,
+      "targets": 720,
+      "unknown_targets": 509,
+      "known_mask_targets": 211,
+      "strict_format": 1.0,
+      "compatible_format": 1.0,
+      "all_strict_iou": 0.7157926864685767,
+      "all_compatible_iou": 0.7157926864685767,
+      "all_raw_iou": 0.7157926864685767,
+      "unknown_strict_iou": 0.7059879530799084,
+      "unknown_compatible_iou": 0.7059879530799084,
+      "unknown_raw_iou": 0.7059879530799084,
+      "unknown_strict_iou50": 0.831041257367387,
+      "unknown_strict_iou75": 0.5736738703339882,
+      "unknown_reference_iou": 0.7465095239196212,
+      "all_reference_iou": 0.7444391858538738,
+      "known_mask_exact_copy": 1.0,
+      "point_hit_raw": 0.9807692307692307,
+      "point_hit_strict": 0.9807692307692307,
+      "all_targets_iou50": 0.52,
+      "unknown_all_targets_iou50": 0.54375,
+      "possible_id_swaps": 0,
+      "invalid_target_spans": 0
+    }
+  },
+  "paired_delta_lora_strict_minus_base_compatible": {
+    "S1": {
+      "delta": 0.16063803173015004,
+      "ci95": [
+        0.08903561427949615,
+        0.24201846646155356
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S2-point": {
+      "delta": 0.11053752139853418,
+      "ci95": [
+        0.055107346215131976,
+        0.17407835812070094
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S2-box": {
+      "delta": 0.16444726930449527,
+      "ci95": [
+        0.11679675752780042,
+        0.21358331252927631
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S2-mask": null,
+    "S3-point": {
+      "delta": 0.21129428905465034,
+      "ci95": [
+        0.12906057673200494,
+        0.2984228360451201
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S3-box": {
+      "delta": 0.16268906313839948,
+      "ci95": [
+        0.10842799563130626,
+        0.22262096424704328
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S3-mask": null,
+    "S4-ref": {
+      "delta": 0.15273776268283204,
+      "ci95": [
+        0.08422581861144644,
+        0.22551791949528643
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S4-noref": {
+      "delta": 0.27026676396562793,
+      "ci95": [
+        0.18875507163321384,
+        0.3725494418863278
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S5": {
+      "delta": 0.2852067171041199,
+      "ci95": [
+        0.17014775659833417,
+        0.40741181828444023
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    }
+  },
+  "paired_ref_minus_noref": {
+    "S2-point": {
+      "delta": 0.012174104406831246,
+      "ci95": [
+        -0.006505957104488119,
+        0.034625867209360214
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S2-box": {
+      "delta": 0.003894633178409302,
+      "ci95": [
+        -0.006894894294786556,
+        0.01591287923721187
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    },
+    "S4-ref": {
+      "delta": -0.008288811730086894,
+      "ci95": [
+        -0.027608804236256508,
+        0.01076312113808064
+      ],
+      "resampling_unit": "source image",
+      "images": 20,
+      "replicates": 5000
+    }
+  },
+  "diagnostics": {
+    "base": {
+      "mode": {
+        "noref_box": {
+          "n": 109,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5312355070666139,
+          "raw_iou": 0.5400185211151258,
+          "reference_iou": 0.7463269881592052
+        },
+        "noref_point": {
+          "n": 104,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.4496964989478091,
+          "raw_iou": 0.4496964989478091,
+          "reference_iou": 0.7351362806437299
+        },
+        "ref_box": {
+          "n": 106,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5326005051827194,
+          "raw_iou": 0.5346973176213224,
+          "reference_iou": 0.7505876844969294
+        },
+        "ref_none": {
+          "n": 86,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5164226916098695,
+          "raw_iou": 0.5202121101529305,
+          "reference_iou": 0.7571320202865208
+        },
+        "ref_point": {
+          "n": 104,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5792533459408662,
+          "raw_iou": 0.5792533459408662,
+          "reference_iou": 0.7451335045910638
+        }
+      },
+      "operation": {
+        "add": {
+          "n": 143,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.4306485102105037,
+          "raw_iou": 0.43734325518454426,
+          "reference_iou": 0.6777246445513283
+        },
+        "attribute": {
+          "n": 125,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5323672282346174,
+          "raw_iou": 0.5323672282346174,
+          "reference_iou": 0.779259991450754
+        },
+        "remove": {
+          "n": 97,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5413954134251548,
+          "raw_iou": 0.5436867754714633,
+          "reference_iou": 0.720361378664694
+        },
+        "replace": {
+          "n": 144,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5912462748252153,
+          "raw_iou": 0.5935093997884322,
+          "reference_iou": 0.804001186405748
+        }
+      },
+      "K": {
+        "2": {
+          "n": 44,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.553674315715876,
+          "raw_iou": 0.553674315715876,
+          "reference_iou": 0.8022735588141212
+        },
+        "3": {
+          "n": 88,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.44191264352389337,
+          "raw_iou": 0.44191264352389337,
+          "reference_iou": 0.675392381539316
+        },
+        "4": {
+          "n": 309,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.5492607688110774,
+          "raw_iou": 0.5541329391815726,
+          "reference_iou": 0.7540681159191865
+        },
+        "5": {
+          "n": 68,
+          "strict_iou": 0.0,
+          "compatible_iou": 0.48252792768053043,
+          "raw_iou": 0.48252792768053043,
+          "reference_iou": 0.7681137307761391
+        }
+      },
+      "area": {
+        "below_0.1%": {
+          "n": 32,
+          "strict_iou": 0.0,
+          "reference_iou": 0.4121655815631373
+        },
+        "0.1%-1%": {
+          "n": 328,
+          "strict_iou": 0.0,
+          "reference_iou": 0.7034558129395155
+        },
+        "1%-5%": {
+          "n": 141,
+          "strict_iou": 0.0,
+          "reference_iou": 0.9105574161913104
+        },
+        "above_5%": {
+          "n": 8,
+          "strict_iou": 0.0,
+          "reference_iou": 0.9577433422413678
+        }
+      }
+    },
+    "step2000": {
+      "mode": {
+        "noref_box": {
+          "n": 109,
+          "strict_iou": 0.7180757776263779,
+          "compatible_iou": 0.7180757776263779,
+          "raw_iou": 0.7180757776263779,
+          "reference_iou": 0.7463269881592052
+        },
+        "noref_point": {
+          "n": 104,
+          "strict_iou": 0.6821756094715818,
+          "compatible_iou": 0.6821756094715818,
+          "raw_iou": 0.6821756094715818,
+          "reference_iou": 0.7351362806437299
+        },
+        "ref_box": {
+          "n": 106,
+          "strict_iou": 0.7174819912748635,
+          "compatible_iou": 0.7174819912748635,
+          "raw_iou": 0.7174819912748635,
+          "reference_iou": 0.7505876844969294
+        },
+        "ref_none": {
+          "n": 86,
+          "strict_iou": 0.6980332013665467,
+          "compatible_iou": 0.6980332013665467,
+          "raw_iou": 0.6980332013665467,
+          "reference_iou": 0.7571320202865208
+        },
+        "ref_point": {
+          "n": 104,
+          "strict_iou": 0.7119942171028373,
+          "compatible_iou": 0.7119942171028373,
+          "raw_iou": 0.7119942171028373,
+          "reference_iou": 0.7451335045910638
+        }
+      },
+      "operation": {
+        "add": {
+          "n": 143,
+          "strict_iou": 0.6155081595730352,
+          "compatible_iou": 0.6155081595730352,
+          "raw_iou": 0.6155081595730352,
+          "reference_iou": 0.6777246445513283
+        },
+        "attribute": {
+          "n": 125,
+          "strict_iou": 0.7360191460940246,
+          "compatible_iou": 0.7360191460940246,
+          "raw_iou": 0.7360191460940246,
+          "reference_iou": 0.779259991450754
+        },
+        "remove": {
+          "n": 97,
+          "strict_iou": 0.6813713646243287,
+          "compatible_iou": 0.6813713646243287,
+          "raw_iou": 0.6813713646243287,
+          "reference_iou": 0.720361378664694
+        },
+        "replace": {
+          "n": 144,
+          "strict_iou": 0.7863526782528915,
+          "compatible_iou": 0.7863526782528915,
+          "raw_iou": 0.7863526782528915,
+          "reference_iou": 0.804001186405748
+        }
+      },
+      "K": {
+        "2": {
+          "n": 44,
+          "strict_iou": 0.7489224321893754,
+          "compatible_iou": 0.7489224321893754,
+          "raw_iou": 0.7489224321893754,
+          "reference_iou": 0.8022735588141212
+        },
+        "3": {
+          "n": 88,
+          "strict_iou": 0.639748431231846,
+          "compatible_iou": 0.639748431231846,
+          "raw_iou": 0.639748431231846,
+          "reference_iou": 0.675392381539316
+        },
+        "4": {
+          "n": 309,
+          "strict_iou": 0.7253620812369607,
+          "compatible_iou": 0.7253620812369607,
+          "raw_iou": 0.7253620812369607,
+          "reference_iou": 0.7540681159191865
+        },
+        "5": {
+          "n": 68,
+          "strict_iou": 0.6758902360399638,
+          "compatible_iou": 0.6758902360399638,
+          "raw_iou": 0.6758902360399638,
+          "reference_iou": 0.7681137307761391
+        }
+      },
+      "area": {
+        "below_0.1%": {
+          "n": 32,
+          "strict_iou": 0.3268159666617256,
+          "reference_iou": 0.4121655815631373
+        },
+        "0.1%-1%": {
+          "n": 328,
+          "strict_iou": 0.6672415923039399,
+          "reference_iou": 0.7034558129395155
+        },
+        "1%-5%": {
+          "n": 141,
+          "strict_iou": 0.8809667598019235,
+          "reference_iou": 0.9105574161913104
+        },
+        "above_5%": {
+          "n": 8,
+          "strict_iou": 0.7272752220918315,
+          "reference_iou": 0.9577433422413678
+        }
+      }
+    }
+  },
+  "checks": {
+    "base": {
+      "canonical_cache_min_iou": 1.0,
+      "canonical_cache_all_pixels_equal": true,
+      "strict_errors": {
+        "invalid_json": 200
+      },
+      "max_generated_tokens": 102,
+      "token_limit_hits": 0,
+      "max_input_tokens": 2637,
+      "total_generation_seconds": 484.2567021846771
+    },
+    "step2000": {
+      "canonical_cache_min_iou": 1.0,
+      "canonical_cache_all_pixels_equal": true,
+      "strict_errors": {},
+      "max_generated_tokens": 79,
+      "token_limit_hits": 0,
+      "max_input_tokens": 2637,
+      "total_generation_seconds": 625.8363482952118
+    }
+  },
+  "codec_reference_unique72": {
+    "targets": 72,
+    "mean_iou": 0.7444391858538738,
+    "below_iou50": 8,
+    "below_iou75": 26,
+    "worst": [
+      {
+        "case_id": "v2-sa_5831338",
+        "label": "U4",
+        "roundtrip": 0.017304296645085343,
+        "area": 0.0019842962962962965,
+        "ref": "the dark banner behind the rightmost spectator"
+      },
+      {
+        "case_id": "v2-sa_5005220",
+        "label": "U4",
+        "roundtrip": 0.10046607975142413,
+        "area": 0.0003019259259259259,
+        "ref": "the black sedan directly left of the black van"
+      },
+      {
+        "case_id": "v2-sa_1110518",
+        "label": "U3",
+        "roundtrip": 0.213068669527897,
+        "area": 0.003199645075421473,
+        "ref": "the black blazer of the woman in a pink shirt on the right"
+      },
+      {
+        "case_id": "v2-sa_8415518",
+        "label": "U1",
+        "roundtrip": 0.2365905870292761,
+        "area": 0.0026451612903225807,
+        "ref": "the long shirt of the front-facing person in the middle"
+      },
+      {
+        "case_id": "v2-sa_11136335",
+        "label": "U4",
+        "roundtrip": 0.2446561338289963,
+        "area": 0.00043644571157044426,
+        "ref": "the five-lantern streetlamp left of the statue"
+      },
+      {
+        "case_id": "v2-sa_6779549",
+        "label": "U2",
+        "roundtrip": 0.30312124849939975,
+        "area": 0.001221925925925926,
+        "ref": "the four upper panes of the window below the curved cornice on the cream building at image-left"
+      },
+      {
+        "case_id": "v2-sa_11071167",
+        "label": "U2",
+        "roundtrip": 0.3196364691095427,
+        "area": 0.0033957307060755336,
+        "ref": "the pannier on the image-left side of the resting camel"
+      },
+      {
+        "case_id": "v2-sa_455310",
+        "label": "U1",
+        "roundtrip": 0.46607669616519176,
+        "area": 0.0013466312056737589,
+        "ref": "the unlit streetlamp in front of the building’s left half"
+      }
+    ]
+  },
+  "unknown_error_reference_comparison": {
+    "unknown_outputs": 509,
+    "prediction_below_iou50": 86,
+    "prediction_and_reference_below_iou50": 52,
+    "prediction_below50_reference_atleast50": 34,
+    "prediction_below50_reference_atleast70": 18,
+    "prediction_exceeds_reference_by5points": 17
+  }
+}

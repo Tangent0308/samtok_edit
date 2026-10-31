@@ -1,0 +1,32 @@
+{
+  "training_and_dev.png": {
+    "source": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/pass1_localization_lora_formal_20261030_0939/reports/previews/training_and_dev.png",
+    "sha256": "c5d214847ae62b6fdc63d2671b9206e2b9f54e0e74b573199fa1be8aa0bf65e3",
+    "bytes": 157881
+  },
+  "benchmark_improvements.jpg": {
+    "source": "/opt/tiger/tanyue/visualization_tmp/pass1_benchmark_before_after_20261031/01_improvements_preview.jpg",
+    "sha256": "ccbacc5f0ddc214a8a8e11c4743fd8f8e763a3983ea320ce0607c9def0df90d1",
+    "bytes": 868680
+  },
+  "benchmark_joint_s5.jpg": {
+    "source": "/opt/tiger/tanyue/visualization_tmp/pass1_benchmark_before_after_20261031/02_joint_s5_preview.jpg",
+    "sha256": "caadc24b8d8f69103e7f757178690ea9bb829c2ff463372095d91732ddd926fa",
+    "bytes": 894071
+  },
+  "benchmark_limits.jpg": {
+    "source": "/opt/tiger/tanyue/visualization_tmp/pass1_benchmark_before_after_20261031/03_limits_preview.jpg",
+    "sha256": "59e3cf9d24ebb83be0e422b88cc4e5182310f69e237ebc6bf85de2ac8236df4b",
+    "bytes": 804299
+  },
+  "benchmark_settings.png": {
+    "source": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/pass1_localization_lora_formal_20261030_0939/benchmark_pass1_v2_20261031_0306/reports/visuals/setting_scores.png",
+    "sha256": "3d21b66d7aebd144749ef397729745aeb25fef6e1277fec08f31537fe75f2d66",
+    "bytes": 84842
+  },
+  "pilot_metrics.png": {
+    "source": "/opt/tiger/tanyue/visualization_tmp/pass1_lora_pilot_20261030_0556/previews/test_metrics.png",
+    "sha256": "3264663c1ba17c6954f74284f8b7246e1b9813fe67090b9513af3af943ffd5b1",
+    "bytes": 89050
+  }
+}

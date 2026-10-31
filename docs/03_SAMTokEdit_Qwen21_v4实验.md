@@ -1239,7 +1239,7 @@ v4 的代码核对写在[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，本文�
 | `V3/analysis/c3_eval_20261023/` | C3 决策子集与方案 A：选例、各系统输出、判分、`report.txt`、`report_a.txt`、`status.txt`、对比图 `sheets/c3_cases_1.jpg` 到 `_5.jpg`（§5） |
 | `V3/analysis/opsd_plan_20261025/README.md` | OPSD 的调研与方案（§6） |
 | `V3/analysis/opsd_teacher_20261025/` | OPSD 老师上限测试：配置、输出、判分、`report.txt`、对比图 `sheets/teacher_cases_1.jpg` 到 `_5.jpg`（§6） |
-| `V3/analysis/v4_code_checks_20261026/` | v4 开发时的代码核对：v3 与 v4 等价、OPSD 正确性检查与 8 卡冒烟、合板重建核对、文档统计脚本（原 `/tmp/claude_v4/`，10-28 搬来） |
+| `V3/analysis/v4_code_checks_20261026/` | v4 开发时的代码核对：v3 与 v4 等价、OPSD 正确性检查与 8 卡冒烟、合板重建核对、文档统计脚本（原 `/tmp/claude_v4/`，10-28 搬来） ；旧路径，本机不存在 |
 | `V3/analysis/opsd_pilot_20261026/` | OPSD 试训：说明 `README.md`、配置、生成、判分、`report.txt`、`report_s2.txt`、诊断 `diagnosis/`、图 `figs/`、对比图 `sheets/`（§7） |
 | `V3/runs/opsd_p1_local8_001/`、`V3/runs/opsd_p0_local8_001/` | 试训的两次训练：权重 P1 `adapter_250/500`、P0 `adapter_500`、开发集评测、`analysis_*.txt` |
 | `V3/analysis/opsd_pilot2_20261028/` | OPSD 第二次试训：说明 `README.md`（含结果）、取行配置、梯度标定、多机运行脚本（`entry.sh`、`worker.sh`、`tasks.sh`、`judge_session.py`）、判定 `criteria.py` 与结果 `criteria.txt`、决策子集分析 `report.txt`、各系统输出与判分、进度 `status.txt`（§7.2） |
@@ -1251,7 +1251,7 @@ v4 的代码核对写在[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，本文�
 | `experiments2/SAMTokEdit/cleanup_20261029/` | 10-29 经用户同意的清理：删掉的文件清单（`*.tsv.gz`）、日志、删除脚本。包括各决策子集评测判分输入里的裁图 `judge_inputs/*/details/`（判分结果、`judge_jobs.jsonl` 都在，要重判时用各目录的 `prepare_judge.py` 重新生成）、7 个 `resume.pt`、没用到的中间权重、合板 10-26 版 |
 | `docs/assets/v4/` | 本文的 18 张图（缩小、节选版） |
 
-- 运行环境：按仓库 README 用 `requirements.txt`（验证过的版本见 `constraints-tested.txt`）建环境，在仓库根目录设 `PYTHONPATH=src:third_party/diffsynth:third_party`。原来的本机环境 `/tmp/samtok21-fixes-dUnbt5/venv` 已随机器回收，依赖清单和判分环境的记录在 `experiments2/SAMTokEdit/handoff_20261028/envs/`。
+- 运行环境：按仓库 README 用 `requirements.txt`（验证过的版本见 `constraints-tested.txt`）建环境，在仓库根目录设 `PYTHONPATH=src:third_party/diffsynth:third_party`。原来的本机环境 `/tmp/samtok21-fixes-dUnbt5/venv` 已随机器回收，依赖清单和判分环境的记录在 `experiments2/SAMTokEdit/handoff_20261028/envs/`。（旧路径，本机不存在。）
 - v4 开发时的代码核对（v3 与 v4 等价、OPSD 正确性、合板重建核对等）的脚本和结果：`V3/analysis/v4_code_checks_20261026/`（见其 `README.md`）。
 - 交接说明：仓库根目录的 `HANDOFF.md`（NAS 上的副本 `experiments2/SAMTokEdit/handoff_20261028/HANDOFF.md`）。
 - 2026-10-19 经用户确认，删除过没有完整评测过的中间权重、失败与入口验证运行的权重和审阅草图（约 8.9 GB）；快速评测结果仍在各 run 目录。

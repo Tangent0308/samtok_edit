@@ -133,7 +133,7 @@ SA-1B 单目标 v2.1 生产（10-28～10-29）──sa1b-groups --set single50k�
 - **漂移：**目标图来自其他编辑模型，只有一部分做过贴回。token 缓存记了区域外的改动 `out_diff`、`out_share8`；任一超阈值（> 1.0 或 > 0.02）的记录标 `loss_region: local`，训练时只在编辑附近算损失。
 
 **D10、D11（extedit 管线，v3 文档 07）**
-- **代码：**labeling 仓库 `Tangent0308/sam3-crispedit` 的分支 `extedit-protocol2-labeling`，说明 `extedit-protocol2-labeling:docs/EXTEDIT_PROTOCOL2.md`（原本机 clone `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/`，10-28 随机器回收）。
+- **代码：**labeling 仓库 `Tangent0308/sam3-crispedit` 的分支 `extedit-protocol2-labeling`，说明 `extedit-protocol2-labeling:docs/EXTEDIT_PROTOCOL2.md`（原本机 clone `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/`，10-28 随机器回收）。（旧路径，本机不存在。）
 - **流程：**取数 → 像素预检（对齐、配准、改动图）→ Qwen3.8-27B 规划（一次调用给出判定、1–5 个单元的槽位和 S 的框）→ SAM3 分割 + SAMTok token（往返 < 0.5 的丢掉）→ 区域把关（含替换、改属性没做完和添加改坏锚点的规则）+ 按支持区域贴回 → 27B 两票审核 → 文字复查（改字）、自然度复查（CrispEdit 添加）→ 导出。
 - **取数时排除：**旧流程用过的行、与 benchmark 2.6.0 源图相同或近重复的行、同一源图超过 3 条的行。
 - **与旧流程比：**27B 从每条 5–6 次降到 2 次，SAM3 只跑一次，去掉了场景难度筛；收下率第一批 38.3%、第二批 27.7%，旧流程端到端约 1.5%–2.5%。
@@ -775,7 +775,7 @@ C1–C3 的行文件（每次更新 32 行 = 8 卡 × 累积 4 步）：
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/extedit_protocol2_batch2_local8_20261022/` | D11 的生产运行（本机部分） |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/extedit_protocol2_batch2_4n_20261023/` | D11 的生产运行（四机部分） |
 | `experiments2/SAMTokEdit/data_pipeline/02_production_runs/sa1b_samtok_edit_50k_20261014/sources/` | SA-1B dense 标注，D2 的来源 |
-| `Tangent0308/sam3-crispedit` 的分支 `extedit-protocol2-labeling` | extedit 打标与文字复查的代码（原本机 clone `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/`，已随机器回收） |
+| `Tangent0308/sam3-crispedit` 的分支 `extedit-protocol2-labeling` | extedit 打标与文字复查的代码（原本机 clone `/opt/tiger/tanyue/sam3-extedit-protocol2-labeling/`，已随机器回收） ；旧路径，本机不存在 |
 | `V3/data/round2_20261016/` | round-2 数据目录（§3.7） |
 | `V3/data/round2_20261016/eval_c1.json` | 开发集 |
 | `datasets/samtok_edit_benchmark_v2/` | benchmark 2.6.0 数据根 |
