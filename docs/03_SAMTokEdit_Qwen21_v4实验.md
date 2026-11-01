@@ -1434,3 +1434,5 @@ benchmark 会话发布了 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/
 - Judge 运行时描述和 `judge_config` 与 probe 包相同；从全量包解出运行时，指纹与包内配置一致。
 - 交接单说明：同一容器"预检 → 我方 → 正式运行"可行，但要确认我方进程全部退出、每卡空闲 ≥70 GiB。入口在交还卡之前先等 `$WORK` 下的进程全部退出，再查显存。
 
+**第一次提交（11-01，attempt run001）：**七模型包的预检启动约 1 分钟后失败，我方还没开始。原因在 benchmark 的四机协调代码：各节点每 15 秒覆盖写自己的心跳文件，同伴每 3 秒读取；在共享盘上，另一台机器在覆盖瞬间会先看到文件存在、打开时却找不到。benchmark 会话修复后（`45bf1814`：短暂读不到时重试并沿用上次有效值），发布了新包 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-mp-full4-20261101-heartbeatfix`（READY SHA256 `ae0de947…`，plan digest `49410524…`）。新包的公开输入链接到旧包的同一批文件，所以旧包要保留。用新包的代码快照重新核对：10,840 个请求、我方用到的模块（逐字节与旧包相同）、Judge 指纹都通过。启动脚本改为新包和 `run002`。
+
