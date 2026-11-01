@@ -1351,3 +1351,77 @@ v4 的代码核对写在[文档 02](02_SAMTokEdit_Qwen21_v4方法.md)，本文�
   - 决策子集取自 benchmark 2.6.0，用于方法开发期间的系统决定（C3、OPSD、S2），属于历史暴露。
   - 新版 IF-Bench（v2branch）改用 canonical Judge 和十种 setting，本节数字与它不可直接比较。
 
+## 12. IF-Bench 评测（10-31 起）
+
+benchmark 是 `samtok_edit_benchmark` 的 v2branch，协议 `fairness-v2.2-1mp`，release 2.6.0：1,084 张图、3,872 个单元、十种 setting，另有七个基线模型。所有方法只接收同一张约 1 MP 的公共画布（灰色留边）和公开区域；Judge 看原图、回源后的输出和 GT。
+
+### 12.1 主行的定义（用户 10-31 确认）
+
+Pass1 step 2000 + S2@16000 + token 引导 2.0，40 步，seed 42，每个请求一次联合生成。配置在 `configs/ifbench/main_row.json`，实现在 `src/samtok_edit21/evaluation/ifbench.py`。
+
+| 单元的公开输入 | 第一轮（Pass1 环境） | 第二轮句子 |
+|---|---|---|
+| ref + none | 根据指代句生成 token | 指代句 + token |
+| ref 或 no-ref + point/box | 坐标按画布归一化到 0–1000，生成 token；不经过 SAM | 公开指令 + token |
+| ref 或 no-ref + mask | codec 在画布上编码给定 mask，这个单元保留输入 token | 公开指令 + token |
+| 混合（S4、S5） | 每张图一次生成，mask 单元的 token 作为输入一起送进去 | 同上 |
+
+- **输入：**只用画布 I 和 `public.json`，不用标注图 A；不读 manifest、GT 和高分辨率原图。S2-mask、S3-mask 全是给定 mask，不调用 Pass1。
+- **token 位置：**从公开文本推断指代短语的结尾（`selector_end`）。no-ref 放在 "the selected region" 之后；ref 按协议 2.0 句式，替换和改属性取最后一个 " with " / " to " 之前。规则在训练数据上定好（ref 97.8% 与渲染器一致，no-ref 100%），之后才在 benchmark 上核对（ref 96.3%，no-ref 100%），没有按 benchmark 调。放错的 3.7% 是新物体描述里也带 with / to 的句子，token 落进描述里。
+- **第一轮无效时：**这个单元退回不带 token 的公开指令，按单元计数（事先定好）。
+- **第二轮：**原 SAMTok TE（Pass1 LoRA 不在这个进程里），训练时的多目标格式，CFG 2.0，负向是去掉 token 的同一句。在画布尺寸上生成，`raw.png` 是模型原始输出，`output.png` 由 benchmark 的 `restore_output` 得到。
+- **环境：**Pass1 用 transformers 5.19（`configs/ifbench/requirements-pass1-lock.txt`），第二轮用 v4 环境（5.12.1）；token 落盘后由第二轮读取。
+- **Judge：**benchmark 的 canonical Judge，冻结运行时，配置指纹必须等于运行包的 `judge_config`；只有公开请求和输出经过我方代码，Judge 的证据、评分、修复逻辑都直接调用 benchmark。同一张图、逐字节相同的输出只评一次，这是 benchmark 自己的规则。
+
+### 12.2 运行方式
+
+- **单机：**`scripts/ifbench/run_local.sh`。
+- **四机一次跑完（七模型 + 我方）：**`scripts/ifbench/settings/full_4n.sh` 接 `scripts/ifbench/bootstrap_arnold.sh` 全文，作为 ARNOLD 四个 worker 的启动命令。每台的顺序：七模型包的无推理预检 → 我方方法（`scripts/ifbench/run_arnold.sh`）→ 运行包自己的 `start.sh`。worker 不依赖开发机：代码按固定 commit 从 GitHub 克隆，环境在节点上现建，权重、adapter、公开输入都在 NAS。
+- **分工：**每台机器处理 `case_ids[node::nodes]` 这部分图的全部 setting；同一台机器的 8 个 worker 按请求原子认领；机器之间只通过 NAS 上的标记文件同步，不占 ARNOLD 端口。任何一台失败，其余的停下。
+- **续跑：**用新的 `SAMTOK_ATTEMPT` 重新提交，已完成的请求跳过；`SUCCESS.json` 存在时跳过我方方法，直接跑七模型。认领了但没有终态的请求不会自动重跑，入口会列出来并停下，人工确认后用 `python -m samtok_edit21.evaluation.ifbench release --run <目录> --stage pass2 --request <id> --reason <原因>` 放行，记录在 `RELEASES.jsonl`。
+- **进度：**`python -m samtok_edit21.evaluation.ifbench status --run <目录>`。
+- **合并：**`python -m samtok_edit21.evaluation.ifbench_report --benchmark-report <结果根>/report/REPORT.json --run <目录> --output <目录>`。直接用 benchmark 的 `Bootstrap`、`rates`、`derived`，抽样索引必须和它发布的摘要一致，每个基线行重算后必须等于发布值；输出 8 个方法的 UP/JP、区间、派生指标和我方减基线的配对差值。
+
+### 12.3 本机冒烟（11-01，3 张图 × 10 个 setting）
+
+目录 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/samtok-ours-smoke-20261101`（`REPORT.json`；`gallery/` 左边是 token 解码区域，右边是输出）。只检查链路，样本太小，不看分数高低。
+
+- 30 个请求全部生成；Pass1 调用 24 次，没有单元回退；25 个不同的输出全部有效评分，没有解析失败或修复。
+- 每个 setting 11 个单元，单元通过 6–8 个，整图通过 1/3。
+- Pass1 每次 3.4 秒；第二轮每张 48.6 秒，显存峰值 39 GiB。给定 mask 的 codec 往返 IoU 平均 0.746，最低 0.124。
+- Pass1 对同一目标在文字、点、框下常给出相同的 token，于是不同 setting 的 prompt 相同，输出也相同（K=2 图的 S1、S2-point、S2-box）。全量时要注意：我方的 setting 差异不能按独立样本理解。
+- 本机 Judge 每批 16 条约 285 秒，只有 benchmark 节点实测吞吐的约 40%；本机一直有常驻进程占约 41% 的 GPU。全量 Judge 不放在本机。
+
+### 12.4 四机彩排（11-01）
+
+本机 4 个假节点（各 2 张卡，Judge 用全部 8 张），3 张图 × S1、S3-box、S5 共 9 个请求，从 GitHub 克隆固定 commit，环境现建，`start.sh` 换成记录调用的桩。目录 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/samtok-ours-rehearsal-20261101`。
+
+- 全链路通过：9 个请求全部生成并评分，没有回退；每台的顺序是预检 → 我方 → `start.sh`；传给 `start.sh` 的环境没有 venv 和缓存目录的残留，当时每卡空闲约 79 GiB；有一个节点分不到图时也正常结束。
+- 失败传播：方法配置写错时，节点 0 在 prepare 报错，其余三台在 15 秒内停下，全部非零退出。
+- 重新提交：`SUCCESS.json` 存在时跳过我方方法，直接接 `start.sh`；重复使用同一个 attempt 会被拒绝。
+- 环境：有 uv 缓存时 v4 环境、Pass1 环境和 Judge 运行时共约 2 分钟。Judge 引擎在冷缓存上初始化约 26 分钟，每台机器只付一次。
+
+**发现：输出曾经依赖同一进程里的请求顺序。**逐字节比对时，每个进程的第一个请求和冒烟一致，后面的不一致，而 prompt、token、seed 都相同。
+
+- **原因：**DiT 的 FlexAttention 用 `torch.compile` 编译，编译结果取决于进程见过的画布形状；数值上的微小差别在扩散中被放大。
+- **验证：**同一请求连跑两次相同；中间插一个别的尺寸后变化，并且和冒烟里相同历史的结果逐字节一致。
+- **幅度：**平均每像素约 0.5（满量程 255），p99 为 3–5，超过 8 的像素不到 0.5%。不是逻辑错误，此前的实验结论不受影响。
+- **修复：**`generate_request` 在每次生成前调用 `torch._dynamo.reset()`，输出只由请求决定；耗时看不出增加（46–52 秒）。同样 9 个请求用不同卡数和顺序各跑一遍，9/9 逐字节相同，其中有全新进程参考字节的 6 个也全部一致。
+
+**Judge 的噪声：**三个字节完全相同的输出换一批重判，通过数都没变，其中一个的单元 P 分数变了（批次组成不同）；另一张只差上述数值噪声的图，整图从通过变成未通过（E 从 4 变 3）。这和 §11 记录的跨场波动约 3 个点一致：全量比较要看配对区间，单张图的翻转不说明问题。
+
+### 12.5 全量方案（用户 11-01 确认）
+
+| 步骤 | 内容 | 位置 | 预计 |
+|---|---|---|---|
+| 0 | benchmark 会话构造全量输入并发布 READY（不启动运行） | 另一台机器 | 数小时 |
+| 1 | 七模型包的无推理预检 | 4 机，同一作业 | 不到 1 小时 |
+| 2 | 我方主行：Pass1 → 第二轮 → Judge → `REPORT.json` | 4 机，同一作业 | 约 9–10 小时 |
+| 3 | 七模型：运行包的 `start.sh`，不做改动 | 4 机，同一作业 | 约 2.8–3.4 天 |
+| 4 | 合并成 8 方法表（`ifbench_report`） | 开发机 CPU | 1 小时内 |
+
+- **估算依据：**七模型的单卡耗时来自 benchmark 的 probe 和 coverage 实测（合计约 1,300 GPU 小时）；我方约 155 GPU 小时；Judge 按 benchmark 单图实测（K=5、每批 10 条约 8.7 秒/条）推算为每条 5–7 秒，误差约 ±30%。
+- **风险：**本机 Judge 每条约 18 秒，同时本机有常驻进程占约 41% 的 GPU。四台 worker 上不要跑占卡进程；若节点上也是这个速度，Judge 会慢约 3 倍。
+- **消融补充行：**用户决定以后再定，这次只跑主行。
+- **两个会话不在同一台机器上：**只共享 NAS 和 GitHub。全量包和结果在 NAS，代码在 GitHub，worker 不依赖任何一台开发机。
+

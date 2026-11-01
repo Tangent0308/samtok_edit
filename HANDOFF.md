@@ -1,5 +1,7 @@
 # SAMTokEdit 交接说明
 
+> **2026-11-01：IF-Bench 评测链路已实现。**benchmark 换成 v2branch（约 1 MP 公共画布、十种 setting、七个基线）。主行 = Pass1 step 2000 + S2@16000 + 引导 2.0，用户已确认。本机 30 个请求的冒烟跑通；四机入口把七模型包的预检、我方方法和七模型的 `start.sh` 串成一个 ARNOLD 作业。等 benchmark 会话发布全量包 `.ifbench-tmp/one-mp-full4-20261031` 后提交。benchmark 会话在另一台机器上，两边只共享 NAS 和 GitHub。消融补充行用户后面再定。详见文档 03 §12。
+
 > **2026-10-31：Pass1 已合入本分支。**混合目标的第一轮定位 LoRA（在 `pass1` 分支开发，基于 v4 `6aa4e10`）：MLLM 用独立的 LM LoRA 一次生成全部目标（文本、point、box、给定 mask 混合）的 mask token，训练是 NTP 交叉熵；Pass2 关闭该 LoRA，用原 SAMTok TE。已完成试训、正式训练和 IF-Bench dev20 定位评测，见 [Pass1 方法](docs/pass1_localization.md)、[实现](docs/pass1_implementation.md)、[结果与可视化](docs/pass1_experiments.md)、[复现](docs/pass1_reproduction.md)。Pass1 是可选部件，不改变 v4 编辑管线、训练器和 benchmark 适配器的默认行为；它要单独的环境（`transformers==5.19.0`，见 `configs/pass1/requirements-tested.txt`），不要与 v4 的 `constraints-tested.txt` 混用。Pass1 的开发工作区 `/opt/tiger/tanyue/samtok_edit_pass1/` 和试训目录在另一台开发机上，本机没有。下文 v4 的“当前”状态仍有效。
 
 写于 2026-10-28，原开发机回收之前。读者是没有上下文的新会话：先读完本文，再按 §2.2 的指引读文档。本文只给方向和入口，细节以文档和 NAS 上的 README 为准，两者不一致时以盘上的结果文件为准。
@@ -192,7 +194,7 @@
 
 ### 4.2 定型与论文（无论 OPSD 结果如何都要做）
 - **选定最终系统：**默认是 C3-D + 第一步定位 + 引导 2.0。两次 OPSD 试训的模型都没有显著好过它。
-- **全量评测：**benchmark 1,084 例（约 4 h 生成，另加判分），与官方基线同场判分。3 个点以下的差别只有全量才测得出。
+- **全量评测：**IF-Bench 1,084 例 × 十种 setting，与七个基线合并统计，入口和方案见文档 03 §12（11-01）。3 个点以下的差别只有全量才测得出。
 - **论文消融：**edit-only、去掉路由、去掉注入（文档 03 §9 第 5 条）。
 - **还没解决的问题**（文档 03 §9）：大目标改属性没到 0.90；盲指代改到旁边的同类物体；写字拼错；替换做成叠加。
 

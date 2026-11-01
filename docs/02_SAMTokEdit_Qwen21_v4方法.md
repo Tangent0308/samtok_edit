@@ -648,6 +648,7 @@ samtok_edit_qwen-image-2.1-v4/
 │   └── regions/                  # SAM2 点/框选区
 ├── third_party/                  # diffsynth（上游 + 两个钩子）、samtok（官方源码）及说明
 ├── scripts/round2/               # ARNOLD 入口、环境、运行设置
+├── scripts/ifbench/              # IF-Bench 评测：Judge 驱动、单机与四机入口、Pass1 环境
 ├── scripts/docs/                 # 文档检查：路径、代码块同步
 ├── tests/                        # CPU 单元测试（pytest）
 ├── docs/                         # 数据、方法、实验三份文档
@@ -675,6 +676,8 @@ samtok_edit_qwen-image-2.1-v4/
 | `src/samtok_edit21/evaluation/generation.py` | 只给 token 的生成：`canvas`、`generate`、`export` |
 | `src/samtok_edit21/evaluation/round2_eval.py`、`round2_report.py` | 开发集五类探针（`round2-eval`）与配对报告（`round2-report`） |
 | `src/samtok_edit21/evaluation/benchmark_token.py` | benchmark v2 适配器（`ground`、`token_guidance`、`teacher`） |
+| `src/samtok_edit21/evaluation/ifbench.py` | IF-Bench 1MP 协议下的完整方法：Pass1 取 token、公开文本放 token、在画布尺寸生成、按机器分图和按请求认领（文档 03 §12） |
+| `src/samtok_edit21/evaluation/ifbench_report.py` | 我方结果并入 benchmark 全量报告：同一组 bootstrap 抽样上的 8 方法表和配对差值 |
 | `src/samtok_edit21/regions/selection.py` | SAM2 的点/框选区 |
 
 ### 6.3 推理链路
@@ -1033,6 +1036,7 @@ python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-train
   - `test_stage_c_rows.py`：C3 的行；
   - `test_protocol.py`：协议；
   - `test_benchmark_token.py`：benchmark 适配器；
+  - `test_ifbench_eval.py`：IF-Bench 评测（token 位置、按机器分图、认领、Judge 驱动、合并统计）；
   - `test_docs.py`：文档代码块与源码一致。
 - **文档检查：**
   - `python scripts/docs/sync_code_blocks.py` 从源码重写文档里的代码块，`--check` 只检查（测试会跑）；
