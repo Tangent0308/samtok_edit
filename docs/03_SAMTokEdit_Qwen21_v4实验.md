@@ -1425,3 +1425,12 @@ Pass1 step 2000 + S2@16000 + token 引导 2.0，40 步，seed 42，每个请求�
 - **消融补充行：**用户决定以后再定，这次只跑主行。
 - **两个会话不在同一台机器上：**只共享 NAS 和 GitHub。全量包和结果在 NAS，代码在 GitHub，worker 不依赖任何一台开发机。
 
+### 12.6 全量包核对（11-01）
+
+benchmark 会话发布了 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-mp-full4-20261031`（READY SHA256 `a014fd6f…`，source_commit `0b35cde5`，plan digest `f2d266e8…`），交接单在包外的 `one-mp-full4-20261031-handoff.md`。用包内代码快照核对：
+
+- 10,840 个公开请求全部通过加载校验（约 2 分钟），全部能转成 Pass1 请求和第二轮句子；预计 Pass1 调用 8,672 次（S2-mask、S3-mask 不调用）。
+- `canvas.py` 只改了 `project_public`：一个贴边框的 y2 由浮点误差 896.0000000000001 修成 896.0。我们用到的 `restore_output`、`geometry` 和协议常量没变；`public.py`、`dev_judge.py`、`fairness_dev_judge.py` 与冒烟时相同。
+- Judge 运行时描述和 `judge_config` 与 probe 包相同；从全量包解出运行时，指纹与包内配置一致。
+- 交接单说明：同一容器"预检 → 我方 → 正式运行"可行，但要确认我方进程全部退出、每卡空闲 ≥70 GiB。入口在交还卡之前先等 `$WORK` 下的进程全部退出，再查显存。
+

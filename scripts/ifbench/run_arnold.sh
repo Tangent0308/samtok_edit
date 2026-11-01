@@ -152,8 +152,13 @@ PY
 fi
 barrier REPORT 1
 
-# The benchmark's entry needs at least 70 GiB free on every card.
+# Hand the cards over only after every process of ours has exited (the Judge engine's workers included; their command
+# lines name $WORK), and the benchmark's entry needs at least 70 GiB free on every card.
 deadline=$((SECONDS + 600))
+while pgrep -f -- "$WORK/" > /dev/null; do
+  if ((SECONDS > deadline)); then echo "Our processes are still running: $(pgrep -af -- "$WORK/" | cut -c1-160)" >&2; exit 1; fi
+  sleep 10
+done
 while :; do
   free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits | sort -n | head -1)
   if ((free >= 70 * 1024)); then break; fi
