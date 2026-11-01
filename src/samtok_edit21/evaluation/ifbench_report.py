@@ -5,10 +5,12 @@ The statistics are the benchmark's own (``fairness_dev_report.Bootstrap`` / ``ra
 resampling with one seed and one index table for all methods and settings, and full denominators, so generation
 failures count and a missing Judge answer leaves a row incomplete.  Every baseline row is recomputed from its per-case
 records and must equal the published row, and the index table must have the published digest; no node percentages are
-averaged.  Run with the benchmark snapshot on PYTHONPATH:
+averaged.  ``--overlay`` runs (a repair run judged on its own, e.g. after the Pass1 format repair) replace the main
+run's entries of their requests; the replaced requests are listed in the merged report.  Run with the benchmark
+snapshot on PYTHONPATH:
 
     python -m samtok_edit21.evaluation.ifbench_report --benchmark-report <results root>/report/REPORT.json \\
-        --run <run dir> --output <dir>
+        --run <run dir> [--overlay <repair run dir>] --output <dir>
 """
 from __future__ import annotations
 
@@ -63,10 +65,33 @@ def check_published(row, computed):
                 raise ValueError(f"{row['model']}/{row['setting']}: {metric} interval differs from the published report")
 
 
-def merge(benchmark, ours):
+def apply_overlays(ours, overlays):
+    """Our report with the entries of the overlay reports' requests replaced; also the list of replacements."""
+    if not overlays:
+        return ours, []
+    by_id = {r["request_id"]: r for r in ours["requests"]}
+    replaced = []
+    for overlay in overlays:
+        if overlay["method"] != ours["method"]:
+            raise ValueError("An overlay must come from the same method configuration")
+        for entry in overlay["requests"]:
+            if entry["request_id"] not in by_id:
+                raise ValueError(f"Overlay request {entry['request_id']} is not in the main run")
+            if entry["status"] != "scored":
+                raise ValueError(f"Overlay request {entry['request_id']} has no score")
+            replaced.append({"request_id": entry["request_id"], "overlay_run": overlay["run"],
+                             "replaced_status": by_id[entry["request_id"]]["status"],
+                             "replaced_judge_key": by_id[entry["request_id"]]["judge_key"],
+                             "judge_key": entry["judge_key"]})
+            by_id[entry["request_id"]] = entry
+    return dict(ours, requests=list(by_id.values())), replaced
+
+
+def merge(benchmark, ours, overlays=()):
     from samtok_benchmark.io import digest
     from samtok_benchmark.ifbench.fairness_dev_report import FAILURES, Bootstrap, derived, quantiles, rates
 
+    ours, replaced = apply_overlays(ours, overlays)
     case_ids, settings = benchmark["case_ids"], benchmark["settings"]
     if sorted(ours["case_ids"]) != sorted(case_ids):
         raise ValueError("Our run covers different sources than the benchmark report")
@@ -117,7 +142,7 @@ def merge(benchmark, ours):
             "benchmark_plan_digest": benchmark.get("plan_digest"), "benchmark_source_commit": benchmark.get("source_commit"),
             "bootstrap": benchmark["bootstrap"], "rows": rows, "mean_over_settings": means,
             "derived": {m: derived(rows[m], draws[m]) for m in methods},
-            f"paired_{METHOD}_minus_baseline": paired}
+            f"paired_{METHOD}_minus_baseline": paired, "replaced_requests": replaced}
 
 
 def cell(value, interval):
@@ -131,6 +156,9 @@ def markdown(merged):
     lines = ["# IF-Bench 全量结果：七模型 + SAMTokEdit", "",
              f"{merged['source_count']} 张源图、{merged['units']} 个单元。数字是百分比，方括号是 95% 区间"
              "（benchmark 的源图配对 bootstrap，所有方法共用同一组抽样）。mean 是十种 setting 的算术平均，只作概览。", ""]
+    if merged["replaced_requests"]:
+        lines += [f"{METHOD} 有 {len(merged['replaced_requests'])} 个请求用修复运行的结果替换："
+                  + "、".join(r["request_id"] for r in merged["replaced_requests"]) + "。", ""]
     header = "| 方法 | " + " | ".join(settings) + " | mean |"
     rule = "|---|" + "---:|" * (len(settings) + 1)
     for metric in METRICS:
@@ -157,9 +185,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--benchmark-report", type=Path, required=True)
     p.add_argument("--run", type=Path, required=True)
+    p.add_argument("--overlay", type=Path, action="append", default=[], help="repair run whose entries replace the main run's")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args(argv)
-    merged = merge(json.loads(a.benchmark_report.read_text()), json.loads((a.run / "REPORT.json").read_text()))
+    overlays = [json.loads((run / "REPORT.json").read_text()) for run in a.overlay]
+    merged = merge(json.loads(a.benchmark_report.read_text()), json.loads((a.run / "REPORT.json").read_text()), overlays)
     a.output.mkdir(parents=True, exist_ok=True)
     (a.output / "MERGED_REPORT.json").write_text(json.dumps(merged, ensure_ascii=False, indent=1))
     (a.output / "MERGED_REPORT.md").write_text(markdown(merged))

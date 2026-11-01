@@ -320,3 +320,44 @@ def test_generation_uses_the_exact_canvas_a_fresh_compile_state_and_token_guidan
     parameters = calls[1][2]
     assert parameters["mode"] == "direct" and parameters["cfg_scale"] == 1.0 and "negative_prompt" not in parameters
     assert result["transformer_forward_calls"] == 40
+
+
+def test_format_repair_restores_only_a_missing_key_name():
+    good = [f'{{"label":"U{i}","mask_2d":"{span}"}}' for i, span in ((1, T), (2, U))]
+    labels = ["U1", "U2"]
+    raw = "[" + good[0] + ',{"label":"U2":"' + U + '"}]<|im_end|>'
+    assert ifbench.recover_missing_key(raw, labels) == {"U1": T, "U2": U}
+    assert ifbench.recover_missing_key("[" + ",".join(good) + "]", labels) == {"U1": T, "U2": U}
+    for bad in ("[" + good[0] + "]",                                        # a label is missing
+                "[" + good[1] + "," + good[0] + "]",                        # wrong order
+                "[" + good[0] + "," + good[1] + "," + good[1] + "]",         # a label twice
+                "[" + good[0] + ',{"label":"U2","box":"' + U + '"}]',        # another key, not a missing one
+                "[" + good[0] + "," + good[1] + "] extra",                  # trailing text
+                "!!!!!!!!"):
+        assert ifbench.recover_missing_key(bad, labels) is None
+    broken = "[" + good[0] + ',{"label":"U2":"<|mt_start|><|mt_0300|><|mt_0257|><|mt_end|>"}]'   # invalid code order
+    assert ifbench.recover_missing_key(broken, labels) is None
+
+
+def test_overlay_replaces_the_entries_of_its_requests():
+    pytest.importorskip("samtok_benchmark.ifbench.fairness_dev_report")
+    from samtok_edit21.evaluation import ifbench_report
+
+    ours = {"run": "main", "method": {"name": "m"}, "case_ids": ["a", "b"],
+            "requests": [{"request_id": "a--S1", "case_id": "a", "setting": "S1", "status": "scored", "judge_key": "k1",
+                          "unit_pass": [False, False], "joint_pass": False},
+                         {"request_id": "b--S1", "case_id": "b", "setting": "S1", "status": "scored", "judge_key": "k2",
+                          "unit_pass": [True, True], "joint_pass": True}]}
+    fix = {"run": "repair", "method": {"name": "m"},
+           "requests": [{"request_id": "a--S1", "case_id": "a", "setting": "S1", "status": "scored", "judge_key": "k3",
+                         "unit_pass": [True, True], "joint_pass": True}]}
+    merged, replaced = ifbench_report.apply_overlays(ours, [fix])
+    assert [r["judge_key"] for r in merged["requests"]] == ["k3", "k2"]
+    assert replaced == [{"request_id": "a--S1", "overlay_run": "repair", "replaced_status": "scored",
+                         "replaced_judge_key": "k1", "judge_key": "k3"}]
+    assert ours["requests"][0]["judge_key"] == "k1"                       # the main report is not modified
+    with pytest.raises(ValueError):
+        ifbench_report.apply_overlays(ours, [dict(fix, method={"name": "other"})])
+    with pytest.raises(ValueError):
+        ifbench_report.apply_overlays(ours, [dict(fix, requests=[dict(fix["requests"][0], status="judge-pending")])])
+

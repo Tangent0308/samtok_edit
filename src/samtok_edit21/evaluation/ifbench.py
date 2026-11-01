@@ -313,6 +313,26 @@ def failure_fields(error):
 # ---------------------------------------------------------------------------------------------------- pass 1
 
 
+# One requested item whose "mask_2d" key name may be missing: {"label":"U4":"<span>"} for {"label":"U4","mask_2d":"<span>"}.
+LOOSE_ITEM = re.compile(r'\{"label":"(U[1-5])"(?:,"mask_2d")?:"(<\|mt_start\|><\|mt_[0-9]{4}\|><\|mt_[0-9]{4}\|><\|mt_end\|>)"\}')
+
+
+def recover_missing_key(raw, labels):
+    """Format repair of a Pass1 answer whose only defect is a missing "mask_2d" key name: the spans of ``labels`` in
+    order, else None.  Everything else must be the plain JSON array of exactly these items; no span is changed."""
+    from samtok_edit21.pass1.protocol import valid_span
+
+    text = raw.strip()
+    if text.endswith("<|im_end|>"):
+        text = text[: -len("<|im_end|>")].rstrip()
+    items = list(LOOSE_ITEM.finditer(text))
+    if [m[1] for m in items] != list(labels) or not all(valid_span(m[2]) for m in items):
+        return None
+    if LOOSE_ITEM.sub("{}", text) != "[" + ",".join("{}" for _ in items) + "]":
+        return None
+    return {m[1]: m[2] for m in items}
+
+
 def mask_iou(a, b):
     union = (a | b).sum()
     return float((a & b).sum() / union) if union else 1.0
