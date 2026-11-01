@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SAMTokEdit on IF-Bench: post-clone worker entry (called by scripts/ifbench/bootstrap_arnold.sh on every worker).
-# Environments -> Pass1 -> Pass2 -> canonical Judge -> report (worker 0).  Each machine handles all settings of its own
+# Environments -> Pass1 -> Pass2 -> canonical Judge -> report (worker 0).  SAMTOK_IFBENCH_JUDGE=0 stops after Pass2
+# (worker 0 writes GENERATED.json); the Judge then runs elsewhere with scripts/ifbench/judge.py.  Each machine handles all settings of its own
 # images; machines meet only at marker files on the shared disk, so no ARNOLD port is used.  The benchmark code comes
 # from the bundle's snapshot, everything else from the pinned clone, node-local environments and the shared disk.
 set -Eeuo pipefail
@@ -97,8 +98,11 @@ env -u CUDA_VISIBLE_DEVICES bash "$REPO/scripts/round2/setup_env.sh"
 PASS1_PY=$WORK/env_pass1/bin/python
 V4_PY=$SAMTOK_ENV/bin/python
 JUDGE_PY=$WORK/runtime/judge/python
+JUDGE=${SAMTOK_IFBENCH_JUDGE:-1}
 bash "$REPO/scripts/ifbench/setup_pass1_env.sh" "$WORK/env_pass1"
-"$SAMTOK_PYTHON" -B "$REPO/scripts/ifbench/prepare_judge_runtime.py" --bundle "$IFBENCH_BUNDLE" --work "$WORK/runtime"
+if [[ "$JUDGE" == 1 ]]; then
+  "$SAMTOK_PYTHON" -B "$REPO/scripts/ifbench/prepare_judge_runtime.py" --bundle "$IFBENCH_BUNDLE" --work "$WORK/runtime"
+fi
 
 phase start
 if [[ "$NODE" == 0 ]]; then
@@ -125,6 +129,7 @@ run_workers pass2 "$V4_PY"
 mark PASS2
 barrier PASS2
 
+if [[ "$JUDGE" == 1 ]]; then
 phase judge
 if ((NODE < JUDGE_NODES)); then
   CUDA_VISIBLE_DEVICES=$JUDGE_CARDS "$JUDGE_PY" "$REPO/scripts/ifbench/judge.py" --run "$RUN" --node "$NODE" \
@@ -151,6 +156,27 @@ PY
   mark REPORT
 fi
 barrier REPORT 1
+else
+phase generated
+if [[ "$NODE" == 0 ]]; then
+  # Generation only: every request has its terminal record; the Judge runs later, elsewhere.
+  PYTHONPATH=$SRC "$V4_PY" -B - "$RUN" "$SAMTOK_ATTEMPT" "$(git -C "$REPO" rev-parse HEAD)" <<'PY'
+import json, sys, time
+from pathlib import Path
+from samtok_edit21.evaluation import ifbench
+run, attempt, commit = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+state = ifbench.status(run)
+open_requests = ifbench.open_claims(run)
+if open_requests or sum(state["pass2"].values()) != state["requests"] or state["pass2"].get("pending"):
+    raise SystemExit(f"Generation is not terminal everywhere: {state}, open {open_requests[:10]}")
+(run / "GENERATED.json").write_text(json.dumps({"time": time.time(), "attempt": attempt, "commit": commit,
+                                                "status": state}, indent=1))
+print(json.dumps(state))
+PY
+  mark REPORT
+fi
+barrier REPORT 1
+fi
 
 # Hand the cards over only after every process of ours has exited (the Judge engine's workers included; their command
 # lines name $WORK), and the benchmark's entry needs at least 70 GiB free on every card.

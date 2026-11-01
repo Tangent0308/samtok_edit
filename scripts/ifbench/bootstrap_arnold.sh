@@ -17,6 +17,8 @@ export SAMTOK_IFBENCH_RUN="${SAMTOK_IFBENCH_RUN:-/mnt/bn/strategy-mllm-train/use
 export SAMTOK_NNODES="${SAMTOK_NNODES:-4}"
 # 1: preflight and the seven models around our method; 0: our method only.
 export SAMTOK_IFBENCH_CHAIN="${SAMTOK_IFBENCH_CHAIN:-1}"
+# 1: our method is judged on these machines; 0: generation only (GENERATED.json), the Judge runs later elsewhere.
+export SAMTOK_IFBENCH_JUDGE="${SAMTOK_IFBENCH_JUDGE:-1}"
 export SAMTOK_EDIT_REPO_URL="${SAMTOK_EDIT_REPO_URL:-https://github.com/Tangent0308/samtok_edit.git}"
 export SAMTOK_EDIT_BRANCH="${SAMTOK_EDIT_BRANCH:-qwen-image-2.1-v4}"
 
@@ -65,6 +67,8 @@ if [[ "$SAMTOK_IFBENCH_CHAIN" == 1 ]]; then
 fi
 if [[ -f "$SAMTOK_IFBENCH_RUN/SUCCESS.json" ]]; then
   echo "Our method already finished: $SAMTOK_IFBENCH_RUN/SUCCESS.json"
+elif [[ "$SAMTOK_IFBENCH_JUDGE" == 0 && -f "$SAMTOK_IFBENCH_RUN/GENERATED.json" ]]; then
+  echo "Our generation already finished: $SAMTOK_IFBENCH_RUN/GENERATED.json"
 else
   echo checkout > "$ATTEMPT/node$NODE.phase"
   export GIT_TERMINAL_PROMPT=0
