@@ -89,3 +89,21 @@ def test_private_field_is_rejected_even_with_recomputed_public_digest():
     public["input_digest"] = public_api.public_digest(public)
     with pytest.raises(ValueError, match="Private/unknown/missing"):
         adapt(public, {})
+
+
+def test_canvas_request_normalizes_continuous_coordinates():
+    canvas = pytest.importorskip("samtok_benchmark.ifbench.canvas")
+    public = public_request()
+    public["protocol"] = canvas.PROTOCOL
+    public["source"]["size"] = [96, 128]
+    public["units"][0]["region"]["coordinates"] = [20.4, 40.6]
+    public["units"][1]["region"]["coordinates"] = [10.2, 20.7, 50.5, 80.0]
+    public["input_digest"] = public_api.public_digest(public)
+    request = adapt(public, {("0" * 64, "1" * 64): SPAN})
+    assert request["targets"][0]["region"]["point"] == [212, 317]
+    assert request["targets"][1]["region"]["box"] == [106, 161, 527, 625]
+    integer = public_request()
+    integer["units"][0]["region"]["coordinates"] = [20.4, 40]
+    integer["input_digest"] = public_api.public_digest(integer)
+    with pytest.raises(ValueError):
+        adapt(integer, {("0" * 64, "1" * 64): SPAN})

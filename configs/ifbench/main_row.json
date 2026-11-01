@@ -1,0 +1,12 @@
+{
+ "name": "samtokedit_pass1_s2",
+ "qwen": "/mnt/bn/strategy-mllm-train/user/tanyue/models/pretrained_models/Qwen-Image-2.1",
+ "samtok": "/mnt/bn/strategy-mllm-train/user/tanyue/models/SAMTok/Qwen3-VL-8B-SAMTok",
+ "pass1_adapter": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/pass1_localization_lora_formal_20261030_0939/runs/formal/step_2000",
+ "dit_adapter": "/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/runs/s2_4n_001/train/adapter_16000",
+ "steps": 40,
+ "token_guidance": 2.0,
+ "seed": 42,
+ "pass1_max_new_tokens": 512,
+ "pass1_max_pixels": 2097152
+}

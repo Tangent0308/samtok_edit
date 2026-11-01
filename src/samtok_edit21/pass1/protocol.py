@@ -23,8 +23,16 @@ def valid_span(value):
     return bool(m and 0 <= int(m[1]) < 256 and 256 <= int(m[2]) < 512)
 
 
-def point_normalized(point, size):
-    if len(point) != 2 or any(type(x) is not int for x in point):
+def _pixel_values(values, count, continuous):
+    """Source-pixel integers; ``continuous`` also admits finite floats (IF-Bench 1MP canvas coordinates)."""
+    kinds = (int, float) if continuous else (int,)
+    return len(values) == count and all(
+        type(x) in kinds and math.isfinite(x) for x in values
+    )
+
+
+def point_normalized(point, size, *, continuous=False):
+    if not _pixel_values(point, 2, continuous):
         raise ValueError("Point must be two source-pixel integers")
     if any(not 0 <= p < s for p, s in zip(point, size)):
         raise ValueError("Point outside source")
@@ -35,9 +43,9 @@ def point_pixels(point, size):
     return [min(s - 1, max(0, round(p * s / 1000))) for p, s in zip(point, size)]
 
 
-def box_normalized(box, size):
+def box_normalized(box, size, *, continuous=False):
     w, h = size
-    if len(box) != 4 or any(type(x) is not int for x in box):
+    if not _pixel_values(box, 4, continuous):
         raise ValueError("Box must be four half-open source-pixel integers")
     a, b, c, d = box
     if not (0 <= a < c <= w and 0 <= b < d <= h):
