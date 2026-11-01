@@ -41,7 +41,8 @@ for s in $STAGES; do
     pass1) stage pass1 "$PASS1_PY" ;;
     pass2) stage pass2 "$V4_PY" ;;
     judge) log "judge: start"
-           (cd /tmp && "$JUDGE_PY" "$V4/scripts/ifbench/judge.py" --run "$RUN") 2>&1 | tee -a "$RUN/logs/judge.log"
+           (cd /tmp && "$JUDGE_PY" "$V4/scripts/ifbench/judge.py" --run "$RUN" \
+              && "$JUDGE_PY" "$V4/scripts/ifbench/judge.py" --run "$RUN" --report-only) 2>&1 | tee -a "$RUN/logs/judge.log"
            log "judge: done" ;;
     *) echo "unknown stage $s" >&2; exit 2 ;;
   esac

@@ -271,3 +271,52 @@ def test_merge_uses_the_benchmark_statistics_on_one_set_of_draws():
     merged = ifbench_report.merge(benchmark, ours)
     assert merged["rows"]["samtokedit"]["S1"]["UnitPass"] is None
     assert "不完整" in ifbench_report.markdown(merged)
+
+
+def test_generation_uses_the_exact_canvas_a_fresh_compile_state_and_token_guidance_only_with_tokens(tmp_path, monkeypatch):
+    canvas = pytest.importorskip("samtok_benchmark.ifbench.canvas")
+    import torch
+    from PIL import Image
+    import samtok_edit21.models.pipeline as pipeline
+
+    geometry = canvas.geometry([1500, 1875])
+    width, height = geometry["canvas_size"]
+    source = tmp_path / "source.png"
+    Image.new("RGB", (width, height), "gray").save(source)
+    p = public()
+    p["source"] = {"path": str(source), "sha256": "0" * 64, "size": [width, height]}
+    monkeypatch.setattr(ifbench, "checked_request", lambda item: (p, geometry))
+    calls = []
+    monkeypatch.setattr(torch._dynamo, "reset", lambda: calls.append("reset"))
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda: None)
+
+    def edit(pipe, prompt, images, **parameters):
+        calls.append(("edit", prompt, parameters))
+        assert images[0].size == (width, height) and images[0].mode == "RGBA"
+        return Image.new("RGBA", (width, height), "white"), {}
+
+    monkeypatch.setattr(pipeline, "edit", edit)
+    method = {"steps": 40, "seed": 42, "token_guidance": 2.0, "dit_adapter": "adapter"}
+    item = {"request_id": "c--S5"}
+    tokens = {"units": [{"id": "U1", "token": None, "source": "fallback_text"}, {"id": "U2", "token": U, "source": "pass1"}],
+              "fallback_units": 1}
+    out = tmp_path / "guided"
+    out.mkdir()
+    result = ifbench.generate_request(None, method, item, tokens, out)
+    assert calls[0] == "reset"
+    parameters = calls[1][2]
+    assert (parameters["width"], parameters["height"]) == (width, height)
+    assert parameters["mode"] == "inline" and parameters["cfg_scale"] == 2.0 and parameters["pass2_te"] == "raw"
+    assert "<|mt_" not in parameters["negative_prompt"] and U in calls[1][1]
+    assert result["transformer_forward_calls"] == 80 and result["fallback_units"] == 1
+    assert Image.open(result["output_image"]).size == (1500, 1875) and result["raw_size"] == [width, height]
+    # Every unit fell back to text: plain editing without guidance.
+    calls.clear()
+    tokens = {"units": [{"id": "U1", "token": None, "source": "fallback_text"}, {"id": "U2", "token": None, "source": "fallback_text"}],
+              "fallback_units": 2}
+    out = tmp_path / "plain"
+    out.mkdir()
+    result = ifbench.generate_request(None, method, item, tokens, out)
+    parameters = calls[1][2]
+    assert parameters["mode"] == "direct" and parameters["cfg_scale"] == 1.0 and "negative_prompt" not in parameters
+    assert result["transformer_forward_calls"] == 40

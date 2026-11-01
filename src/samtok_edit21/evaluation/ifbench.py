@@ -448,6 +448,9 @@ def generate_request(pipe, method, item, tokens, out):
         image = im.convert("RGB")
     torch.cuda.reset_peak_memory_stats()
     start = time.monotonic()
+    # The compiled FlexAttention kernels depend on the canvas shapes this process has seen: tiny numeric differences that
+    # diffusion amplifies (about 0.5 of 255 per pixel).  A fresh compile state makes the bytes a function of the request.
+    torch._dynamo.reset()
     raw, _ = edit(pipe, prompt, [image.convert("RGBA")], **parameters)
     seconds = time.monotonic() - start
     if list(raw.size) != geometry["canvas_size"]:
