@@ -1471,3 +1471,12 @@ benchmark 会话发布了 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/
 2. `ifbench_one_mp_full4_node0fix`：node 0 判分失败的 487 个请求在本机重判（输出不变），加上悄悄算错的 `v2-sa_4720489--S2-point` 在本机重新出图。488 个请求全部得到有效分数，其中 6 条靠 benchmark 自带的确定性 JSON 修复恢复。
 3. `ifbench_one_mp_full4_rejudge1`：健康机器上 6 条普通解析失败，再判一次（`scripts/ifbench/rejudge_overlay.py` 生成）。
 
+### 12.9 硬件故障停机与 run003（11-02）
+
+**停机：**北京时间 11-02 17:00，node 0 的 1 号卡（GPU-7ef8579d…）在 RePlan 规划时报 "Invalid access of peer GPU memory over nvlink or a hardware error"，四台按设计全部停下。平台随后通知这台机器（10.124.254.126）出现 Xid 94（GPU 显存无法纠正的 ECC 错误）、需要维修。§12.7、§12.8 的异常都来自这张卡。停机时七模型已完成 Qwen2511、Qwen2.1、FLUX.3 的出图和约 2,900 条 RePlan 规划；本机重算了其中 15 张（每个模型 3 张故障卡、2 张其他卡），全部逐字节一致。
+
+**处理（用户同意）：**
+- **七模型：**benchmark 会话把故障卡（node 0 shard-1-of-8）上的全部记录移到包外隔离目录（Qwen2511、Qwen2.1、FLUX.3 各 339 条，RePlan 规划 38 条，含那条致命 CUDA 失败），并按基础设施故障放行 29 条中断的规划。READY 不变，新 attempt `run003` 在 4 台健康机器上续跑：健康记录跳过，隔离的请求按原输入和 seed 42 重跑。清单：`/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-mp-full4-run002-hardware-quarantine-20261102/QUARANTINE_RECORDS.csv`。
+- **我方：**不重新出图（全部输出已逐字节核对），在新机器上统一重判一遍。这样 8 个方法的分数都来自健康机器，node 0 在故障机上打出的分数不再使用。`scripts/ifbench/build_final_run.py` 把每个请求的最终 token 和输出汇总到 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final`：主运行的输出，加上修复层重新生成的 5 个（§12.7 的 4 个、§12.8 的 1 个），输出只引用不复制。入口在这个目录里会发现所有请求已完成，只跑 Judge。§12.8 的本机补判结果保留作记录，不进最终统计。
+- **最终合并：**`ifbench_report --benchmark-report <结果根>/report/REPORT.json --run <最终目录>`，不再需要修复层。
+
