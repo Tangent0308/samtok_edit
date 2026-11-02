@@ -358,6 +358,12 @@ def test_overlay_replaces_the_entries_of_its_requests():
     assert ours["requests"][0]["judge_key"] == "k1"                       # the main report is not modified
     with pytest.raises(ValueError):
         ifbench_report.apply_overlays(ours, [dict(fix, method={"name": "other"})])
-    with pytest.raises(ValueError):
-        ifbench_report.apply_overlays(ours, [dict(fix, requests=[dict(fix["requests"][0], status="judge-pending")])])
+    with pytest.raises(ValueError):          # an unscored overlay entry cannot replace a scored one
+        ifbench_report.apply_overlays(ours, [dict(fix, requests=[dict(fix["requests"][1 - 1], request_id="b--S1",
+                                                                        case_id="b", status="judge-failed")])])
+    # Layers: a first repair whose own Judge answer failed, superseded by a second one.
+    failed = dict(ours, requests=[dict(ours["requests"][0], status="judge-failed", judge_key="k0"), ours["requests"][1]])
+    first = dict(fix, run="repair1", requests=[dict(fix["requests"][0], status="judge-failed", judge_key="k4")])
+    merged, replaced = ifbench_report.apply_overlays(failed, [first, fix])
+    assert merged["requests"][0]["judge_key"] == "k3" and [r["overlay_run"] for r in replaced] == ["repair1", "repair"]
 

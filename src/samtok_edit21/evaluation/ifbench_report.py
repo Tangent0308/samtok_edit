@@ -66,7 +66,9 @@ def check_published(row, computed):
 
 
 def apply_overlays(ours, overlays):
-    """Our report with the entries of the overlay reports' requests replaced; also the list of replacements."""
+    """Our report with the entries of the overlay reports' requests replaced, overlays in the given order (a later one
+    can supersede an entry whose repair also failed); also the list of replacements.  A scored entry is never replaced
+    by an unscored one."""
     if not overlays:
         return ours, []
     by_id = {r["request_id"]: r for r in ours["requests"]}
@@ -77,8 +79,8 @@ def apply_overlays(ours, overlays):
         for entry in overlay["requests"]:
             if entry["request_id"] not in by_id:
                 raise ValueError(f"Overlay request {entry['request_id']} is not in the main run")
-            if entry["status"] != "scored":
-                raise ValueError(f"Overlay request {entry['request_id']} has no score")
+            if entry["status"] != "scored" and by_id[entry["request_id"]]["status"] == "scored":
+                raise ValueError(f"Overlay request {entry['request_id']} has no score to replace a scored entry")
             replaced.append({"request_id": entry["request_id"], "overlay_run": overlay["run"],
                              "replaced_status": by_id[entry["request_id"]]["status"],
                              "replaced_judge_key": by_id[entry["request_id"]]["judge_key"],
