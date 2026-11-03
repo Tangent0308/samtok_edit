@@ -1526,3 +1526,9 @@ PYTHONPATH=<v4>/src:<全量包>/repo/src python -m samtok_edit21.evaluation.ifbe
 ```
 
 `python` 用 v4 的环境（合并的单测就在这个环境里跑）；`<全量包>` 是 `.ifbench-tmp/one-mp-full4-20261101-heartbeatfix`。补判脚本则用 Judge runtime 的包装器运行（它自己设定 PYTHONPATH）。
+
+**初步结果（用户 11-03 同意）：**benchmark 的全局报告要在节点 0 上把四台记录串行重新校验一遍（每条请求都重算输入和输出哈希），本机实测估计要十几个小时。所以四台都完成、基线补判做完后，先出一版初步结果：
+- 把上面命令里的 `--benchmark-report ...` 换成 `--bundle <全量包>`。
+- 基线各行用 benchmark 自己的 `make_row`，从四台的 `judge/bindings.json` 和 effective 记录直接计算。抽样表与官方相同，表头标"初步"。
+- 每台在完成时已经核对过自己的记录（`COMPLETED.json` 中的 verification）。
+- 全局报告出来后，用 `--benchmark-report` 重新合并，并加 `--expect <初步目录>/MERGED_REPORT.json`。任何比率、区间、平均或配对差值与初步结果不同，合并就停止。

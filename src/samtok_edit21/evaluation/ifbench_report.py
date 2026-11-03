@@ -8,11 +8,15 @@ records and must equal the published row, and the index table must have the publ
 averaged.  ``--overlay`` runs (a repair run judged on its own, e.g. after the Pass1 format repair) replace the main
 run's entries of their requests; ``--baseline-overlay`` directories (``scripts/ifbench/rejudge_baselines.py``: one more
 Judge call for a baseline answer that failed) give the failed answers of the published rows their new scores, after the
-published rows have been reproduced from the original records.  Every replacement is listed in the merged report.  Run
-with the benchmark snapshot on PYTHONPATH:
+published rows have been reproduced from the original records.  Every replacement is listed in the merged report.
 
-    python -m samtok_edit21.evaluation.ifbench_report --benchmark-report <results root>/report/REPORT.json \\
-        --run <run dir> [--overlay <repair run dir>] [--baseline-overlay <re-judge dir>] --output <dir>
+Before the benchmark's global report exists, ``--bundle`` computes the baseline rows from the four machines' Judge records
+with the benchmark's own ``make_row`` (a preliminary report); ``--expect`` checks that a later merge gives the same
+numbers.  Run with the benchmark snapshot on PYTHONPATH:
+
+    python -m samtok_edit21.evaluation.ifbench_report (--benchmark-report <results root>/report/REPORT.json | \\
+        --bundle <bundle>) --run <run dir> [--overlay <repair run dir>] [--baseline-overlay <re-judge dir>] \\
+        [--expect <earlier MERGED_REPORT.json>] --output <dir>
 """
 from __future__ import annotations
 
@@ -89,6 +93,69 @@ def apply_overlays(ours, overlays):
                              "judge_key": entry["judge_key"]})
             by_id[entry["request_id"]] = entry
     return dict(ours, requests=list(by_id.values())), replaced
+
+
+def node_report(bundle, nodes=4):
+    """A stand-in for the benchmark's global report, computed before it: the benchmark's own ``make_row`` over the
+    machines' Judge bindings and effective records, on the same index table.  Each machine verified its records when it
+    completed (``COMPLETED.json``); the global report re-verifies every hash and must later give the same rows."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from samtok_benchmark.io import digest, read_jsonl, sha256_file
+    from samtok_benchmark.ifbench.fairness_dev_report import REPLICATES, SEED, Bootstrap, make_row
+
+    plan = json.loads((bundle / "plan.json").read_text())
+    ready = json.loads((bundle / "READY.json").read_text())
+    if sha256_file(plan["case_manifest"]) != plan["case_manifest_sha256"]:
+        raise ValueError("Case manifest differs from the plan")
+    cases = {c["id"]: c for c in read_jsonl(plan["case_manifest"])}
+    results = Path(plan["results_root"])
+    bound, paths = {}, {}
+    for node in range(nodes):
+        directory = results / "nodes" / f"node-{node}"
+        done = json.loads((directory / "COMPLETED.json").read_text()) if (directory / "COMPLETED.json").exists() else {}
+        if done.get("status") != "completed" or done.get("plan_digest") != plan["digest"]:
+            raise ValueError(f"Node {node} has not completed this plan")
+        for b in json.loads((directory / "judge" / "bindings.json").read_text()):
+            if (b["model"], b["setting"], b["case_id"]) in bound:
+                raise ValueError(f"{b['key']} is bound on two machines")
+            bound[b["model"], b["setting"], b["case_id"]] = b
+            if b["generation_status"] == "generated":
+                paths[b["judge_key"]] = directory / "judge" / "effective_records" / f"{b['judge_key']}.json"
+    if set(bound) != {(t["model"], t["setting"], t["case_id"]) for t in plan["tasks"]}:
+        raise ValueError("The machines' bindings do not cover the plan")
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        effective = dict(zip(paths, pool.map(lambda path: json.loads(path.read_text()), paths.values())))
+    context = {"case_ids": plan["case_ids"], "cases": cases}
+    boot = Bootstrap([len(cases[c]["units"]) for c in plan["case_ids"]])
+    rows = [make_row(m, s, context, bound, effective, boot)[0] for m in plan["model_order"] for s in plan["settings"]]
+    return {"preliminary": True, "case_ids": plan["case_ids"], "settings": plan["settings"],
+            "model_order": plan["model_order"], "rows": rows, "judge_config": plan["judge_config"],
+            "plan_digest": plan["digest"], "source_commit": ready["source_commit"],
+            "bootstrap": {"seed": SEED, "replicates": REPLICATES, "shared_indices_sha256": digest(boot.indices.tolist()),
+                          "cluster": "source image", "scope": "the four machines' records before the global report"}}
+
+
+def differences(merged, expected):
+    """Every rate, interval, mean and paired difference of ``merged`` that differs from ``expected``."""
+    found = []
+
+    def compare(path, a, b):
+        if isinstance(a, dict) and isinstance(b, dict):
+            for key in sorted(set(a) | set(b)):
+                compare(f"{path}/{key}", a.get(key), b.get(key))
+        elif isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
+            for i, (x, y) in enumerate(zip(a, b)):
+                compare(f"{path}/{i}", x, y)
+        elif isinstance(a, float) and isinstance(b, float):
+            if not math.isclose(a, b, abs_tol=1e-12):
+                found.append(path)
+        elif a != b:
+            found.append(path)
+
+    for key in ("rows", "mean_over_settings", f"paired_{METHOD}_minus_baseline"):
+        compare(key, merged[key], expected[key])
+    return found
 
 
 def apply_baseline_overlays(rows, overlays):
@@ -199,7 +266,7 @@ def merge(benchmark, ours, overlays=(), baseline_overlays=()):
             "derived": {m: derived(rows[m], draws[m]) for m in methods},
             f"paired_{METHOD}_minus_baseline": paired, "replaced_requests": replaced,
             "baseline_overlays": [o.get("source") for o in baseline_overlays],
-            "replaced_baseline_answers": baseline_replaced}
+            "replaced_baseline_answers": baseline_replaced, "preliminary": bool(benchmark.get("preliminary"))}
 
 
 def cell(value, interval):
@@ -210,9 +277,12 @@ def cell(value, interval):
 
 def markdown(merged):
     settings = merged["settings"]
-    lines = ["# IF-Bench 全量结果：七模型 + SAMTokEdit", "",
+    lines = ["# IF-Bench 全量结果：七模型 + SAMTokEdit" + ("（初步）" if merged.get("preliminary") else ""), "",
              f"{merged['source_count']} 张源图、{merged['units']} 个单元。数字是百分比，方括号是 95% 区间"
              "（benchmark 的源图配对 bootstrap，所有方法共用同一组抽样）。mean 是十种 setting 的算术平均，只作概览。", ""]
+    if merged.get("preliminary"):
+        lines += ["基线各行由四台机器的判分记录直接计算（benchmark 自己的 `make_row`），benchmark 的全局报告尚未生成；"
+                  "全局报告出来后重新合并，数字应完全相同。", ""]
     if merged["replaced_requests"]:
         lines += [f"{METHOD} 有 {len(merged['replaced_requests'])} 个请求用修复运行的结果替换："
                   + "、".join(r["request_id"] for r in merged["replaced_requests"]) + "。", ""]
@@ -246,17 +316,22 @@ def markdown(merged):
 
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    p.add_argument("--benchmark-report", type=Path, required=True)
+    source = p.add_mutually_exclusive_group(required=True)
+    source.add_argument("--benchmark-report", type=Path)
+    source.add_argument("--bundle", type=Path, help="compute the baseline rows from the machines' records (preliminary)")
     p.add_argument("--run", type=Path, required=True)
     p.add_argument("--overlay", type=Path, action="append", default=[], help="repair run whose entries replace the main run's")
     p.add_argument("--baseline-overlay", type=Path, action="append", default=[],
                    help="rejudge_baselines.py output whose scored answers replace failed baseline answers")
+    p.add_argument("--expect", type=Path, help="an earlier MERGED_REPORT.json whose numbers this merge must reproduce")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args(argv)
     overlays = [json.loads((run / "REPORT.json").read_text()) for run in a.overlay]
     baseline_overlays = [dict(json.loads((d / "OVERLAY.json").read_text()), source=str(d)) for d in a.baseline_overlay]
-    merged = merge(json.loads(a.benchmark_report.read_text()), json.loads((a.run / "REPORT.json").read_text()), overlays,
-                   baseline_overlays)
+    benchmark = json.loads(a.benchmark_report.read_text()) if a.benchmark_report else node_report(a.bundle)
+    merged = merge(benchmark, json.loads((a.run / "REPORT.json").read_text()), overlays, baseline_overlays)
+    if a.expect and (found := differences(merged, json.loads(a.expect.read_text()))):
+        raise SystemExit(f"{len(found)} numbers differ from {a.expect}: {found[:10]}")
     a.output.mkdir(parents=True, exist_ok=True)
     (a.output / "MERGED_REPORT.json").write_text(json.dumps(merged, ensure_ascii=False, indent=1))
     (a.output / "MERGED_REPORT.md").write_text(markdown(merged))

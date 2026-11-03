@@ -508,3 +508,62 @@ def test_baseline_overlay_scores_only_failed_answers():
             ifbench_report.merge(benchmark, ours, baseline_overlays=[bad])
     with pytest.raises(ValueError):
         ifbench_report.merge(benchmark, ours, baseline_overlays=[overlay, overlay])
+
+
+def test_preliminary_rows_come_from_the_machines_records_with_the_benchmarks_make_row(tmp_path):
+    stats = pytest.importorskip("samtok_benchmark.ifbench.fairness_dev_report")
+    from samtok_benchmark.io import digest, sha256_file
+    from samtok_edit21.evaluation import ifbench_report
+
+    case_ids, ks, models = ["c0", "c1", "c2", "c3"], [2, 3, 2, 2], ["m1", "m2"]
+    manifest = tmp_path / "cases.jsonl"
+    manifest.write_text("".join(json.dumps({"id": c, "units": [{"id": f"U{i + 1}"} for i in range(k)]}) + "\n"
+                                for c, k in zip(case_ids, ks)))
+    results, bundle = tmp_path / "results", tmp_path / "bundle"
+    bundle.mkdir()
+    owner = {"c0": 0, "c2": 0, "c1": 1, "c3": 1}
+    plan = {"case_manifest": str(manifest), "case_manifest_sha256": sha256_file(manifest), "results_root": str(results),
+            "case_ids": case_ids, "settings": ifbench.SETTINGS, "model_order": models, "judge_config": {"engine": {}},
+            "digest": "d", "tasks": [{"model": m, "setting": s, "case_id": c} for m in models for s in ifbench.SETTINGS
+                                     for c in case_ids]}
+    (bundle / "plan.json").write_text(json.dumps(plan))
+    (bundle / "READY.json").write_text(json.dumps({"source_commit": "c"}))
+    block = lambda score: {"score": score, "pass": score >= 3, "evidence": "seen"}  # noqa: E731
+    bindings = {0: [], 1: []}
+    for m in models:
+        for s in ifbench.SETTINGS:
+            for c, k in zip(case_ids, ks):
+                key = f"{m}-{s}-{c}"
+                status = "failed" if (m, s, c) == ("m2", "S1", "c0") else "generated"
+                bindings[owner[c]].append({"key": key, "model": m, "setting": s, "case_id": c, "result_path": key,
+                                           "generation_status": status, "judge_key": key if status == "generated" else None})
+                if status != "generated":
+                    continue
+                answer = {"status": "scored", "scores": {
+                    "units": [{"id": f"U{i + 1}", "E": {"score": 4, "pass": True, "evidence": "seen"}, "P": block(4),
+                               "Q": block(4)} for i in range(k)], "global_P": block(4), "global_Q": block(4)}}
+                if (m, s, c) == ("m2", "S5", "c1"):
+                    answer = {"status": "judge-failed", "reason": "Truncated Judge response"}
+                directory = results / "nodes" / f"node-{owner[c]}" / "judge" / "effective_records"
+                directory.mkdir(parents=True, exist_ok=True)
+                (directory / f"{key}.json").write_text(json.dumps(answer))
+    for node, items in bindings.items():
+        (results / "nodes" / f"node-{node}" / "judge" / "bindings.json").write_text(json.dumps(items))
+    (results / "nodes" / "node-0" / "COMPLETED.json").write_text(json.dumps({"status": "completed", "plan_digest": "d"}))
+    with pytest.raises(ValueError):                                    # node 1 has not completed yet
+        ifbench_report.node_report(bundle, nodes=2)
+    (results / "nodes" / "node-1" / "COMPLETED.json").write_text(json.dumps({"status": "completed", "plan_digest": "d"}))
+    benchmark = ifbench_report.node_report(bundle, nodes=2)
+    rows = {(r["model"], r["setting"]): r for r in benchmark["rows"]}
+    assert rows["m1", "S1"]["UnitPass"] == 1.0 and rows["m1", "S1"]["JointPass"] == 1.0
+    assert rows["m2", "S1"]["UnitPass"] == pytest.approx(7 / 9)      # the generation failure counts as zero
+    assert rows["m2", "S5"]["UnitPass"] is None                       # the failed Judge answer leaves the row incomplete
+    assert benchmark["bootstrap"]["shared_indices_sha256"] == digest(stats.Bootstrap(ks).indices.tolist())
+    requests = [{"case_id": c, "setting": s, "status": "scored", "unit_pass": [True] * k, "joint_pass": True}
+                for s in ifbench.SETTINGS for c, k in zip(case_ids, ks)]
+    merged = ifbench_report.merge(benchmark, {"case_ids": case_ids, "method": {"name": "m"}, "requests": requests})
+    assert merged["preliminary"] and "（初步）" in ifbench_report.markdown(merged)
+    assert ifbench_report.differences(merged, merged) == []
+    changed = copy.deepcopy(merged)
+    changed["rows"]["m1"]["S1"]["UnitPass"] = 0.5
+    assert ifbench_report.differences(merged, changed) == ["rows/m1/S1/UnitPass"]
