@@ -367,3 +367,144 @@ def test_overlay_replaces_the_entries_of_its_requests():
     merged, replaced = ifbench_report.apply_overlays(failed, [first, fix])
     assert merged["requests"][0]["judge_key"] == "k3" and [r["overlay_run"] for r in replaced] == ["repair1", "repair"]
 
+
+
+def load_rejudge():
+    pytest.importorskip("samtok_benchmark.ifbench.dev_judge")
+    spec = importlib.util.spec_from_file_location("ifbench_rejudge", ROOT / "scripts/ifbench/rejudge_baselines.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_baseline_rejudge_judges_each_failed_key_once(tmp_path, monkeypatch):
+    rejudge = load_rejudge()
+    canonical = rejudge.canonical
+    config = {"engine": {}, "decode": {}}
+    calls = []
+
+    class Backend:
+        def __init__(self, args, images):
+            calls.append("load")
+
+        def generate(self, conversations):
+            calls.extend(c["case"] for c in conversations)
+            return [judge_answer(c["units"], 4) for c in conversations]
+
+    monkeypatch.setattr(canonical, "Backend", Backend)
+    monkeypatch.setattr(canonical, "fingerprint", lambda: config)
+    monkeypatch.setattr(canonical, "binding", lambda case, sha, _: f"{case['id']}-{sha[:8]}")
+    monkeypatch.setattr(canonical, "prompt", lambda case: case["id"])
+    monkeypatch.setattr(canonical, "evidence", lambda case, _: {"case": case["id"],
+                                                                "units": [u["id"] for u in case["units"]]})
+    cases = {c: {"id": c, "units": [{"id": "U1"}, {"id": "U2"}]} for c in ("a", "b", "c")}
+    results, bundle = tmp_path / "results", tmp_path / "bundle"
+    bundle.mkdir()
+    ready = {"results_root": str(results), "plan_sha256": "s", "preparation_plan_digest": "d"}
+    (bundle / "READY.json").write_text(json.dumps(ready))
+    monkeypatch.setattr(rejudge, "bundle_context", lambda _: (ready, config, cases))
+
+    def node(n, outputs, statuses, completed=True):
+        root = results / "nodes" / f"node-{n}"
+        (root / "judge" / "effective_records").mkdir(parents=True)
+        if completed:
+            (root / "COMPLETED.json").write_text(json.dumps({"status": "completed", "plan_digest": "d"}))
+        (root / "judge" / "config.json").write_text(json.dumps(config))
+        (root / "judge" / "plan_binding.json").write_text(json.dumps({"plan_sha256": "s"}))
+        bindings = []
+        for (model, setting, case), content in outputs.items():
+            directory = results / "runs" / model / setting / case
+            directory.mkdir(parents=True)
+            image = directory / "output.png"
+            image.write_text(content)
+            sha = ifbench.sha256_file(image)
+            (directory / "result.json").write_text(json.dumps({"status": "generated"}))
+            key = f"{case}-{sha[:8]}"
+            bindings.append({"key": f"{model}/{setting}/{case}", "model": model, "setting": setting, "case_id": case,
+                             "result_path": str(directory / "result.json"), "generation_status": "generated",
+                             "judge_key": key, "generation_record_sha256": ifbench.sha256_file(directory / "result.json"),
+                             "output_sha256": sha, "output_image": str(image)})
+            (root / "judge" / "effective_records" / f"{key}.json").write_text(json.dumps(
+                {"status": statuses[case], "raw_response": {"finish_reason": "length"}, "reason": "Truncated"}))
+        (root / "judge" / "bindings.json").write_text(json.dumps(bindings))
+
+    # Node 1: case a failed and its output serves two settings; case b is scored.  Node 0 is still running.
+    node(1, {("m", "S1", "a"): "1", ("m", "S5", "a"): "1", ("m", "S1", "b"): "2"},
+         {"a": "judge-failed", "b": "scored"})
+    node(0, {("m", "S1", "c"): "3"}, {"c": "judge-failed"}, completed=False)
+    output = tmp_path / "rejudge"
+    with pytest.raises(SystemExit):
+        rejudge.main(["--bundle", str(bundle), "--output", str(output), "--node", "0"])
+    rejudge.main(["--bundle", str(bundle), "--output", str(output)])
+    assert [c for c in calls if c != "load"] == ["a"]
+    result = json.loads((output / "OVERLAY.json").read_text())
+    assert result["nodes"] == [1] and result["statuses"] == {"scored": 1}
+    entry = result["entries"][0]
+    assert sorted(x["setting"] for x in entry["logical"]) == ["S1", "S5"]
+    assert entry["original"]["status"] == "judge-failed" and entry["rejudge"]["scores"]["units"][0]["E"]["score"] == 4
+    # Node 0 later: only its key is judged, node 1 stays in the overlay and is not judged again.
+    calls.clear()
+    (results / "nodes" / "node-0" / "COMPLETED.json").write_text(json.dumps({"status": "completed", "plan_digest": "d"}))
+    rejudge.main(["--bundle", str(bundle), "--output", str(output), "--node", "0"])
+    assert [c for c in calls if c != "load"] == ["c"]
+    result = json.loads((output / "OVERLAY.json").read_text())
+    assert result["nodes"] == [0, 1] and result["statuses"] == {"scored": 2}
+    # A generation record that changed after the Judge stops the re-judge.
+    (results / "runs" / "m" / "S1" / "a" / "result.json").write_text("{}")
+    with pytest.raises(ValueError):
+        rejudge.main(["--bundle", str(bundle), "--output", str(output), "--collect-only"])
+
+
+def test_baseline_overlay_scores_only_failed_answers():
+    stats = pytest.importorskip("samtok_benchmark.ifbench.fairness_dev_report")
+    from samtok_benchmark.io import digest
+    from samtok_edit21.evaluation import ifbench_report
+
+    case_ids, ks = ["c0", "c1", "c2", "c3"], [2, 2, 3, 2]
+    boot = stats.Bootstrap(ks)
+    rows = []
+    for setting in ifbench.SETTINGS:
+        up, jp = np.array([2, 1, 3, 0]), np.array([1, 0, 1, 0])
+        unknown = np.array([False, False, setting == "S1", False])
+        row, _ = stats.rates(up * ~unknown, jp * ~unknown, np.array(ks), unknown, boot)
+        row.update(model="base", setting=setting, per_case=[
+            {"case_id": c, "K": k, "judge_key": f"{setting}-{c}", "status": "judge-failed" if miss else "scored",
+             "UnitPass_count": None if miss else int(u), "JointPass": None if miss else int(j)}
+            for c, k, u, j, miss in zip(case_ids, ks, up, jp, unknown)])
+        rows.append(row)
+    config = {"engine": {}}
+    benchmark = {"case_ids": case_ids, "settings": ifbench.SETTINGS, "model_order": ["base"], "rows": rows,
+                 "judge_config": config, "bootstrap": {"shared_indices_sha256": digest(boot.indices.tolist())}}
+    requests = [{"case_id": c, "setting": s, "status": "scored", "unit_pass": [True] * k, "joint_pass": True}
+                for s in ifbench.SETTINGS for c, k in zip(case_ids, ks)]
+    ours = {"case_ids": case_ids, "method": {"name": "m"}, "requests": requests}
+    assert ifbench_report.merge(benchmark, ours)["rows"]["base"]["S1"]["UnitPass"] is None   # incomplete as published
+    block = lambda score: {"score": score, "pass": score >= 3, "evidence": "seen"}  # noqa: E731
+    scores = {"units": [{"id": f"U{i}", "E": {"score": 4, "pass": True, "evidence": "seen"}, "P": block(4),
+                         "Q": block(3 if i < 3 else 2)} for i in (1, 2, 3)], "global_P": block(4), "global_Q": block(4)}
+    entry = {"judge_key": "S1-c2", "unit_ids": ["U1", "U2", "U3"],
+             "logical": [{"model": "base", "setting": "S1", "case_id": "c2"}],
+             "original": {"status": "judge-failed"}, "rejudge": {"status": "scored", "scores": scores,
+                                                                 "effective_record": "e"}}
+    overlay = {"source": "rejudge", "judge_run_id": digest(config), "entries": [entry]}
+    merged = ifbench_report.merge(benchmark, ours, baseline_overlays=[overlay])
+    assert merged["rows"]["base"]["S1"]["UnitPass"] == pytest.approx((2 + 1 + 2 + 0) / 9)   # two of three units pass
+    assert merged["rows"]["base"]["S1"]["JointPass"] == pytest.approx(1 / 4)
+    assert merged["rows"]["base"]["S5"] == ifbench_report.merge(benchmark, ours)["rows"]["base"]["S5"]
+    assert merged["replaced_baseline_answers"] == [{"model": "base", "setting": "S1", "case_id": "c2",
+                                                    "judge_key": "S1-c2", "replaced_status": "judge-failed",
+                                                    "overlay": "rejudge", "UnitPass_count": 2, "JointPass": 0}]
+    assert "base 1 个" in ifbench_report.markdown(merged)
+    assert rows[0]["per_case"][2]["status"] == "judge-failed"              # the published rows are not modified
+    # A failed re-judge leaves the row incomplete; mismatches and a second re-judge of one key stop the merge.
+    failed = dict(overlay, entries=[dict(entry, rejudge={"status": "judge-failed"})])
+    assert ifbench_report.merge(benchmark, ours, baseline_overlays=[failed])["rows"]["base"]["S1"]["UnitPass"] is None
+    for bad in (dict(overlay, judge_run_id="x"),
+                dict(overlay, entries=[dict(entry, judge_key="S1-c1", logical=[dict(entry["logical"][0], case_id="c1")])]),
+                dict(overlay, entries=[dict(entry, logical=[dict(entry["logical"][0], setting="S5")])]),
+                dict(overlay, entries=[dict(entry, logical=[*entry["logical"], {"model": "base", "setting": "S5",
+                                                                                 "case_id": "c2"}])])):
+        with pytest.raises(ValueError):
+            ifbench_report.merge(benchmark, ours, baseline_overlays=[bad])
+    with pytest.raises(ValueError):
+        ifbench_report.merge(benchmark, ours, baseline_overlays=[overlay, overlay])

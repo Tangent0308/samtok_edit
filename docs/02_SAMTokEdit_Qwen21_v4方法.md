@@ -677,7 +677,7 @@ samtok_edit_qwen-image-2.1-v4/
 | `src/samtok_edit21/evaluation/round2_eval.py`、`round2_report.py` | 开发集五类探针（`round2-eval`）与配对报告（`round2-report`） |
 | `src/samtok_edit21/evaluation/benchmark_token.py` | benchmark v2 适配器（`ground`、`token_guidance`、`teacher`） |
 | `src/samtok_edit21/evaluation/ifbench.py` | IF-Bench 1MP 协议下的完整方法：Pass1 取 token、公开文本放 token、在画布尺寸生成、按机器分图和按请求认领（文档 03 §12） |
-| `src/samtok_edit21/evaluation/ifbench_report.py` | 我方结果并入 benchmark 全量报告：同一组 bootstrap 抽样上的 8 方法表和配对差值 |
+| `src/samtok_edit21/evaluation/ifbench_report.py` | 我方结果并入 benchmark 全量报告：同一组 bootstrap 抽样上的 8 方法表和配对差值；按顺序叠加我方修复层（`--overlay`）和基线补判层（`--baseline-overlay`，文档 03 §12.10） |
 | `src/samtok_edit21/regions/selection.py` | SAM2 的点/框选区 |
 
 ### 6.3 推理链路

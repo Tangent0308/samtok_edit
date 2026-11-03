@@ -6,11 +6,13 @@ resampling with one seed and one index table for all methods and settings, and f
 failures count and a missing Judge answer leaves a row incomplete.  Every baseline row is recomputed from its per-case
 records and must equal the published row, and the index table must have the published digest; no node percentages are
 averaged.  ``--overlay`` runs (a repair run judged on its own, e.g. after the Pass1 format repair) replace the main
-run's entries of their requests; the replaced requests are listed in the merged report.  Run with the benchmark
-snapshot on PYTHONPATH:
+run's entries of their requests; ``--baseline-overlay`` directories (``scripts/ifbench/rejudge_baselines.py``: one more
+Judge call for a baseline answer that failed) give the failed answers of the published rows their new scores, after the
+published rows have been reproduced from the original records.  Every replacement is listed in the merged report.  Run
+with the benchmark snapshot on PYTHONPATH:
 
     python -m samtok_edit21.evaluation.ifbench_report --benchmark-report <results root>/report/REPORT.json \\
-        --run <run dir> [--overlay <repair run dir>] --output <dir>
+        --run <run dir> [--overlay <repair run dir>] [--baseline-overlay <re-judge dir>] --output <dir>
 """
 from __future__ import annotations
 
@@ -89,7 +91,55 @@ def apply_overlays(ours, overlays):
     return dict(ours, requests=list(by_id.values())), replaced
 
 
-def merge(benchmark, ours, overlays=()):
+def apply_baseline_overlays(rows, overlays):
+    """The published baseline rows with every failed Judge answer that an overlay judged once more and scored given its
+    new pass counts (the benchmark's rule: E=4, P>=3, Q>=3 per unit; all units and global P, Q >= 3 for the source);
+    also the list of replacements.  A key is judged once more at most once, and each overlay entry must match the
+    failed answers of exactly its logical requests."""
+    from samtok_benchmark.ifbench.fairness_dev_judge import validate_scores
+
+    answers = {}
+    for overlay in overlays:
+        for entry in overlay["entries"]:
+            if entry["judge_key"] in answers:
+                raise ValueError(f"Judge key {entry['judge_key']} is re-judged twice")
+            answers[entry["judge_key"]] = (overlay, entry)
+    replaced, result, matched = [], [], {}
+    for row in rows:
+        cases = []
+        for case in row["per_case"]:
+            found = answers.get(case.get("judge_key"))
+            if found is None:
+                cases.append(case)
+                continue
+            overlay, entry = found
+            logical = {(x["model"], x["setting"], x["case_id"]) for x in entry["logical"]}
+            if (row["model"], row["setting"], case["case_id"]) not in logical or entry["original"]["status"] != case["status"] \
+                    or case["status"] == "scored":
+                raise ValueError(f"{row['model']}/{row['setting']}/{case['case_id']}: re-judge entry does not match")
+            matched[entry["judge_key"]] = matched.get(entry["judge_key"], 0) + 1
+            if entry["rejudge"]["status"] != "scored":
+                cases.append(case)
+                continue
+            if len(entry["unit_ids"]) != case["K"]:
+                raise ValueError(f"{case['case_id']}: re-judged unit count differs from K")
+            score = entry["rejudge"]["scores"]
+            validate_scores(score, entry["unit_ids"])
+            bits = [u["E"]["score"] == 4 and u["P"]["score"] >= 3 and u["Q"]["score"] >= 3 for u in score["units"]]
+            joint = all(bits) and score["global_P"]["score"] >= 3 and score["global_Q"]["score"] >= 3
+            cases.append(dict(case, status="scored", UnitPass_count=sum(bits), JointPass=int(joint),
+                              rejudge_effective_record=entry["rejudge"]["effective_record"]))
+            replaced.append({"model": row["model"], "setting": row["setting"], "case_id": case["case_id"],
+                             "judge_key": case["judge_key"], "replaced_status": case["status"],
+                             "overlay": overlay.get("source"), "UnitPass_count": sum(bits), "JointPass": int(joint)})
+        result.append(dict(row, per_case=cases))
+    for key, (_, entry) in answers.items():
+        if matched.get(key, 0) != len(entry["logical"]):
+            raise ValueError(f"Re-judged key {key} does not match the published failed answers")
+    return result, replaced
+
+
+def merge(benchmark, ours, overlays=(), baseline_overlays=()):
     from samtok_benchmark.io import digest
     from samtok_benchmark.ifbench.fairness_dev_report import FAILURES, Bootstrap, derived, quantiles, rates
 
@@ -104,19 +154,22 @@ def merge(benchmark, ours, overlays=()):
         raise ValueError("Bootstrap indices differ from the published report")
     ks = np.asarray(ks)
     rows, draws, arrays = {}, {}, {}
-    for row in benchmark["rows"]:
+    for row in benchmark["rows"]:          # the published rows first, from the benchmark's own records
+        up, jp, unknown = baseline_arrays(row, case_ids)
+        check_published(row, rates(up, jp, ks, unknown, boot)[0])
+    if any(o["judge_run_id"] != digest(benchmark["judge_config"]) for o in baseline_overlays):
+        raise ValueError("A baseline overlay was judged with another Judge configuration")
+    published, baseline_replaced = apply_baseline_overlays(benchmark["rows"], baseline_overlays)
+    for row in published:
         arrays[row["model"], row["setting"]] = baseline_arrays(row, case_ids)
     for setting in settings:
         arrays[METHOD, setting] = method_arrays(ours["requests"], setting, case_ids, FAILURES)
     methods = [*benchmark["model_order"], METHOD]
-    by_row = {(r["model"], r["setting"]): r for r in benchmark["rows"]}
     for method in methods:
         rows[method], draws[method] = {}, {}
         for setting in settings:
             up, jp, unknown = arrays[method, setting]
             computed, distributions = rates(up, jp, ks, unknown, boot)
-            if method != METHOD:
-                check_published(by_row[method, setting], computed)
             computed["by_K"] = {str(k): rates(up, jp, ks, unknown, boot, ix, selected)[0]
                                 for k, (selected, ix) in boot.k_indices.items()}
             rows[method][setting], draws[method][setting] = computed, distributions
@@ -144,7 +197,9 @@ def merge(benchmark, ours, overlays=()):
             "benchmark_plan_digest": benchmark.get("plan_digest"), "benchmark_source_commit": benchmark.get("source_commit"),
             "bootstrap": benchmark["bootstrap"], "rows": rows, "mean_over_settings": means,
             "derived": {m: derived(rows[m], draws[m]) for m in methods},
-            f"paired_{METHOD}_minus_baseline": paired, "replaced_requests": replaced}
+            f"paired_{METHOD}_minus_baseline": paired, "replaced_requests": replaced,
+            "baseline_overlays": [o.get("source") for o in baseline_overlays],
+            "replaced_baseline_answers": baseline_replaced}
 
 
 def cell(value, interval):
@@ -161,6 +216,12 @@ def markdown(merged):
     if merged["replaced_requests"]:
         lines += [f"{METHOD} 有 {len(merged['replaced_requests'])} 个请求用修复运行的结果替换："
                   + "、".join(r["request_id"] for r in merged["replaced_requests"]) + "。", ""]
+    if merged.get("replaced_baseline_answers"):
+        counts = {}
+        for r in merged["replaced_baseline_answers"]:
+            counts[r["model"]] = counts.get(r["model"], 0) + 1
+        lines += ["基线 Judge 失败的答案按同一规则再判一次后计分（列表见 MERGED_REPORT.json）："
+                  + "、".join(f"{m} {n} 个" for m, n in counts.items()) + "。", ""]
     header = "| 方法 | " + " | ".join(settings) + " | mean |"
     rule = "|---|" + "---:|" * (len(settings) + 1)
     for metric in METRICS:
@@ -188,10 +249,14 @@ def main(argv=None):
     p.add_argument("--benchmark-report", type=Path, required=True)
     p.add_argument("--run", type=Path, required=True)
     p.add_argument("--overlay", type=Path, action="append", default=[], help="repair run whose entries replace the main run's")
+    p.add_argument("--baseline-overlay", type=Path, action="append", default=[],
+                   help="rejudge_baselines.py output whose scored answers replace failed baseline answers")
     p.add_argument("--output", type=Path, required=True)
     a = p.parse_args(argv)
     overlays = [json.loads((run / "REPORT.json").read_text()) for run in a.overlay]
-    merged = merge(json.loads(a.benchmark_report.read_text()), json.loads((a.run / "REPORT.json").read_text()), overlays)
+    baseline_overlays = [dict(json.loads((d / "OVERLAY.json").read_text()), source=str(d)) for d in a.baseline_overlay]
+    merged = merge(json.loads(a.benchmark_report.read_text()), json.loads((a.run / "REPORT.json").read_text()), overlays,
+                   baseline_overlays)
     a.output.mkdir(parents=True, exist_ok=True)
     (a.output / "MERGED_REPORT.json").write_text(json.dumps(merged, ensure_ascii=False, indent=1))
     (a.output / "MERGED_REPORT.md").write_text(markdown(merged))

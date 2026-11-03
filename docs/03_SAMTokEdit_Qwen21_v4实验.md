@@ -1478,5 +1478,51 @@ benchmark 会话发布了 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/
 **处理（用户同意）：**
 - **七模型：**benchmark 会话把故障卡（node 0 shard-1-of-8）上的全部记录移到包外隔离目录（Qwen2511、Qwen2.1、FLUX.3 各 339 条，RePlan 规划 38 条，含那条致命 CUDA 失败），并按基础设施故障放行 29 条中断的规划。READY 不变，新 attempt `run003` 在 4 台健康机器上续跑：健康记录跳过，隔离的请求按原输入和 seed 42 重跑。清单：`/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-mp-full4-run002-hardware-quarantine-20261102/QUARANTINE_RECORDS.csv`。
 - **我方：**不重新出图（全部输出已逐字节核对），在新机器上统一重判一遍。这样 8 个方法的分数都来自健康机器，node 0 在故障机上打出的分数不再使用。`scripts/ifbench/build_final_run.py` 把每个请求的最终 token 和输出汇总到 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final`：主运行的输出，加上修复层重新生成的 5 个（§12.7 的 4 个、§12.8 的 1 个），输出只引用不复制。入口在这个目录里会发现所有请求已完成，只跑 Judge。§12.8 的本机补判结果保留作记录，不进最终统计。
-- **最终合并：**`ifbench_report --benchmark-report <结果根>/report/REPORT.json --run <最终目录>`，不再需要修复层。
+- **最终合并：**`ifbench_report --benchmark-report <结果根>/report/REPORT.json --run <最终目录>`；run003 之后又加了我方和基线的补判层，完整命令见 §12.10。
 
+### 12.10 run003 进展、我方最终分数与基线补判（11-02 至 11-03）
+
+**run003：**11-02 12:38 UTC 在 4 台新机器上启动（`n124-173-151`、`n124-254-020`、`n124-254-099`、`n124-254-064`），预检 38 分钟通过。我方阶段只跑 Judge，约 2 小时（含 40 分钟加载引擎），15:42 UTC 写下 SUCCESS.json。10,840 个请求里有 11 条普通 JSON 解析失败；按 §12.8 的规则在本机再判一次（`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final_rejudge1`，由 `scripts/ifbench/rejudge_overlay.py` 生成），全部得到有效分数。
+
+**我方最终分数**（10,840 个请求全部计分；95% 区间等合并报告给出）：
+
+| setting | UnitPass % | JointPass % |
+|---|---:|---:|
+| S1 | 81.2 | 51.3 |
+| S2-point | 83.5 | 55.2 |
+| S2-box | 83.8 | 55.7 |
+| S2-mask | 84.2 | 56.3 |
+| S3-point | 77.2 | 42.7 |
+| S3-box | 79.4 | 47.9 |
+| S3-mask | 78.3 | 46.1 |
+| S4-ref | 83.3 | 54.1 |
+| S4-noref | 78.7 | 44.9 |
+| S5 | 81.0 | 48.9 |
+| 十种平均 | 81.1 | 50.3 |
+
+**七模型：**15:42 UTC 接着我方开始。benchmark 按 `[shard::8]` 静态分片，隔离的请求全属 node 0 的 shard 1，只能由一个 worker 串行重跑（Qwen2511 6.4 h、Qwen2.1 3.3 h、FLUX.3 0.9 h）。因此 node 0 比其他三台晚约 10.7 小时。截至 11-03 03:34 UTC 没有基础设施故障。原生失败按协议保留：RePlan 6 条（规划给出非法 bbox），MIRAGE 71 条（规划 JSON 解析失败、列表长度不符、定位输出在 128 token 上限处截断），MICE 5 条。
+
+**基线补判（同一规则用于七个基线）：**benchmark 的 Judge 不重试。同一模型×setting 只要有一张图缺分，`rates` 就把整行记为不完整（UP/JP 为 null，不补零）。我方的解析失败率约 0.1%；照此估计，七模型约 7.6 万条判分会有几十条失败，分散在很多行。实现如下：
+- `scripts/ifbench/rejudge_baselines.py`，在 Judge runtime 里运行。
+  - 对象：已完成的机器（`nodes/node-<n>/COMPLETED.json`）。
+  - 先从 benchmark 的 `judge/bindings.json` 和 `effective_records` 取出未计分的 Judge key，核对生成记录、输出哈希和 canonical binding。
+  - 然后用与我方 `judge.py` 相同的 Judge 循环再判一次：配置相同，16 条一批。结果只写在自己的目录；已受理但没有答案的 key 不再提交。
+  - `OVERLAY.json` 列出每个 key、它服务的逻辑请求、原状态和新答案。可以逐台执行：先做先完成的三台，node 0 完成后再补，已判过的不会重判。
+- `ifbench_report --baseline-overlay <目录>`：
+  - 先用 benchmark 的原始记录复算每个发布行（含区间）并核对。
+  - 再把补判得分的答案按 benchmark 的规则替换进去重算：单元 E=4、P≥3、Q≥3；整图要求所有单元通过且全局 P、Q≥3。
+  - 同一 key 只能补判一次。补判仍失败的保留缺失，该行仍不完整。补判层与报告不一致（key、逻辑请求、原状态或 Judge 配置）时停止。
+  - 所有替换列在 `replaced_baseline_answers`。
+
+**最终合并：**
+
+```bash
+PYTHONPATH=<v4>/src:<全量包>/repo/src python -m samtok_edit21.evaluation.ifbench_report \
+  --benchmark-report /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/IF-Bench/one-mp-full4-20261031/report/REPORT.json \
+  --run /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final \
+  --overlay /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final_rejudge1 \
+  --baseline-overlay /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_baseline_rejudge1 \
+  --output <输出目录>
+```
+
+`python` 用 v4 的环境（合并的单测就在这个环境里跑）；`<全量包>` 是 `.ifbench-tmp/one-mp-full4-20261101-heartbeatfix`。补判脚本则用 Judge runtime 的包装器运行（它自己设定 PYTHONPATH）。
