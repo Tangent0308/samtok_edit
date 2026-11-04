@@ -244,6 +244,7 @@ def parser():
     p.add_argument("--steps", type=int, default=20)
     p.add_argument("--limit", type=int, default=0, help="Smoke test: at most this many items per set")
     p.add_argument("--canvas-area", type=int, default=0, help="Generation canvas in pixels (default 1024 * 1024)")
+    p.add_argument("--lora-scale", type=float, default=1.0, help="Multiply the DiT LoRA contribution (quality probe)")
     return p
 
 
@@ -269,6 +270,11 @@ def main(argv=None):
     codec = load_codec(args.samtok, device)
     if args.adapter:
         load_grounding_adapter(pipe, codec, args.adapter)
+        if args.lora_scale != 1.0:
+            from peft.tuners.tuners_utils import BaseTunerLayer
+            for module in pipe.dit.modules():
+                if isinstance(module, BaseTunerLayer):
+                    module.scale_layer(args.lora_scale)
     pipe.eval()
     ctx = Context(args.data)
     items = json.load(open(Path(args.data) / args.items))

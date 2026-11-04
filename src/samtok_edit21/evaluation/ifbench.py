@@ -159,7 +159,7 @@ def prepare(bundle, run, config_path, cases=None, settings=None, expect=None):
     """Freeze a run: the method configuration and the verified list of public requests (CPU only)."""
     bundle, run = Path(bundle).resolve(), Path(run).resolve()
     config = json.loads(Path(config_path).read_text())
-    if set(config) != METHOD_KEYS or config["seed"] != 42:
+    if set(config) - {"lora_scale"} != METHOD_KEYS or config["seed"] != 42:
         raise ValueError(f"Method config needs exactly {sorted(METHOD_KEYS)} and seed 42")
     settings = settings or SETTINGS
     if any(s not in SETTINGS for s in settings):
@@ -505,6 +505,11 @@ def run_pass2(run, node=0, nodes=1, worker=0, workers=1):
     pipe = load_pipeline(method["qwen"], method["samtok"], device="cuda")
     codec = load_codec(method["samtok"], "cuda")
     load_grounding_adapter(pipe, codec, method["dit_adapter"])
+    if method.get("lora_scale", 1.0) != 1.0:          # quality probe: scale the DiT LoRA contribution
+        from peft.tuners.tuners_utils import BaseTunerLayer
+        for module in pipe.dit.modules():
+            if isinstance(module, BaseTunerLayer):
+                module.scale_layer(method["lora_scale"])
     pipe.eval()
     load_seconds = time.monotonic() - tick
     guard = FailureGuard()

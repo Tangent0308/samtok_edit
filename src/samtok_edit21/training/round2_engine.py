@@ -35,7 +35,7 @@ from samtok_edit21.training.distributed import average_gradients, broadcast_para
 from samtok_edit21.training.routing import DEFAULT_LAYERS
 
 KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5, "edit_multi_v1": 6,
-              "edit_ext": 7, "edit_multi_ext": 8, "edit_merged": 9, "opsd_merged": 10}
+              "edit_ext": 7, "edit_multi_ext": 8, "edit_merged": 9, "opsd_merged": 10, "edit_plain": 11}
 
 
 def parser():

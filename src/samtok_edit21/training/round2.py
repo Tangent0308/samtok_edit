@@ -46,7 +46,7 @@ from samtok_edit21.training.routing import DISTRACTOR_WEIGHT
 MAX_PIXELS = 1024 * 1024
 LATENT_STRIDE = 16           # one target token covers 16 x 16 pixels
 DISTRACTOR_COVERAGE = 0.25   # a token counts as "on another instance" above this coverage
-EDIT_KINDS = ("edit", "edit_v1", "edit_multi", "edit_multi_v1", "edit_ext", "edit_multi_ext", "edit_merged")
+EDIT_KINDS = ("edit", "edit_v1", "edit_multi", "edit_multi_v1", "edit_ext", "edit_multi_ext", "edit_merged", "edit_plain")
 
 
 @dataclass
@@ -272,6 +272,8 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
         return _prepare_multi_record(pipe, "edit_multi_ext", rd.EXT_ROOT, *ctx.ext_multi(row["id"]), row, max_pixels)
     if row["kind"] == "edit_merged":
         return _prepare_merged(pipe, ctx, row, max_pixels)
+    if row["kind"] == "edit_plain":
+        return _prepare_plain(pipe, row, max_pixels)
     entry = ctx.pool(row["source_id"])
     with Image.open(entry["image"]) as im:
         source = im.convert("RGBA")
@@ -453,7 +455,7 @@ def _prepare_multi_record(pipe, kind, root, pair, tokens, row, max_pixels):
                         max_pixels=max_pixels, dilate=True, local_px=near if row.get("loss_region") == "local" else None)
 
 
-def merged_regions(record, row, shape, partner_selection=None, pool_mask=None):
+def merged_regions(record, row, shape, partner_selection=None, pool_mask=None, changed_override=None):
     """The region maps of a merged record (no model needed): per unit in ``row``'s order the loss region (the changed
     pixels; a multi-unit pair's shared change cut to the unit), the write-side route region (S + change), the token's
     decoded region and the rendered sentence; the negatives (near pool regions, twins' S) and the local-loss area."""
@@ -466,7 +468,7 @@ def merged_regions(record, row, shape, partner_selection=None, pool_mask=None):
         unit = record["units"][index]
         s_px = rle_region(unit["selection"], shape)
         execution_px = rle_region(unit.get("execution_region"), shape)
-        changed_px = rle_region(unit.get("edited_region"), shape)
+        changed_px = rle_region(unit.get("edited_region"), shape) if changed_override is None else changed_override
         if multi:
             changed_px = unit_change(changed_px, s_px | execution_px if execution_px is not None else s_px)
         loss_px.append(next(m for m in (changed_px, execution_px, s_px) if m is not None and m.any()))
@@ -491,18 +493,39 @@ def _prepare_merged(pipe, ctx, row, max_pixels):
     record = ctx.merged(row["id"])
     with Image.open(rd.MERGED_ROOT / record["source_image"]) as im:
         source = im.convert("RGBA")
-    with Image.open(rd.MERGED_ROOT / record["target_image"]) as im:
+    # a self-distilled target replaces the stored one; its changed pixels replace the stored change
+    with Image.open(row.get("target_override") or rd.MERGED_ROOT / record["target_image"]) as im:
         target = im.convert("RGBA")
     shape = (source.height, source.width)
+    changed_override = None
+    if row.get("change_mask"):
+        changed_override = np.asarray(Image.open(row["change_mask"]).convert("L").resize((shape[1], shape[0]), Image.NEAREST)) > 0
     entry = ctx.pool(record["sa1b"]["source_id"]) if row.get("negatives") else None
     loss_px, route_px, token_px, sentences, negative_px, local_px = merged_regions(
         record, row, shape, partner_selection=lambda p: rle_region(ctx.merged(p)["units"][0]["selection"], shape),
-        pool_mask=lambda j: rd.decode_rle(entry["masks"][j]["rle"]).astype(bool))
+        pool_mask=lambda j: rd.decode_rle(entry["masks"][j]["rle"]).astype(bool), changed_override=changed_override)
     prompt = rd.multi_edit_prompt(sentences) if len(sentences) > 1 else sentences[0]
     return _edit_sample(pipe, "edit_merged", source, target, prompt, loss_px=loss_px, route_px=route_px,
                         token_px=token_px, negative_px=negative_px,
                         read_negatives=bool(row.get("negatives") or row.get("partners")), max_pixels=max_pixels,
                         dilate=True, local_px=local_px)
+
+
+def _prepare_plain(pipe, row, max_pixels):
+    """A plain edit pair without region tokens (quality anchor): whole-image FM plus the changed pixels as the region
+    term; no routing, because the prompt carries no span."""
+    with Image.open(row["source"]) as im:
+        source = im.convert("RGBA")
+    with Image.open(row["target"]) as im:
+        target = im.convert("RGBA")
+    shape = (source.height, source.width)
+    loss_px = []
+    if row.get("mask"):
+        mask = np.asarray(Image.open(row["mask"]).convert("L").resize((shape[1], shape[0]), Image.NEAREST)) > 0
+        if mask.any():
+            loss_px = [mask]
+    return _edit_sample(pipe, "edit_plain", source, target, row["prompt"], loss_px=loss_px, route_px=[], token_px=[],
+                        negative_px=np.zeros(shape, bool), read_negatives=False, max_pixels=max_pixels, dilate=True)
 
 
 def _prepare_edit_multi(pipe, ctx, row, max_pixels):
