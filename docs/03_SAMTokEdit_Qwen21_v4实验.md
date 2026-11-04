@@ -1586,3 +1586,5 @@ JointPass（%）分 setting：
 - 我方在每个 setting 上都显著好于每个基线。唯一的例外是 S2-box 对 Qwen-Image-2.1，差别不显著：JP +1.2 [−2.6, +5.0]，UP +0.7 [−0.9, +2.4]。直接给框时，Qwen-Image-2.1 很强。
 - 优势最大的是目标只用语言或点描述的情况：对 Qwen-Image-2.1，S3-point JP +37.1、S4-noref JP +34.3。其余基线在 S3 和 S4-noref 上的 JP 几乎都低于 5%。
 - 出图的原生失败按协议计入分母：RePlan 7、MIRAGE 48、MICE 19。七模型没有基础设施故障。
+
+**论文结果页（11-04）：**全部结果、数据处理规则、运行记录和每个数字的出处，整理在 benchmark 仓库 v2branch 的 [`docs/PAPER_RESULTS.md`](https://github.com/Tangent0308/samtok_edit_benchmark/blob/v2branch/docs/PAPER_RESULTS.md)（commit `a9b9793`）。其中的表格由 `scripts/ifbench/paper_tables.py --output <目录>` 从最终合并报告和逐请求记录生成。
