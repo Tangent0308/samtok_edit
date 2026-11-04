@@ -14,6 +14,7 @@ Run with the Judge runtime's wrapper (its PYTHONPATH is the benchmark snapshot),
         [--node 1 --node 2 ...] [--collect-only]
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 from pathlib import Path
@@ -74,10 +75,19 @@ def failed_answers(results, node, ready, config, cases):
     for b in read(root / "bindings.json"):
         if b["generation_status"] == "generated":
             by_key.setdefault(b["judge_key"], []).append(b)
+
+    def answer(key):                              # a completed node has an effective record for every key
+        value = read(root / "effective_records" / f"{key}.json")
+        return {"status": value["status"], "reason": value.get("reason"), "repair_reason": value.get("repair_reason"),
+                "finish_reason": (value.get("raw_response") or {}).get("finish_reason")}
+
+    keys = sorted(by_key)
+    with ThreadPoolExecutor(max_workers=32) as pool:      # about 19k small NAS reads per machine
+        answers = dict(zip(keys, pool.map(answer, keys)))
     failed = []
-    for key, bound in sorted(by_key.items()):
+    for key in keys:
+        bound, original = by_key[key], answers[key]
         path = root / "effective_records" / f"{key}.json"
-        original = read(path)                     # a completed node has an effective record for every key
         if original["status"] == "scored":
             continue
         first = bound[0]
@@ -95,10 +105,7 @@ def failed_answers(results, node, ready, config, cases):
             "judge_key": key, "node": node, "case_id": first["case_id"], "unit_ids": [u["id"] for u in case["units"]],
             "logical": [{k: b[k] for k in ("key", "model", "setting", "case_id")} for b in bound],
             "output_image": first["output_image"], "output_sha256": first["output_sha256"],
-            "original": {"effective_record": str(path), "effective_sha256": sha256_file(path),
-                         "status": original["status"], "reason": original.get("reason"),
-                         "repair_reason": original.get("repair_reason"),
-                         "finish_reason": (original.get("raw_response") or {}).get("finish_reason")}})
+            "original": {"effective_record": str(path), "effective_sha256": sha256_file(path), **original}})
     return failed
 
 
