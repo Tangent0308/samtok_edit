@@ -499,6 +499,13 @@ def test_baseline_overlay_scores_only_failed_answers():
     # A failed re-judge leaves the row incomplete; mismatches and a second re-judge of one key stop the merge.
     failed = dict(overlay, entries=[dict(entry, rejudge={"status": "judge-failed"})])
     assert ifbench_report.merge(benchmark, ours, baseline_overlays=[failed])["rows"]["base"]["S1"]["UnitPass"] is None
+    # With the user's 11-04 rule an answer that failed twice counts as a failed source instead.
+    counted = ifbench_report.merge(benchmark, ours, baseline_overlays=[failed], failed_twice_as_failure=True)
+    assert counted["rows"]["base"]["S1"]["UnitPass"] == pytest.approx((2 + 1 + 0 + 0) / 9)
+    assert counted["rows"]["base"]["S1"]["JointPass"] == pytest.approx(1 / 4)
+    assert counted["failed_twice_counted_as_failure"] == [{"model": "base", "setting": "S1", "case_id": "c2",
+                                                           "judge_key": "S1-c2", "overlay": "rejudge"}]
+    assert "按失败计" in ifbench_report.markdown(counted)
     for bad in (dict(overlay, judge_run_id="x"),
                 dict(overlay, entries=[dict(entry, judge_key="S1-c1", logical=[dict(entry["logical"][0], case_id="c1")])]),
                 dict(overlay, entries=[dict(entry, logical=[dict(entry["logical"][0], setting="S5")])]),
@@ -567,3 +574,34 @@ def test_preliminary_rows_come_from_the_machines_records_with_the_benchmarks_mak
     changed = copy.deepcopy(merged)
     changed["rows"]["m1"]["S1"]["UnitPass"] = 0.5
     assert ifbench_report.differences(merged, changed) == ["rows/m1/S1/UnitPass"]
+
+
+def test_our_answer_that_failed_twice_follows_the_same_rule():
+    pytest.importorskip("samtok_benchmark.ifbench.fairness_dev_report")
+    from samtok_edit21.evaluation import ifbench_report
+    import samtok_benchmark.ifbench.fairness_dev_report as stats
+    from samtok_benchmark.io import digest
+
+    case_ids, ks = ["c0", "c1"], [2, 2]
+    boot = stats.Bootstrap(ks)
+    rows = []
+    for setting in ifbench.SETTINGS:
+        row, _ = stats.rates(np.array([2, 2]), np.array([1, 1]), np.array(ks), np.zeros(2, bool), boot)
+        row.update(model="base", setting=setting, per_case=[
+            {"case_id": c, "K": k, "judge_key": f"{setting}-{c}", "status": "scored", "UnitPass_count": 2, "JointPass": 1}
+            for c, k in zip(case_ids, ks)])
+        rows.append(row)
+    benchmark = {"case_ids": case_ids, "settings": ifbench.SETTINGS, "model_order": ["base"], "rows": rows,
+                 "judge_config": {}, "bootstrap": {"shared_indices_sha256": digest(boot.indices.tolist())}}
+    requests = [{"request_id": f"{c}--{s}", "case_id": c, "setting": s, "status": "scored", "generation_status": "generated",
+                 "judge_key": f"k-{c}-{s}", "unit_pass": [True, True], "joint_pass": True}
+                for s in ifbench.SETTINGS for c in case_ids]
+    requests[0] = dict(requests[0], status="judge-failed")
+    ours = {"run": "main", "method": {"name": "m"}, "case_ids": case_ids, "requests": requests}
+    again = {"run": "rejudge", "method": {"name": "m"}, "requests": [dict(requests[0], judge_key="k-again")]}
+    assert ifbench_report.merge(benchmark, ours, [again])["rows"]["samtokedit"]["S1"]["UnitPass"] is None
+    merged = ifbench_report.merge(benchmark, ours, [again], failed_twice_as_failure=True)
+    assert merged["rows"]["samtokedit"]["S1"]["UnitPass"] == pytest.approx(2 / 4)       # c0 counts as a failed source
+    assert [r["case_id"] for r in merged["failed_twice_counted_as_failure"]] == ["c0"]
+    # A failed answer that was never judged a second time stays missing even with the rule.
+    assert ifbench_report.merge(benchmark, ours, failed_twice_as_failure=True)["rows"]["samtokedit"]["S1"]["UnitPass"] is None

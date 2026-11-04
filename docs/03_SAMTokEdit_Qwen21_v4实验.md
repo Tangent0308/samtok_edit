@@ -1522,7 +1522,7 @@ PYTHONPATH=<v4>/src:<全量包>/repo/src python -m samtok_edit21.evaluation.ifbe
   --run /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final \
   --overlay /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final_rejudge1 \
   --baseline-overlay /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_baseline_rejudge1 \
-  --output <输出目录>
+  --failed-twice-as-failure --output <输出目录>
 ```
 
 `python` 用 v4 的环境（合并的单测就在这个环境里跑）；`<全量包>` 是 `.ifbench-tmp/one-mp-full4-20261101-heartbeatfix`。补判脚本则用 Judge runtime 的包装器运行（它自己设定 PYTHONPATH）。
@@ -1532,3 +1532,57 @@ PYTHONPATH=<v4>/src:<全量包>/repo/src python -m samtok_edit21.evaluation.ifbe
 - 基线各行用 benchmark 自己的 `make_row`，从四台的 `judge/bindings.json` 和 effective 记录直接计算。抽样表与官方相同，表头标"初步"。
 - 每台在完成时已经核对过自己的记录（`COMPLETED.json` 中的 verification）。
 - 全局报告出来后，用 `--benchmark-report` 重新合并，并加 `--expect <初步目录>/MERGED_REPORT.json`。任何比率、区间、平均或配对差值与初步结果不同，合并就停止。
+
+### 12.11 七模型判分与最终 8 方法结果（11-03 至 11-04）
+
+**run003 判分瓶颈与停机：**benchmark 的 `fairness_dev_judge.run()` 每判完一批（16 条），就对全部约 1.88 万个 key 做 `exists()` 并读全部已有记录。NAS 上 stat 约 7 ms/次，所以每批额外等待"135 秒 + 已判条数 × 22 毫秒"，而生成本身约 33 秒，GPU 只有约 15% 的时间在工作。此外，11-03 北京 15:30–17:55 四台同时出现一次机器侧的临时变慢，之后自行恢复。11-03 17:08 UTC，平台以利用率低为由查杀了 run003。当时出图已全部完成，已判 7,312 条。节点 3 有 16 条已受理未作答，清单在 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_run003_stop_20261103/`，由 benchmark 会话隔离放行。
+
+**修复与 run004：**benchmark 会话发布 `af28332`（新包 `.ifbench-tmp/one-mp-full4-20261103-judgeio`）。改动：
+- 进度改为内存计数；
+- 各处哈希校验改为 16 线程，全局汇总 4 台并行；
+- 已完成的出图阶段直接跳过。
+
+plan、Judge 配置、判分输入与解析代码都不变。run004 于 11-03 17:40 UTC 启动：
+- 判分前校验每台 8 分钟（原来 2 小时 20 分）；
+- 判分每台每分钟约 25 条，批间约 4 秒；
+- 节点 1–3 于 11-04 05:44–06:15 UTC 完成，节点 0 于 07:45 完成；
+- 全局报告 08:27 UTC 写出，作业正常结束。
+
+benchmark 发布的 70 行中只有 37 行完整，其余 33 行都因零星判分失败而缺分。
+
+**基线补判（§12.10 的规则）：**四台共 53 个 key 判分失败：节点 0 16 个、1 11 个、2 11 个、3 15 个。全部是 Judge 正常结束（finish=stop）但 JSON 格式错误，没有截断或乱码。在本机用同一 Judge 配置再判一次，52 个得分，其中 1 个靠确定性 JSON 修复。补判层：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_baseline_rejudge1`。
+
+**两次判分都失败（用户 11-04 决定）：**按失败计，即该图没有单元通过、整图不通过。规则对 8 个方法一致，由合并的 `--failed-twice-as-failure` 实现。只有 MICE / S3-box / `v2-sa_8092195` 一例，我方没有。这与 benchmark"缺分不补零"的约定不同，论文中需要写明。
+
+**结果核对：**先由四台记录得出初步结果（`--bundle`），全局报告出来后用官方报告重新合并并加 `--expect`。所有比率、区间、十种平均和配对差值完全一致。最终结果：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_merged_final_20261104/MERGED_REPORT.md`（及 `.json`）。初步结果：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_merged_prelim_20261104/`。官方报告：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/IF-Bench/one-mp-full4-20261031/report/`。
+
+**最终结果**（1,084 张源图 × 十种 setting，十种平均，方括号为源图配对 bootstrap 的 95% 区间，所有方法共用同一组抽样）：
+
+| 方法 | UnitPass % | JointPass % | 我们 − 该方法：ΔUP | ΔJP |
+|---|---:|---:|---:|---:|
+| **SAMTokEdit（我们）** | **81.1** [80.1, 82.0] | **50.3** [48.2, 52.4] | — | — |
+| Qwen-Image-2.1 | 64.0 [62.9, 65.0] | 29.4 [28.0, 30.9] | +17.1 [16.0, 18.2] | +20.9 [18.9, 23.0] |
+| FLUX.3 | 42.6 [41.6, 43.7] | 15.9 [14.8, 17.1] | +38.4 [37.3, 39.6] | +34.4 [32.3, 36.5] |
+| MIRAGE | 42.5 [41.2, 43.8] | 12.8 [11.7, 14.0] | +38.6 [37.2, 39.9] | +37.5 [35.4, 39.5] |
+| MICE | 46.5 [45.6, 47.4] | 11.0 [10.0, 12.0] | +34.5 [33.4, 35.7] | +39.3 [37.3, 41.4] |
+| FLUX.2-klein-9B | 41.7 [40.7, 42.7] | 10.5 [9.6, 11.4] | +39.3 [38.2, 40.4] | +39.8 [37.8, 41.8] |
+| Qwen-Image-Edit-2511 | 38.3 [37.3, 39.4] | 10.1 [9.2, 11.0] | +42.7 [41.6, 43.8] | +40.2 [38.2, 42.2] |
+| RePlan | 33.1 [32.1, 34.1] | 6.2 [5.4, 7.1] | +48.0 [46.8, 49.2] | +44.1 [42.0, 46.2] |
+
+JointPass（%）分 setting：
+
+| 方法 | S1 | S2-pt | S2-box | S2-mask | S3-pt | S3-box | S3-mask | S4-ref | S4-noref | S5 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 我们 | 51.3 | 55.2 | 55.7 | 56.3 | 42.7 | 47.9 | 46.1 | 54.1 | 44.9 | 48.9 |
+| Qwen-Image-2.1 | 44.3 | 33.9 | 54.5 | 42.9 | 5.6 | 25.8 | 21.3 | 33.5 | 10.6 | 21.7 |
+| FLUX.3 | 38.0 | 26.9 | 26.4 | 29.3 | 0.8 | 1.9 | 1.4 | 26.0 | 1.5 | 7.1 |
+| MIRAGE | 19.0 | 20.5 | 22.1 | 20.9 | 3.4 | 4.3 | 4.5 | 19.9 | 4.2 | 9.2 |
+| MICE | 15.0 | 12.4 | 20.4 | 12.4 | 2.0 | 9.2 | 9.2 | 14.7 | 4.9 | 9.7 |
+| FLUX.2-klein-9B | 22.7 | 17.4 | 19.6 | 19.3 | 0.9 | 0.6 | 1.4 | 16.7 | 1.1 | 5.5 |
+| Qwen-Image-Edit-2511 | 24.2 | 15.2 | 17.8 | 16.6 | 1.1 | 2.1 | 1.4 | 16.1 | 1.0 | 5.4 |
+| RePlan | 9.4 | 8.5 | 12.4 | 11.3 | 1.3 | 2.6 | 1.4 | 9.5 | 1.5 | 4.2 |
+
+**结论：**
+- 我方在每个 setting 上都显著好于每个基线。唯一的例外是 S2-box 对 Qwen-Image-2.1，差别不显著：JP +1.2 [−2.6, +5.0]，UP +0.7 [−0.9, +2.4]。直接给框时，Qwen-Image-2.1 很强。
+- 优势最大的是目标只用语言或点描述的情况：对 Qwen-Image-2.1，S3-point JP +37.1、S4-noref JP +34.3。其余基线在 S3 和 S4-noref 上的 JP 几乎都低于 5%。
+- 出图的原生失败按协议计入分母：RePlan 7、MIRAGE 48、MICE 19。七模型没有基础设施故障。
