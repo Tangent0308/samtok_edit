@@ -34,4 +34,5 @@ print('Cluster packages validated: Python 3.11 / torch 2.8 / W&B / FlexAttention
 PY
 "$SAMTOK_ENV/bin/python" "$REPO/scripts/round2/cuda_readiness.py" \
   --output "${SAMTOK_CUDA_DIAGNOSTICS:-${SAMTOK_ENV}-cuda-diagnostics}" \
+  --expected "${SAMTOK_EXPECTED_GPUS:-8}" \
   --timeout "${SAMTOK_CUDA_READY_TIMEOUT:-600}" --interval "${SAMTOK_CUDA_READY_INTERVAL:-15}"
