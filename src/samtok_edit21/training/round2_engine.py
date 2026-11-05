@@ -89,6 +89,11 @@ def parser():
     p.add_argument("--checkpoints", type=integers, default=(500, 1000, 1500, 2000))
     p.add_argument("--quick-eval", type=integers, default=(0, 500, 1000, 1500, 2000))
     p.add_argument("--quick-limit", type=int, default=999, help="Quick-eval items per rank (smoke tests)")
+    p.add_argument("--stop-after", type=int, default=0,
+                   help="End after this many updates (checkpoint and TRAIN_DONE written) while the learning-rate schedule "
+                        "still spans --updates: a short pilot that matches the first part of a longer run")
+    p.add_argument("--highlight-style", choices=("overlay", "tint"), default="overlay",
+                   help="Highlight targets: v4 flat 50%% overlay, or v5 texture-preserving tint (also its prompt wording)")
     p.add_argument("--max-pixels", type=int, default=1024 * 1024)
     p.add_argument("--seed", type=int, default=2000, help="Rank r draws timesteps and noise from seed + r")
     p.add_argument("--resume", action="store_true")
@@ -125,6 +130,10 @@ def main(argv=None):
     from samtok_edit21.training.tracking import DistributedTracker
 
     args = parser().parse_args(argv)
+    from samtok_edit21.data.highlight import set_style
+    from samtok_edit21.preparation.round2_data import set_highlight_style
+    set_style(args.highlight_style)
+    set_highlight_style(args.highlight_style)
     if args.updates < 1 or args.accumulation < 1:
         raise ValueError("--updates and --accumulation must be positive")
     if not 0 <= args.opsd_teacher_ema < 1:
@@ -262,7 +271,8 @@ def main(argv=None):
     # loss, rows, mse, region, distractor, write, rows with write, read, rows with read, skipped, OPSD loss, OPSD rows,
     # OPSD error inside and outside the allowed region, + per kind counts
     totals = torch.zeros(14 + len(KIND_INDEX), device=device)
-    for update in range(start, args.updates):
+    end = min(args.updates, args.stop_after) if args.stop_after else args.updates
+    for update in range(start, end):
         for group in optimizer.param_groups:
             group["lr"] = learning_rate(args, update)
         optimizer.zero_grad(set_to_none=True)
@@ -340,7 +350,7 @@ def main(argv=None):
                              **{f"train/affine_{n}": v for n, v in zip(("scale", "bias"), metrics["affine"])},
                              **{f"train/read_affine_{n}": v for n, v in zip(("scale", "bias"), metrics["read_affine"])}},
                             step=done)
-        if done in checkpoints or done == args.updates:
+        if done in checkpoints or done == end:
             dist.barrier()
             divergence = rank_divergence(parameters, dist, world)
             if divergence > 1e-4:
@@ -363,7 +373,7 @@ def main(argv=None):
     dist.barrier()
     if rank == 0:
         tracker.finish()
-        (out / "TRAIN_DONE").write_text(json.dumps({"updates": args.updates, "adapter": f"adapter_{args.updates}",
+        (out / "TRAIN_DONE").write_text(json.dumps({"updates": end, "schedule_updates": args.updates, "adapter": f"adapter_{end}",
                                                     "sec": round(time.time() - started)}))
     dist.destroy_process_group()
 

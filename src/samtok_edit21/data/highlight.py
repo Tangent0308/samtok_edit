@@ -149,3 +149,108 @@ def extract_mask(source_rgb, output_rgb, color, threshold=0.5):
 def iou(a, b):
     a, b = np.asarray(a) > 0, np.asarray(b) > 0
     return float((a & b).sum()) / max(float((a | b).sum()), 1.0)
+
+
+# ---------------------------------------------------------------- texture-preserving tint (v5 highlights)
+# The 50 % overlay above paints a flat, fully saturated colour over the region (half the luminance contrast is lost), and
+# a model trained on it learns flat recolouring.  The tint keeps the region's OKLab lightness (contrast compressed to
+# 75 % around mid-grey so dark and bright pixels can still carry a hue), sets the hue of the named colour with a moderate
+# chroma that is highest in the mid-tones, and lowers the chroma where the result would leave the sRGB gamut.
+HIGHLIGHT_STYLES = ("overlay", "tint")
+_STYLE = {"name": "overlay"}
+TINT_CHROMA = 0.13
+TINT_L_CENTER, TINT_L_KEEP, TINT_L_RANGE = 0.6, 0.75, (0.15, 0.92)
+_M1 = np.array([[0.4122214708, 0.5363325363, 0.0514459929], [0.2119034982, 0.6806995451, 0.1073969566],
+                [0.0883024619, 0.2817188376, 0.6299787005]], np.float32)
+_M2 = np.array([[0.2104542553, 0.7936177850, -0.0040720468], [1.9779984951, -2.4285922050, 0.4505937099],
+                [0.0259040371, 0.7827717662, -0.8086757660]], np.float32)
+_M1_INV = np.linalg.inv(_M1).astype(np.float32)
+_M2_INV = np.linalg.inv(_M2).astype(np.float32)
+
+
+def set_style(name):
+    """Highlight style of this process (trainer / evaluator): ``overlay`` (v4) or ``tint`` (v5)."""
+    if name not in HIGHLIGHT_STYLES:
+        raise ValueError(f"Unknown highlight style {name!r}")
+    _STYLE["name"] = name
+
+
+def style():
+    return _STYLE["name"]
+
+
+def rgb_to_oklab(rgb01):
+    rgb01 = np.asarray(rgb01, np.float32)
+    linear = np.where(rgb01 <= 0.04045, rgb01 / 12.92, ((rgb01 + 0.055) / 1.055) ** 2.4)
+    return np.cbrt(linear @ _M1.T) @ _M2.T
+
+
+def oklab_to_rgb(lab):
+    linear = ((np.asarray(lab, np.float32) @ _M2_INV.T) ** 3) @ _M1_INV.T
+    linear = np.clip(linear, 0.0, None)
+    return np.where(linear <= 0.0031308, 12.92 * linear, 1.055 * linear ** (1 / 2.4) - 0.055)
+
+
+_HUES = {}
+for _name, _rgb in PALETTE.items():
+    _lab = rgb_to_oklab(np.asarray(_rgb, np.float32)[None] / 255.0)[0]
+    _HUES[_name] = float(np.arctan2(_lab[2], _lab[1]))
+
+
+def tint(rgb, color):
+    """Texture-preserving tint of a float RGB array in [0, 255] towards the named palette colour."""
+    lab = rgb_to_oklab(np.asarray(rgb, np.float32) / 255.0)
+    lightness = np.clip(TINT_L_CENTER + TINT_L_KEEP * (lab[..., 0] - TINT_L_CENTER), *TINT_L_RANGE)
+    chroma = TINT_CHROMA * np.clip(1.0 - ((lightness - 0.62) / 0.5) ** 2, 0.35, 1.0)
+    hue = _HUES[color]
+    out = np.zeros(lightness.shape + (3,), np.float32)
+    todo = np.ones(lightness.shape, bool)
+    for scale in (1.0, 0.8, 0.6, 0.45, 0.3, 0.15, 0.0):
+        c = chroma * scale
+        candidate = oklab_to_rgb(np.stack([lightness, c * np.cos(hue), c * np.sin(hue)], -1))
+        fits = todo & np.all((candidate >= -0.002) & (candidate <= 1.002), -1)
+        out[fits] = candidate[fits]
+        todo &= ~fits
+        if not todo.any():
+            break
+    return np.clip(out, 0.0, 1.0) * 255.0
+
+
+def tint_regions_rgb(rgb, weights, colors):
+    """Each soft region weight tinted with its own colour (regions are disjoint); only the region's box is converted."""
+    out = np.asarray(rgb, np.float32).copy()
+    for weight, color in zip(weights, colors):
+        ys, xs = np.nonzero(weight > 0)
+        if ys.size == 0:
+            continue
+        y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+        crop = out[y0:y1, x0:x1]
+        w = weight[y0:y1, x0:x1, None]
+        out[y0:y1, x0:x1] = crop * (1 - w) + tint(crop, color) * w
+    return out
+
+
+def extract_mask_style(source_rgb, output_rgb, color, threshold=0.5):
+    """Read-back of a single highlight in the process's style (``color`` is the palette name)."""
+    if style() == "overlay":
+        return extract_mask(source_rgb, output_rgb, PALETTE[color], threshold)
+    source = np.asarray(source_rgb, np.float32) / 255.0
+    output = np.asarray(output_rgb.resize(source_rgb.size, Image.BILINEAR), np.float32) / 255.0
+    direction = tint(source * 255.0, color) / 255.0 - source
+    energy = (direction * direction).sum(-1)
+    alpha = ((output - source) * direction).sum(-1) / np.maximum(energy, 1e-4)
+    alpha[energy < TINT_MIN_ENERGY] = 0.0
+    smooth = Image.fromarray((alpha.clip(0, 1) * 255).astype(np.uint8)).filter(ImageFilter.BoxBlur(2))
+    return np.asarray(smooth, np.float32) / 255.0 > threshold
+
+
+TINT_MIN_ENERGY = 0.004
+
+
+def changed_mask(source_rgb, output_rgb, threshold=0.04):
+    """Style-agnostic read-back: pixels whose mean absolute RGB change (lightly smoothed) exceeds ``threshold``."""
+    source = np.asarray(source_rgb, np.float32) / 255.0
+    output = np.asarray(output_rgb.resize(source_rgb.size, Image.BILINEAR), np.float32) / 255.0
+    diff = np.abs(output - source).mean(-1)
+    smooth = Image.fromarray((np.clip(diff / (2 * threshold), 0, 1) * 255).astype(np.uint8)).filter(ImageFilter.BoxBlur(2))
+    return np.asarray(smooth, np.float32) / 255.0 > 0.5

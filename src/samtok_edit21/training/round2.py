@@ -35,6 +35,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+from samtok_edit21.data import highlight as hl
 from samtok_edit21.data.highlight import OVERLAY_ALPHA, PALETTE, resize_mask
 from samtok_edit21.data.io import dimensions
 from samtok_edit21.data.protocol import token_layout
@@ -218,6 +219,9 @@ def source_token_positions(conditioning, grid):
 def overlay_regions(prepared_rgb, regions_px, colors):
     """The highlight target: each region alpha-blended with its own colour (regions are disjoint)."""
     rgb = np.asarray(prepared_rgb.convert("RGB"), np.float32)
+    if hl.style() == "tint":         # v5: texture-preserving tint instead of the flat 50 % overlay
+        weights = [resize_mask(region, prepared_rgb.size) for region in regions_px]
+        return Image.fromarray(hl.tint_regions_rgb(rgb, weights, colors).clip(0, 255).astype(np.uint8))
     out = rgb.copy()
     for region, color in zip(regions_px, colors):
         weight = resize_mask(region, prepared_rgb.size)[..., None] * OVERLAY_ALPHA

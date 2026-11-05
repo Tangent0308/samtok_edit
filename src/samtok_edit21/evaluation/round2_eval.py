@@ -29,7 +29,8 @@ import numpy as np
 import torch
 from PIL import Image, ImageFilter
 
-from samtok_edit21.data.highlight import OVERLAY_ALPHA, PALETTE, extract_mask, iou, pick_color
+from samtok_edit21.data import highlight as hl
+from samtok_edit21.data.highlight import OVERLAY_ALPHA, PALETTE, changed_mask, extract_mask_style, iou, pick_color
 from samtok_edit21.evaluation.generation import generate, thumbnail
 from samtok_edit21.preparation import instruction_protocol_v2 as p2
 from samtok_edit21.preparation import round2_data as rd
@@ -46,9 +47,14 @@ def extract_masks(source_rgb, output_rgb, colors, min_energy=0.02):
     o = np.asarray(output_rgb.resize(source_rgb.size, Image.BILINEAR), np.float32) / 255.0
     dist = [np.linalg.norm(o - s, axis=-1)]
     for color in colors:
-        c = np.asarray(PALETTE[color], np.float32)[None, None] / 255.0
-        d = np.linalg.norm(o - (s + OVERLAY_ALPHA * (c - s)), axis=-1)
-        d[((c - s) ** 2).sum(-1) < min_energy] = np.inf
+        if hl.style() == "tint":
+            model = hl.tint(s * 255.0, color) / 255.0
+            d = np.linalg.norm(o - model, axis=-1)
+            d[((model - s) ** 2).sum(-1) < hl.TINT_MIN_ENERGY] = np.inf
+        else:
+            c = np.asarray(PALETTE[color], np.float32)[None, None] / 255.0
+            d = np.linalg.norm(o - (s + OVERLAY_ALPHA * (c - s)), axis=-1)
+            d[((c - s) ** 2).sum(-1) < min_energy] = np.inf
         dist.append(d)
     label = np.argmin(np.stack(dist), axis=0)
     masks = []
@@ -70,9 +76,10 @@ def single_item(pipe, codec, item, pool, *, steps=20):
     color = pick_color(source)
     prompt = rd.highlight_prompt_r2(m["span"], color, item.get("phrase"))
     output, _ = generate(pipe, codec, prompt, source, steps=steps)
-    predicted = extract_mask(source, output, PALETTE[color])
+    predicted = extract_mask_style(source, output, color)
     record = {"set": "single", "variant": item["variant"], "area": m["area"], "color": color,
-              "iou": iou(predicted, decoded), "iou_gt": iou(predicted, truth), "pred_area": float(predicted.mean())}
+              "iou": iou(predicted, decoded), "iou_gt": iou(predicted, truth), "pred_area": float(predicted.mean()),
+              "iou_any": iou(changed_mask(source, output), decoded), "style": hl.style()}
     return record, output, predicted
 
 
@@ -103,7 +110,7 @@ def pair_item(pipe, codec, item, pool, *, steps=20):
     other = entry_masks(entry, item["other"])[0]
     color = pick_color(source)
     output, _ = generate(pipe, codec, rd.highlight_prompt_r2(m["span"], color), source, steps=steps)
-    predicted = extract_mask(source, output, PALETTE[color])
+    predicted = extract_mask_style(source, output, color)
     shared = own & other
     record = {"set": "pair", "pair": item["pair"], "pair_kind": item["pair_kind"], "tok": item["tok"],
               "iou_self": iou(predicted, own & ~shared), "iou_other": iou(predicted, other & ~shared),
@@ -193,6 +200,9 @@ def summarize(records):
     for variant in ("noref", "ref"):
         values = [r["iou"] for r in single if r["variant"] == variant]
         out[f"single_{variant}"] = round(float(np.mean(values)), 3) if values else None
+    for variant in ("noref", "ref"):
+        values = [r["iou_any"] for r in single if r["variant"] == variant and "iou_any" in r]
+        out[f"single_{variant}_any"] = round(float(np.mean(values)), 3) if values else None
     small_noref = [r["iou"] for r in single if r["variant"] == "noref" and r["area"] < 0.005]
     out["single_noref_small"] = round(float(np.mean(small_noref)), 3) if small_noref else None
     multi = [r for r in records if r["set"] == "multi"]
@@ -245,6 +255,8 @@ def parser():
     p.add_argument("--limit", type=int, default=0, help="Smoke test: at most this many items per set")
     p.add_argument("--canvas-area", type=int, default=0, help="Generation canvas in pixels (default 1024 * 1024)")
     p.add_argument("--lora-scale", type=float, default=1.0, help="Multiply the DiT LoRA contribution (quality probe)")
+    p.add_argument("--highlight-style", choices=("overlay", "tint"),
+                   help="Probe prompt wording and read-back; default: the adapter's training style (overlay if absent)")
     return p
 
 
@@ -270,11 +282,17 @@ def main(argv=None):
     codec = load_codec(args.samtok, device)
     if args.adapter:
         load_grounding_adapter(pipe, codec, args.adapter)
+        if args.highlight_style is None:
+            recipe = json.loads((Path(args.adapter) / "adapter.json").read_text()).get("grounding", {})
+            args.highlight_style = recipe.get("highlight_style", "overlay")
         if args.lora_scale != 1.0:
             from peft.tuners.tuners_utils import BaseTunerLayer
             for module in pipe.dit.modules():
                 if isinstance(module, BaseTunerLayer):
                     module.scale_layer(args.lora_scale)
+    args.highlight_style = args.highlight_style or "overlay"
+    hl.set_style(args.highlight_style)
+    rd.set_highlight_style(args.highlight_style)
     pipe.eval()
     ctx = Context(args.data)
     items = json.load(open(Path(args.data) / args.items))

@@ -418,6 +418,26 @@ HL_MULTI = (
     "Cover {items} with semi-transparent overlays and keep everything else unchanged.",
 )
 ITEM_FORMS = ("{color} to {x}", "{color} for {x}", "{x} with {color}")   # one per HL_MULTI template
+# v5 tint highlights: same template indices, wording of a texture-preserving tint instead of a semi-transparent mask
+HL_SINGLE_TINT = (
+    "Tint {x} {color}, keeping its shading and texture, and keep everything else unchanged.",
+    "Highlight {x} by tinting it {color} without hiding its texture; leave the rest of the image unchanged.",
+    "Give {x} {a} {color} tint that keeps its shading, and keep everything else unchanged.",
+    "Mark {x} with {a} {color} tint and leave the rest unchanged.",
+)
+HL_MULTI_TINT = (
+    "Tint each region, keeping its shading and texture: {items}. Keep everything else unchanged.",
+    "Highlight each region with its own tint: {items}; leave the rest of the image unchanged.",
+    "Tint {items} and keep everything else unchanged.",
+)
+ITEM_FORMS_TINT = ("{x} {color}", "{color} for {x}", "{x} {color}")
+_HL_STYLE = {"name": "overlay"}
+
+
+def set_highlight_style(name):
+    if name not in ("overlay", "tint"):
+        raise ValueError(f"Unknown highlight style {name!r}")
+    _HL_STYLE["name"] = name
 MULTI_COLORS = ("red", "green", "blue", "magenta", "yellow", "cyan")
 C1_MIX = {"hl": 0.40, "hl_ref": 0.15, "hlm": 0.30, "edit": 0.15}
 EDIT_FORMS = {"noref_token": 0.65, "ref_token": 0.20, "ref_only": 0.15}
@@ -433,13 +453,15 @@ def join_items(parts):
 
 def highlight_prompt_r2(span, color, phrase=None, template=0):
     x = f"the {phrase} {span}" if phrase else f"the selected region {span}"
-    return HL_SINGLE[template].format(a=article(color), color=color, x=x)
+    single = HL_SINGLE_TINT if _HL_STYLE["name"] == "tint" else HL_SINGLE
+    return single[template].format(a=article(color), color=color, x=x)
 
 
 def multi_prompt(spans, colors, template=0):
-    form = ITEM_FORMS[template]
+    tinted = _HL_STYLE["name"] == "tint"
+    form = (ITEM_FORMS_TINT if tinted else ITEM_FORMS)[template]
     items = join_items([form.format(color=c, x=f"the selected region {s}") for s, c in zip(spans, colors)])
-    return HL_MULTI[template].format(items=items)
+    return (HL_MULTI_TINT if tinted else HL_MULTI)[template].format(items=items)
 
 
 def mean_color(image_rgb, mask):
