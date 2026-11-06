@@ -216,9 +216,14 @@ def source_token_positions(conditioning, grid):
     return positions
 
 
-def overlay_regions(prepared_rgb, regions_px, colors):
-    """The highlight target: each region alpha-blended with its own colour (regions are disjoint)."""
+def overlay_regions(prepared_rgb, regions_px, colors, style=None):
+    """The highlight target: each region alpha-blended with its own colour (regions are disjoint); with a v6 grounding
+    ``style`` (splash / bokeh) the regions keep the source and the rest of the image changes instead."""
     rgb = np.asarray(prepared_rgb.convert("RGB"), np.float32)
+    if style in hl.GROUNDING_STYLES:
+        weights = [resize_mask(region, prepared_rgb.size) for region in regions_px]
+        render = hl.splash_regions_rgb if style == "splash" else hl.bokeh_regions_rgb
+        return Image.fromarray(render(rgb, weights).clip(0, 255).astype(np.uint8))
     if hl.style() == "tint":         # v5: texture-preserving tint instead of the flat 50 % overlay
         weights = [resize_mask(region, prepared_rgb.size) for region in regions_px]
         return Image.fromarray(hl.tint_regions_rgb(rgb, weights, colors).clip(0, 255).astype(np.uint8))
@@ -230,6 +235,8 @@ def overlay_regions(prepared_rgb, regions_px, colors):
 
 
 def highlight_prompt(row, spans, entry):
+    if row.get("style") in hl.GROUNDING_STYLES:
+        return rd.grounding_prompt(row["style"], spans, row.get("phrase"), row["template"], multi=row["kind"] == "hlm")
     if row["kind"] == "hlm":
         return rd.multi_prompt(spans, row["colors"], row["template"])
     return rd.highlight_prompt_r2(spans[0], row["colors"][0], row.get("phrase"), row["template"])
@@ -298,7 +305,7 @@ def prepare_round2(pipe, ctx, row, *, max_pixels=MAX_PIXELS):
         width, height = dimensions(source, max_pixels)
         prepared = resize_sources(pipe, [source], height, width)
         size = prepared[0].size
-        target = overlay_regions(prepared[0], regions_px, row["colors"]).convert("RGBA")
+        target = overlay_regions(prepared[0], regions_px, row["colors"], row.get("style")).convert("RGBA")
         target_latent = pipe.vae.encode(pipe.preprocess_image(target))
         source_latents = [pipe.vae.encode(pipe.preprocess_image(image)) for image in prepared]
     conditioning = encode_edit(pipe, prompt, prepared, return_ids=True)

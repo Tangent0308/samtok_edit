@@ -254,3 +254,34 @@ def changed_mask(source_rgb, output_rgb, threshold=0.04):
     diff = np.abs(output - source).mean(-1)
     smooth = Image.fromarray((np.clip(diff / (2 * threshold), 0, 1) * 255).astype(np.uint8)).filter(ImageFilter.BoxBlur(2))
     return np.asarray(smooth, np.float32) / 255.0 > 0.5
+
+
+# v6 grounding tasks that keep the referred region exactly as it is and change the rest photographically (no painted
+# colour): ``splash`` keeps the region in colour and turns the rest grey (Rec. 709 luma), ``bokeh`` keeps it sharp and
+# blurs the rest. Region weights are the soft masks of the regions on the prepared canvas; the union keeps the source.
+GROUNDING_STYLES = ("splash", "bokeh")
+
+
+def _keep_weight(weights, shape):
+    from scipy import ndimage
+    keep = np.zeros(shape, np.float32)
+    for w in weights:
+        keep = np.maximum(keep, np.asarray(w, np.float32))
+    feather = max(1.0, 0.002 * float(np.hypot(*shape)))          # a soft edge of ~0.2 % of the diagonal
+    return np.clip(ndimage.gaussian_filter(keep, feather), 0.0, 1.0)[..., None]
+
+
+def splash_regions_rgb(rgb, weights):
+    rgb = np.asarray(rgb, np.float32)
+    luma = (rgb @ np.array([0.2126, 0.7152, 0.0722], np.float32))[..., None].repeat(3, -1)
+    keep = _keep_weight(weights, rgb.shape[:2])
+    return keep * rgb + (1 - keep) * luma
+
+
+def bokeh_regions_rgb(rgb, weights):
+    from scipy import ndimage
+    rgb = np.asarray(rgb, np.float32)
+    sigma = 0.008 * float(np.hypot(*rgb.shape[:2]))              # ~11 px on a 1 MP canvas
+    blurred = np.stack([ndimage.gaussian_filter(rgb[..., c], sigma) for c in range(3)], -1)
+    keep = _keep_weight(weights, rgb.shape[:2])
+    return keep * rgb + (1 - keep) * blurred

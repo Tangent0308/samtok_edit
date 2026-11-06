@@ -432,6 +432,33 @@ HL_MULTI_TINT = (
 )
 ITEM_FORMS_TINT = ("{x} {color}", "{color} for {x}", "{x} {color}")
 _HL_STYLE = {"name": "overlay"}
+# v6 grounding tasks (per row, ``row["style"]``): same template indices as the highlight prompts
+GROUNDING_SINGLE = {
+    "splash": ("Keep {x} in color and turn the rest of the image black and white.",
+               "Make everything except {x} grayscale, leaving it in its original colors.",
+               "Desaturate the whole image except {x}, which keeps its colors.",
+               "Turn the image black and white but keep {x} in full color."),
+    "bokeh": ("Blur everything except {x}, keeping it sharp.",
+              "Keep {x} in sharp focus and blur the rest of the image.",
+              "Apply a strong background blur to everything but {x}.",
+              "Make {x} the only sharp part of the image and blur everything else."),
+}
+GROUNDING_MULTI = {
+    "splash": ("Keep {items} in color and turn the rest of the image black and white.",
+               "Make everything except {items} grayscale, leaving them in their original colors.",
+               "Desaturate the whole image except {items}."),
+    "bokeh": ("Blur everything except {items}, keeping them sharp.",
+              "Keep {items} in sharp focus and blur the rest of the image.",
+              "Apply a strong background blur to everything but {items}."),
+}
+
+
+def grounding_prompt(style, spans, phrase=None, template=0, multi=False):
+    if multi:
+        items = join_items([f"the selected region {s}" for s in spans])
+        return GROUNDING_MULTI[style][template].format(items=items)
+    x = f"the {phrase} {spans[0]}" if phrase else f"the selected region {spans[0]}"
+    return GROUNDING_SINGLE[style][template].format(x=x)
 
 
 def set_highlight_style(name):
