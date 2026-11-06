@@ -34,6 +34,7 @@ import torch
 from samtok_edit21.training.distributed import average_gradients, broadcast_parameters, rank_divergence
 from samtok_edit21.training.routing import DEFAULT_LAYERS
 
+HL_KINDS = ("hl", "hl_ref", "hlm")
 KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5, "edit_multi_v1": 6,
               "edit_ext": 7, "edit_multi_ext": 8, "edit_merged": 9, "opsd_merged": 10, "edit_plain": 11}
 
@@ -65,6 +66,10 @@ def parser():
     p.add_argument("--lambda-route", type=float, default=0.05, help="Write-side routing weight")
     p.add_argument("--lambda-read", type=float, default=0.05, help="Read-side routing weight; 0 disables it")
     p.add_argument("--lambda-region", type=float, default=1.0)
+    p.add_argument("--lambda-region-hl", type=float, default=None,
+                   help="Region weight for highlight rows (hl, hl_ref, hlm); default: --lambda-region. Edit rows keep "
+                        "--lambda-region (v6: the region term on highlight rows costs image quality, on edit rows it "
+                        "teaches the edit)")
     p.add_argument("--lambda-distractor", type=float, default=1.0)
     p.add_argument("--edit-region-dilate", type=int, choices=(0, 1), default=1,
                    help="1: edit rows' FM_region keeps one token of context (C2); 0: only the changed tokens (C3-M)")
@@ -289,7 +294,9 @@ def main(argv=None):
                     totals[14 + KIND_INDEX[row["kind"]]] += 1
                     continue
                 sample = prepare_round2(pipe, ctx, row, max_pixels=args.max_pixels)
-                flow, write, read, metrics = round2_loss(pipe, sample, router, lambda_region=args.lambda_region,
+                lambda_region = (args.lambda_region if args.lambda_region_hl is None or row["kind"] not in HL_KINDS
+                                 else args.lambda_region_hl)
+                flow, write, read, metrics = round2_loss(pipe, sample, router, lambda_region=lambda_region,
                                                          lambda_distractor=args.lambda_distractor,
                                                          edit_region_dilate=bool(args.edit_region_dilate),
                                                          heavy_weight=args.heavy_weight)
