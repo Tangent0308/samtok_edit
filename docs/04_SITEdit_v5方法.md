@@ -90,7 +90,7 @@
 ## 5. 推理配方
 
 ```
-采样步数：28
+采样步数：40（与 CompBench / MagicBrush 历史评测保持一致；IF-Bench 用 28 步）
 Space Token Guidance：γ = 2（带 token 和不带 token 各推一遍）
 LoRA 强度：1.0
 CodeInjector：常开
