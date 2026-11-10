@@ -7,7 +7,7 @@ exec 2>&1
 
 # ===== 运行设置（重新提交时只改 SAMTOK_ATTEMPT）=====
 export SAMTOK_ATTEMPT=r2_run001       # 每次提交换新的，四个 worker 相同
-export SAMTOK_EDIT_COMMIT=93053f1b4455c4c8c1d31f33c65e31a1ffadd0da   # v5 HEAD，四个 worker 必须相同
+export SAMTOK_EDIT_COMMIT=8beaffbd24a773cb7441948df57e65c576e31126   # v5 HEAD（含 R2 main_row.json），四个 worker 必须相同
 export SAMTOK_EDIT_BRANCH=qwen-image-2.1-v5
 export IFBENCH_BUNDLE=/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-mp-full4-20261103-judgeio
 export SAMTOK_IFBENCH_RUN=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_r2_full_20261110
