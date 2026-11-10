@@ -1,6 +1,6 @@
 # SAMTokEdit 交接说明
 
-> **2026-11-10：方法敲定，交付分支 `qwen-image-2.1-v5`。** 最终训练方案为三阶段：S1 Read（6k 步）→ S2 Edit（16k 步）→ R2 Refine（1k 步，lr 8e-6，高合成目标）。交付检查点 `V3/runs_v5/v6_full/r2/train/adapter_1000`，代码快照 `22650e4b30830f95a11a3af8f4558326d98edb2f`。IF-Bench UnitPass 0.835 / JointPass 0.519，MIRA PQ 对 base −0.07（v4 为 −0.95）。方法与实验见 [文档 04](docs/04_SITEdit_v5方法.md) 和 [文档 05](docs/05_SITEdit_v5实验.md)，四机入口 `scripts/round2/settings/r2_4n.sh`，全局交接 `/opt/tiger/tanyue/HANDOFF.md`。
+> **2026-11-10：方法敲定，交付分支 `qwen-image-2.1-v5`。** 最终训练方案为三阶段：S1 Read（6k 步）→ S2 Edit（16k 步）→ R2 Refine（1k 步，lr 8e-6，高合成目标）。交付检查点 `V3/runs_v5/v6_full/r2/train/adapter_1000`，代码快照 `22650e4b30830f95a11a3af8f4558326d98edb2f`。IF-Bench UnitPass 0.835 / JointPass 0.519，MIRA PQ 对 base −0.07（v4 为 −0.95）。方法与实验见 [文档 04](docs/04_SITEdit_v5方法.md) 和 [文档 05](docs/05_SITEdit_v5实验.md)。四机脚本：训练续跑 `scripts/round2/settings/r2_4n.sh`，IF-Bench 全量 eval-only `scripts/round2/settings/r2_ifbench_4n.sh`（自包含，直接 bash 运行，重提交只改 SAMTOK_RUN_ID）。全局交接 `/opt/tiger/tanyue/HANDOFF.md`。
 
 > **2026-11-04：IF-Bench 全量评测完成。**七个基线和我方共 8 个方法，1,084 张源图 × 十种 setting，按同一规则补判后合并。十种平均：我方 UnitPass 81.1%、JointPass 50.3%；最强基线 Qwen-Image-2.1 为 64.0% / 29.4%（配对差 +17.1 / +20.9 个百分点，区间都远离 0）。最终结果在 `experiments2/SAMTokEdit/ifbench_merged_final_20261104/MERGED_REPORT.md`，过程、规则和命令见文档 03 §12.7–12.11。benchmark 会话在另一台机器上，两边只共享 NAS 和 GitHub。消融补充行用户后面再定。
 

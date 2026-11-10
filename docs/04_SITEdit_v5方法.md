@@ -105,5 +105,6 @@ CodeInjector：常开
 | **交付** | `V3/runs_v5/v6_full/r2/train/adapter_1000` |
 | R2 初始化（v4 Edit 终点） | `V3/runs/s2_4n_001/train/adapter_16000` |
 | S1 终点 | `V3/runs/s1_4n_001/train/adapter_6000` |
-| 四机启动脚本 | `scripts/round2/settings/r2_4n.sh` |
+| 四机训练续跑脚本 | `scripts/round2/settings/r2_4n.sh` |
+| 四机 IF-Bench 全量 eval-only 脚本 | `scripts/round2/settings/r2_ifbench_4n.sh` |
 | 训练行文件 | `V3/data_round2_v6p/rows_v6_s2hqfull.jsonl` |
