@@ -3,8 +3,8 @@
 本文记录 2026-11-01 至 11-10 敲定的最终训练方法。配套实验见 [文档 05](05_SITEdit_v5实验.md)。
 
 **路径记号**
-- `V3/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`；
-- `runs_v5/…` 指 `V3/runs_v5/…`；
+- `QA/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/quality_anchor_20261104/…`（R2 实验根）；
+- `V3/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`（v4 及以前的实验根）；
 - 仓库内路径（`src/…`、`scripts/…`）相对本仓库（分支 `qwen-image-2.1-v5`）根目录。
 
 ---
@@ -102,9 +102,9 @@ CodeInjector：常开
 
 | 用途 | 路径 |
 |---|---|
-| **交付** | `V3/runs_v5/v6_full/r2/train/adapter_1000` |
+| **交付** | `QA/runs_v5/v6_full/r2/train/adapter_1000` |
 | R2 初始化（v4 Edit 终点） | `V3/runs/s2_4n_001/train/adapter_16000` |
 | S1 终点 | `V3/runs/s1_4n_001/train/adapter_6000` |
 | 四机训练续跑脚本 | `scripts/round2/settings/r2_4n.sh` |
 | 四机 IF-Bench 全量 eval-only 脚本 | `scripts/round2/settings/r2_ifbench_4n.sh` |
-| 训练行文件 | `V3/data_round2_v6p/rows_v6_s2hqfull.jsonl` |
+| 训练行文件 | `QA/data_round2_v6p/rows_v6_s2hqfull.jsonl` |

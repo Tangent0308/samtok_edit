@@ -3,9 +3,9 @@
 本文汇总 2026-11-01 至 11-10 的 R2 阶段全部训练和评测实验，截至 2026-11-10。方法见 [文档 04](04_SITEdit_v5方法.md)。
 
 **路径记号**
-- `V3/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`；
-- `runs_v5/…` 指 `V3/runs_v5/…`；
-- NAS 评测脚本：`V3/scripts/r2_eval.sh`、`V3/scripts/final_0p75.sh`。
+- `QA/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/quality_anchor_20261104/…`（R2 实验根）；
+- `V3/…` 指 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/qwen21_v3/…`（v4 及以前）；
+- NAS 评测脚本：`QA/scripts/r2_eval.sh`、`QA/scripts/final_0p75.sh`（`final_0p75.sh` 待确认）。
 
 ---
 
@@ -130,9 +130,8 @@ v4 在 IF-Bench 正式跑时用 LoRA 强度 0.75，R2 用 1.0。为排除此变�
 
 | 类型 | 路径 |
 |---|---|
-| IF-Bench 评测脚本 | `V3/scripts/r2_eval.sh` |
-| 同强度对比脚本 | `V3/scripts/final_0p75.sh` |
-| R2 结果目录 | `V3/runs_v5/v6_full/r2/` |
-| MIRA 评测记录 | `V3/runs_v5/v6_full/r2/mira/` |
-| NAS 评测环境包 | `V3/runtimes_20261109/` |
-| 环境还原脚本 | `V3/scripts/restore_runtimes.sh` |
+| IF-Bench 评测脚本 | `QA/scripts/r2_eval.sh` |
+| 同强度对比脚本 | `QA/scripts/final_0p75.sh` |
+| R2 结果目录 | `QA/runs_v5/v6_full/r2/` |
+| MIRA 评测记录 | `QA/mira_eval/` |
+| NAS 评测环境包 | `QA/judge_runtime/` |
