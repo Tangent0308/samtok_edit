@@ -49,6 +49,9 @@ SELECTED = "the selected region"
 REMOVE_SUFFIXES = (", including its contents", " to make knee-length shorts", " to make it knee-length")
 METHOD_KEYS = {"name", "qwen", "samtok", "pass1_adapter", "dit_adapter", "steps", "token_guidance", "seed",
                "pass1_max_new_tokens", "pass1_max_pixels"}
+# Optional method keys of diagnostic runs: "lora_scale" scales the DiT LoRA; "drop_tokens": true edits from the public
+# instructions alone (the Pass1 tokens are read but not written into the prompt, so no token guidance either).
+OPTIONAL_KEYS = {"lora_scale", "drop_tokens"}
 STAGES = {"pass1": "pass1", "pass2": "outputs"}
 # A worker stops after this many failed requests in a row, so that a broken card cannot fail the whole queue.
 MAX_CONSECUTIVE_FAILURES = 3
@@ -159,8 +162,8 @@ def prepare(bundle, run, config_path, cases=None, settings=None, expect=None):
     """Freeze a run: the method configuration and the verified list of public requests (CPU only)."""
     bundle, run = Path(bundle).resolve(), Path(run).resolve()
     config = json.loads(Path(config_path).read_text())
-    if set(config) - {"lora_scale"} != METHOD_KEYS or config["seed"] != 42:
-        raise ValueError(f"Method config needs exactly {sorted(METHOD_KEYS)} and seed 42")
+    if set(config) - OPTIONAL_KEYS != METHOD_KEYS or config["seed"] != 42:
+        raise ValueError(f"Method config needs exactly {sorted(METHOD_KEYS)} (optional {sorted(OPTIONAL_KEYS)}) and seed 42")
     settings = settings or SETTINGS
     if any(s not in SETTINGS for s in settings):
         raise ValueError(f"Unknown setting in {settings}")
@@ -452,7 +455,7 @@ def generate_request(pipe, method, item, tokens, out):
     from samtok_edit21.models.pipeline import edit
 
     public, geometry = checked_request(item)
-    spans = {u["id"]: u["token"] for u in tokens["units"] if u["token"]}
+    spans = {} if method.get("drop_tokens") else {u["id"]: u["token"] for u in tokens["units"] if u["token"]}
     prompt = pass2_prompt(public, spans)
     guided = bool(spans) and method["token_guidance"] != 1.0
     parameters = {"num_inference_steps": method["steps"], "seed": method["seed"],

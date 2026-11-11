@@ -73,6 +73,8 @@ def parser():
     p.add_argument("--lambda-distractor", type=float, default=1.0)
     p.add_argument("--edit-region-dilate", type=int, choices=(0, 1), default=1,
                    help="1: edit rows' FM_region keeps one token of context (C2); 0: only the changed tokens (C3-M)")
+    p.add_argument("--no-code-injector", action="store_true",
+                   help="Ablation: no code injector; the mask tokens reach the DiT only as text-encoder vocabulary")
     p.add_argument("--route-layers", type=integers, default=DEFAULT_LAYERS)
     p.add_argument("--checkpoints", type=integers, default=(500, 1000, 1500, 2000))
     p.add_argument("--quick-eval", type=integers, default=(0, 500, 1000, 1500, 2000))
@@ -108,7 +110,8 @@ def main(argv=None):
     import torch.distributed as dist
 
     from samtok_edit21.evaluation.round2_eval import run_item, summarize
-    from samtok_edit21.models.code_injector import CodeInjector, attach_code_injector, load_code_injector, save_code_injector
+    from samtok_edit21.models.code_injector import (CodeInjector, attach_code_injector, has_code_injector,
+                                                    load_code_injector, save_code_injector)
     from samtok_edit21.models.codec import load_codec
     from samtok_edit21.models.pipeline import load_pipeline
     from samtok_edit21.models.adapters import add_adapter, load_adapter, save_adapter
@@ -156,11 +159,18 @@ def main(argv=None):
         add_adapter(pipe.dit, "stage2", args.rank, 0.0)
     pipe.dit.train()
     codec = load_codec(args.samtok, device)
-    injector = attach_code_injector(pipe, CodeInjector.from_codec(codec, pipe.processor.tokenizer))
+    injector = None
+    if not args.no_code_injector:
+        injector = attach_code_injector(pipe, CodeInjector.from_codec(codec, pipe.processor.tokenizer))
     router = AttentionRouter(pipe.dit, args.route_layers, read=args.lambda_read > 0).to(device)
+    # Both routing weights 0 (ablation): the forward runs without the attention hooks, as round2_loss(router=None).
+    routing = args.lambda_route > 0 or args.lambda_read > 0
     if args.init_adapter:
-        load_code_injector(injector, args.init_adapter)
-        injector.requires_grad_(True)
+        if injector is not None:
+            load_code_injector(injector, args.init_adapter)
+            injector.requires_grad_(True)
+        elif has_code_injector(args.init_adapter):
+            raise ValueError("--no-code-injector cannot warm-start from an adapter that holds a code injector")
         grounding = init_config.get("grounding", {})
         if list(grounding.get("route_layers", args.route_layers)) != list(args.route_layers):
             raise ValueError("--route-layers differ from the warm-start adapter's routing layers")
@@ -170,7 +180,8 @@ def main(argv=None):
                 router.read_affine.copy_(torch.tensor(grounding["read_affine"], dtype=router.read_affine.dtype))
 
     lora = [p for p in pipe.dit.parameters() if p.requires_grad]
-    extra = list(injector.proj.parameters()) + [router.affine] + ([router.read_affine] if router.read_affine is not None else [])
+    extra = ((list(injector.proj.parameters()) if injector is not None else []) + [router.affine]
+             + ([router.read_affine] if router.read_affine is not None else []))
     parameters = lora + extra
     optimizer = torch.optim.AdamW([{"params": lora, "weight_decay": args.weight_decay},
                                    {"params": extra, "weight_decay": 0.0}], lr=args.lr)
@@ -252,12 +263,13 @@ def main(argv=None):
                 sample = prepare_round2(pipe, ctx, row, max_pixels=args.max_pixels)
                 lambda_region = (args.lambda_region if args.lambda_region_hl is None or row["kind"] not in HL_KINDS
                                  else args.lambda_region_hl)
-                flow, write, read, metrics = round2_loss(pipe, sample, router, lambda_region=lambda_region,
+                flow, write, read, metrics = round2_loss(pipe, sample, router if routing else None,
+                                                         lambda_region=lambda_region,
                                                          lambda_distractor=args.lambda_distractor,
                                                          edit_region_dilate=bool(args.edit_region_dilate),
                                                          heavy_weight=args.heavy_weight)
                 loss = flow
-                if write is not None:
+                if write is not None and args.lambda_route > 0:
                     loss = loss + args.lambda_route * write
                 if read is not None and args.lambda_read > 0:
                     loss = loss + args.lambda_read * read
@@ -290,7 +302,8 @@ def main(argv=None):
             dist.all_reduce(summed)
             totals.zero_()
             count = max(float(summed[1]), 1.0)
-            norm = float(sum(p.detach().float().norm() ** 2 for p in injector.proj.parameters()) ** 0.5)
+            norm = (0.0 if injector is None else
+                    float(sum(p.detach().float().norm() ** 2 for p in injector.proj.parameters()) ** 0.5))
             metrics = {
                 "update": done, "loss": round(float(summed[0]) / count, 5), "mse": round(float(summed[2]) / count, 5),
                 "reg": round(float(summed[3]) / count, 5), "dis": round(float(summed[4]) / count, 5),
@@ -320,7 +333,8 @@ def main(argv=None):
                 save_adapter(pipe.dit, folder, {"stage": "stage2", "binding": {"mode": "none"},
                                                 "grounding": {**recipe, "round": 2, "update": done, "route_affine": affine,
                                                               "read_affine": read_affine, "rank_divergence": divergence}})
-                save_code_injector(injector, folder)
+                if injector is not None:
+                    save_code_injector(injector, folder)
                 torch.save({"params": [p.detach().cpu() for p in parameters], "opt": optimizer.state_dict(),
                             "update": done},
                            out / "resume.tmp")
