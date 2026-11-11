@@ -1478,5 +1478,113 @@ benchmark 会话发布了 `/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/
 **处理（用户同意）：**
 - **七模型：**benchmark 会话把故障卡（node 0 shard-1-of-8）上的全部记录移到包外隔离目录（Qwen2511、Qwen2.1、FLUX.3 各 339 条，RePlan 规划 38 条，含那条致命 CUDA 失败），并按基础设施故障放行 29 条中断的规划。READY 不变，新 attempt `run003` 在 4 台健康机器上续跑：健康记录跳过，隔离的请求按原输入和 seed 42 重跑。清单：`/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-mp-full4-run002-hardware-quarantine-20261102/QUARANTINE_RECORDS.csv`。
 - **我方：**不重新出图（全部输出已逐字节核对），在新机器上统一重判一遍。这样 8 个方法的分数都来自健康机器，node 0 在故障机上打出的分数不再使用。`scripts/ifbench/build_final_run.py` 把每个请求的最终 token 和输出汇总到 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final`：主运行的输出，加上修复层重新生成的 5 个（§12.7 的 4 个、§12.8 的 1 个），输出只引用不复制。入口在这个目录里会发现所有请求已完成，只跑 Judge。§12.8 的本机补判结果保留作记录，不进最终统计。
-- **最终合并：**`ifbench_report --benchmark-report <结果根>/report/REPORT.json --run <最终目录>`，不再需要修复层。
+- **最终合并：**`ifbench_report --benchmark-report <结果根>/report/REPORT.json --run <最终目录>`；run003 之后又加了我方和基线的补判层，完整命令见 §12.10。
 
+### 12.10 run003 进展、我方最终分数与基线补判（11-02 至 11-03）
+
+**run003：**11-02 12:38 UTC 在 4 台新机器上启动（`n124-173-151`、`n124-254-020`、`n124-254-099`、`n124-254-064`），预检 38 分钟通过。我方阶段只跑 Judge，约 2 小时（含 40 分钟加载引擎），15:42 UTC 写下 SUCCESS.json。10,840 个请求里有 11 条普通 JSON 解析失败；按 §12.8 的规则在本机再判一次（`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final_rejudge1`，由 `scripts/ifbench/rejudge_overlay.py` 生成），全部得到有效分数。
+
+**我方最终分数**（10,840 个请求全部计分；95% 区间等合并报告给出）：
+
+| setting | UnitPass % | JointPass % |
+|---|---:|---:|
+| S1 | 81.2 | 51.3 |
+| S2-point | 83.5 | 55.2 |
+| S2-box | 83.8 | 55.7 |
+| S2-mask | 84.2 | 56.3 |
+| S3-point | 77.2 | 42.7 |
+| S3-box | 79.4 | 47.9 |
+| S3-mask | 78.3 | 46.1 |
+| S4-ref | 83.3 | 54.1 |
+| S4-noref | 78.7 | 44.9 |
+| S5 | 81.0 | 48.9 |
+| 十种平均 | 81.1 | 50.3 |
+
+**七模型：**15:42 UTC 接着我方开始。benchmark 按 `[shard::8]` 静态分片，隔离的请求全属 node 0 的 shard 1，只能由一个 worker 串行重跑（Qwen2511 6.4 h、Qwen2.1 3.3 h、FLUX.3 0.9 h）。因此 node 0 比其他三台晚约 10.7 小时。截至 11-03 03:34 UTC 没有基础设施故障。原生失败按协议保留：RePlan 6 条（规划给出非法 bbox），MIRAGE 71 条（规划 JSON 解析失败、列表长度不符、定位输出在 128 token 上限处截断），MICE 5 条。
+
+**基线补判（同一规则用于七个基线）：**benchmark 的 Judge 不重试。同一模型×setting 只要有一张图缺分，`rates` 就把整行记为不完整（UP/JP 为 null，不补零）。我方的解析失败率约 0.1%；照此估计，七模型约 7.6 万条判分会有几十条失败，分散在很多行。实现如下：
+- `scripts/ifbench/rejudge_baselines.py`，在 Judge runtime 里运行。
+  - 对象：已完成的机器（`nodes/node-<n>/COMPLETED.json`）。
+  - 先从 benchmark 的 `judge/bindings.json` 和 `effective_records` 取出未计分的 Judge key，核对生成记录、输出哈希和 canonical binding。
+  - 然后用与我方 `judge.py` 相同的 Judge 循环再判一次：配置相同，16 条一批。结果只写在自己的目录；已受理但没有答案的 key 不再提交。
+  - `OVERLAY.json` 列出每个 key、它服务的逻辑请求、原状态和新答案。可以逐台执行：先做先完成的三台，node 0 完成后再补，已判过的不会重判。
+- `ifbench_report --baseline-overlay <目录>`：
+  - 先用 benchmark 的原始记录复算每个发布行（含区间）并核对。
+  - 再把补判得分的答案按 benchmark 的规则替换进去重算：单元 E=4、P≥3、Q≥3；整图要求所有单元通过且全局 P、Q≥3。
+  - 同一 key 只能补判一次。补判仍失败的保留缺失，该行仍不完整。补判层与报告不一致（key、逻辑请求、原状态或 Judge 配置）时停止。
+  - 所有替换列在 `replaced_baseline_answers`。
+
+**最终合并：**
+
+```bash
+PYTHONPATH=<v4>/src:<全量包>/repo/src python -m samtok_edit21.evaluation.ifbench_report \
+  --benchmark-report /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/IF-Bench/one-mp-full4-20261031/report/REPORT.json \
+  --run /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final \
+  --overlay /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_final_rejudge1 \
+  --baseline-overlay /mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_baseline_rejudge1 \
+  --failed-twice-as-failure --output <输出目录>
+```
+
+`python` 用 v4 的环境（合并的单测就在这个环境里跑）；`<全量包>` 是 `.ifbench-tmp/one-mp-full4-20261101-heartbeatfix`。补判脚本则用 Judge runtime 的包装器运行（它自己设定 PYTHONPATH）。
+
+**初步结果（用户 11-03 同意）：**benchmark 的全局报告要在节点 0 上把四台记录串行重新校验一遍（每条请求都重算输入和输出哈希），本机实测估计要十几个小时。所以四台都完成、基线补判做完后，先出一版初步结果：
+- 把上面命令里的 `--benchmark-report ...` 换成 `--bundle <全量包>`。
+- 基线各行用 benchmark 自己的 `make_row`，从四台的 `judge/bindings.json` 和 effective 记录直接计算。抽样表与官方相同，表头标"初步"。
+- 每台在完成时已经核对过自己的记录（`COMPLETED.json` 中的 verification）。
+- 全局报告出来后，用 `--benchmark-report` 重新合并，并加 `--expect <初步目录>/MERGED_REPORT.json`。任何比率、区间、平均或配对差值与初步结果不同，合并就停止。
+
+### 12.11 七模型判分与最终 8 方法结果（11-03 至 11-04）
+
+**run003 判分瓶颈与停机：**benchmark 的 `fairness_dev_judge.run()` 每判完一批（16 条），就对全部约 1.88 万个 key 做 `exists()` 并读全部已有记录。NAS 上 stat 约 7 ms/次，所以每批额外等待"135 秒 + 已判条数 × 22 毫秒"，而生成本身约 33 秒，GPU 只有约 15% 的时间在工作。此外，11-03 北京 15:30–17:55 四台同时出现一次机器侧的临时变慢，之后自行恢复。11-03 17:08 UTC，平台以利用率低为由查杀了 run003。当时出图已全部完成，已判 7,312 条。节点 3 有 16 条已受理未作答，清单在 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_run003_stop_20261103/`，由 benchmark 会话隔离放行。
+
+**修复与 run004：**benchmark 会话发布 `af28332`（新包 `.ifbench-tmp/one-mp-full4-20261103-judgeio`）。改动：
+- 进度改为内存计数；
+- 各处哈希校验改为 16 线程，全局汇总 4 台并行；
+- 已完成的出图阶段直接跳过。
+
+plan、Judge 配置、判分输入与解析代码都不变。run004 于 11-03 17:40 UTC 启动：
+- 判分前校验每台 8 分钟（原来 2 小时 20 分）；
+- 判分每台每分钟约 25 条，批间约 4 秒；
+- 节点 1–3 于 11-04 05:44–06:15 UTC 完成，节点 0 于 07:45 完成；
+- 全局报告 08:27 UTC 写出，作业正常结束。
+
+benchmark 发布的 70 行中只有 37 行完整，其余 33 行都因零星判分失败而缺分。
+
+**基线补判（§12.10 的规则）：**四台共 53 个 key 判分失败：节点 0 16 个、1 11 个、2 11 个、3 15 个。全部是 Judge 正常结束（finish=stop）但 JSON 格式错误，没有截断或乱码。在本机用同一 Judge 配置再判一次，52 个得分，其中 1 个靠确定性 JSON 修复。补判层：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_one_mp_full4_baseline_rejudge1`。
+
+**两次判分都失败（用户 11-04 决定）：**按失败计，即该图没有单元通过、整图不通过。规则对 8 个方法一致，由合并的 `--failed-twice-as-failure` 实现。只有 MICE / S3-box / `v2-sa_8092195` 一例，我方没有。这与 benchmark"缺分不补零"的约定不同，论文中需要写明。
+
+**结果核对：**先由四台记录得出初步结果（`--bundle`），全局报告出来后用官方报告重新合并并加 `--expect`。所有比率、区间、十种平均和配对差值完全一致。最终结果：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_merged_final_20261104/MERGED_REPORT.md`（及 `.json`）。初步结果：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ifbench_merged_prelim_20261104/`。官方报告：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/IF-Bench/one-mp-full4-20261031/report/`。
+
+**最终结果**（1,084 张源图 × 十种 setting，十种平均，方括号为源图配对 bootstrap 的 95% 区间，所有方法共用同一组抽样）：
+
+| 方法 | UnitPass % | JointPass % | 我们 − 该方法：ΔUP | ΔJP |
+|---|---:|---:|---:|---:|
+| **SAMTokEdit（我们）** | **81.1** [80.1, 82.0] | **50.3** [48.2, 52.4] | — | — |
+| Qwen-Image-2.1 | 64.0 [62.9, 65.0] | 29.4 [28.0, 30.9] | +17.1 [16.0, 18.2] | +20.9 [18.9, 23.0] |
+| FLUX.3 | 42.6 [41.6, 43.7] | 15.9 [14.8, 17.1] | +38.4 [37.3, 39.6] | +34.4 [32.3, 36.5] |
+| MIRAGE | 42.5 [41.2, 43.8] | 12.8 [11.7, 14.0] | +38.6 [37.2, 39.9] | +37.5 [35.4, 39.5] |
+| MICE | 46.5 [45.6, 47.4] | 11.0 [10.0, 12.0] | +34.5 [33.4, 35.7] | +39.3 [37.3, 41.4] |
+| FLUX.2-klein-9B | 41.7 [40.7, 42.7] | 10.5 [9.6, 11.4] | +39.3 [38.2, 40.4] | +39.8 [37.8, 41.8] |
+| Qwen-Image-Edit-2511 | 38.3 [37.3, 39.4] | 10.1 [9.2, 11.0] | +42.7 [41.6, 43.8] | +40.2 [38.2, 42.2] |
+| RePlan | 33.1 [32.1, 34.1] | 6.2 [5.4, 7.1] | +48.0 [46.8, 49.2] | +44.1 [42.0, 46.2] |
+
+JointPass（%）分 setting：
+
+| 方法 | S1 | S2-pt | S2-box | S2-mask | S3-pt | S3-box | S3-mask | S4-ref | S4-noref | S5 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 我们 | 51.3 | 55.2 | 55.7 | 56.3 | 42.7 | 47.9 | 46.1 | 54.1 | 44.9 | 48.9 |
+| Qwen-Image-2.1 | 44.3 | 33.9 | 54.5 | 42.9 | 5.6 | 25.8 | 21.3 | 33.5 | 10.6 | 21.7 |
+| FLUX.3 | 38.0 | 26.9 | 26.4 | 29.3 | 0.8 | 1.9 | 1.4 | 26.0 | 1.5 | 7.1 |
+| MIRAGE | 19.0 | 20.5 | 22.1 | 20.9 | 3.4 | 4.3 | 4.5 | 19.9 | 4.2 | 9.2 |
+| MICE | 15.0 | 12.4 | 20.4 | 12.4 | 2.0 | 9.2 | 9.2 | 14.7 | 4.9 | 9.7 |
+| FLUX.2-klein-9B | 22.7 | 17.4 | 19.6 | 19.3 | 0.9 | 0.6 | 1.4 | 16.7 | 1.1 | 5.5 |
+| Qwen-Image-Edit-2511 | 24.2 | 15.2 | 17.8 | 16.6 | 1.1 | 2.1 | 1.4 | 16.1 | 1.0 | 5.4 |
+| RePlan | 9.4 | 8.5 | 12.4 | 11.3 | 1.3 | 2.6 | 1.4 | 9.5 | 1.5 | 4.2 |
+
+**结论：**
+- 我方在每个 setting 上都显著好于每个基线。唯一的例外是 S2-box 对 Qwen-Image-2.1，差别不显著：JP +1.2 [−2.6, +5.0]，UP +0.7 [−0.9, +2.4]。直接给框时，Qwen-Image-2.1 很强。
+- 优势最大的是目标只用语言或点描述的情况：对 Qwen-Image-2.1，S3-point JP +37.1、S4-noref JP +34.3。其余基线在 S3 和 S4-noref 上的 JP 几乎都低于 5%。
+- 出图的原生失败按协议计入分母：RePlan 7、MIRAGE 48、MICE 19。七模型没有基础设施故障。
+
+**论文结果页（11-04）：**全部结果、数据处理规则、运行记录和每个数字的出处，整理在 benchmark 仓库 v2branch 的 [`docs/PAPER_RESULTS.md`](https://github.com/Tangent0308/samtok_edit_benchmark/blob/v2branch/docs/PAPER_RESULTS.md)（commit `a9b9793`）。其中的表格由 `scripts/ifbench/paper_tables.py --output <目录>` 从最终合并报告和逐请求记录生成。

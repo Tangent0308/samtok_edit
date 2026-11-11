@@ -1,6 +1,8 @@
 # SAMTokEdit 交接说明
 
-> **2026-11-01：IF-Bench 评测链路已实现。**benchmark 换成 v2branch（约 1 MP 公共画布、十种 setting、七个基线）。主行 = Pass1 step 2000 + S2@16000 + 引导 2.0，用户已确认。本机 30 个请求的冒烟跑通；四机入口把七模型包的预检、我方方法和七模型的 `start.sh` 串成一个 ARNOLD 作业。等 benchmark 会话发布全量包 `.ifbench-tmp/one-mp-full4-20261031` 后提交。benchmark 会话在另一台机器上，两边只共享 NAS 和 GitHub。消融补充行用户后面再定。详见文档 03 §12。
+> **2026-11-10：方法敲定，交付分支 `qwen-image-2.1-v5`。** 最终训练方案为三阶段：S1 Read（6k 步）→ S2 Edit（16k 步）→ R2 Refine（1k 步，lr 8e-6，高合成目标）。交付检查点 `/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/quality_anchor_20261104/runs_v5/v6_full/r2/train/adapter_1000`，代码快照 `22650e4b30830f95a11a3af8f4558326d98edb2f`。IF-Bench UnitPass 0.835 / JointPass 0.519，MIRA PQ 对 base −0.07（v4 为 −0.95）。方法与实验见 [文档 04](docs/04_SITEdit_v5方法.md) 和 [文档 05](docs/05_SITEdit_v5实验.md)。四机脚本：训练续跑 `scripts/round2/settings/r2_4n.sh`，IF-Bench 全量 eval-only `scripts/round2/settings/r2_ifbench_4n.sh`（自包含，直接 bash 运行，重提交只改 SAMTOK_RUN_ID）。全局交接 `/opt/tiger/tanyue/HANDOFF.md`。
+
+> **2026-11-04：IF-Bench 全量评测完成。**七个基线和我方共 8 个方法，1,084 张源图 × 十种 setting，按同一规则补判后合并。十种平均：我方 UnitPass 81.1%、JointPass 50.3%；最强基线 Qwen-Image-2.1 为 64.0% / 29.4%（配对差 +17.1 / +20.9 个百分点，区间都远离 0）。最终结果在 `experiments2/SAMTokEdit/ifbench_merged_final_20261104/MERGED_REPORT.md`，过程、规则和命令见文档 03 §12.7–12.11。benchmark 会话在另一台机器上，两边只共享 NAS 和 GitHub。消融补充行用户后面再定。
 
 > **2026-10-31：Pass1 已合入本分支。**混合目标的第一轮定位 LoRA（在 `pass1` 分支开发，基于 v4 `6aa4e10`）：MLLM 用独立的 LM LoRA 一次生成全部目标（文本、point、box、给定 mask 混合）的 mask token，训练是 NTP 交叉熵；Pass2 关闭该 LoRA，用原 SAMTok TE。已完成试训、正式训练和 IF-Bench dev20 定位评测，见 [Pass1 方法](docs/pass1_localization.md)、[实现](docs/pass1_implementation.md)、[结果与可视化](docs/pass1_experiments.md)、[复现](docs/pass1_reproduction.md)。Pass1 是可选部件，不改变 v4 编辑管线、训练器和 benchmark 适配器的默认行为；它要单独的环境（`transformers==5.19.0`，见 `configs/pass1/requirements-tested.txt`），不要与 v4 的 `constraints-tested.txt` 混用。Pass1 的开发工作区 `/opt/tiger/tanyue/samtok_edit_pass1/` 和试训目录在另一台开发机上，本机没有。下文 v4 的“当前”状态仍有效。
 
