@@ -1,1 +1,1 @@
-"""Interactive region selection (SAM2 points and boxes to masks)."""
+"""Region utilities: the really changed region of an edit (regions.edited)."""

@@ -1,14 +1,14 @@
 """Round-2 trainer (docs/02 sections 2.3 and 6.4): the Qwen-Image-2.1 DiT with LoRA and the code injector.
 
-Every row kind of the round-2 and merged data trains here: highlights (``hl``, ``hl_ref``, ``hlm``) and edits
-(``edit*``) through ``training.round2``, on-policy self-distillation rows (``opsd_merged``) through
-``training.opsd``.  A run starts from a fresh LoRA or warm-starts from an adapter (``--init-adapter``); C3-D, for
-example, continued C2 like this::
+Every row kind trains here through ``training.round2``: highlights (``hl``, ``hl_ref``, ``hlm``), token edits
+(``edit*``) and plain edits without tokens (``edit_plain``).  A run starts from a fresh LoRA (S1) or warm-starts from
+an adapter (``--init-adapter``; S2 from S1@6000, R2 from S2@16000).  The final R2 run (scripts/round2/settings/r2_4n.sh)::
 
-    python -m torch.distributed.run --nproc_per_node 8 -m samtok_edit21 round2-train \\
-        --data <round2 dir> --output <run dir>/train --rows rows_c3d.jsonl --quick-items eval_c2_quick_idx.json \\
-        --init-adapter <C2 run>/train/adapter_3522 --updates 1500 --accumulation 4 --warmup 100 --lr 5e-5 \\
-        --lr-schedule cosine --lr-min 5e-6 --heavy-weight 8 --checkpoints 500,1000,1500
+    python -m torch.distributed.run --nnodes 4 --nproc_per_node 8 ... -m samtok_edit21 round2-train \\
+        --data <data_round2_v6p> --output <run>/train --rows rows_v6_s2hqfull.jsonl --quick-items eval_c2_quick_idx.json \\
+        --accumulation 1 --init-adapter <S2 run>/train/adapter_16000 --updates 7000 --warmup 100 --lr 8e-6 \\
+        --lr-schedule cosine --lr-min 8e-7 --heavy-weight 8 --checkpoints 1000,2000,3000,5000,7000 --quick-eval 99999 \\
+        --lambda-region 1 --lambda-region-hl 0 --lambda-distractor 1 --lambda-route 0.05 --lambda-read 0.05
 
 The model sees what inference sees (source image + prompt with tokens); regions enter only through the losses.  Every
 rank processes its own rows, gradients are averaged, all ranks start from rank 0's weights and the checkpoints verify
@@ -36,7 +36,7 @@ from samtok_edit21.training.routing import DEFAULT_LAYERS
 
 HL_KINDS = ("hl", "hl_ref", "hlm")
 KIND_INDEX = {"hl": 0, "hl_ref": 1, "hlm": 2, "edit": 3, "edit_v1": 4, "edit_multi": 5, "edit_multi_v1": 6,
-              "edit_ext": 7, "edit_multi_ext": 8, "edit_merged": 9, "opsd_merged": 10, "edit_plain": 11}
+              "edit_ext": 7, "edit_multi_ext": 8, "edit_merged": 9, "edit_plain": 10}
 
 
 def parser():
@@ -74,23 +74,6 @@ def parser():
     p.add_argument("--edit-region-dilate", type=int, choices=(0, 1), default=1,
                    help="1: edit rows' FM_region keeps one token of context (C2); 0: only the changed tokens (C3-M)")
     p.add_argument("--route-layers", type=integers, default=DEFAULT_LAYERS)
-    # on-policy self-distillation (rows of kind opsd_merged; training/opsd.py)
-    p.add_argument("--lambda-opsd", type=float, default=1.0, help="Weight of an OPSD row's loss")
-    p.add_argument("--opsd-steps", type=int, default=16, help="Student rollout length (the inference schedule)")
-    p.add_argument("--opsd-states", type=int, default=2, help="Supervised states per rollout")
-    p.add_argument("--opsd-min-sigma", type=float, default=0.1, help="States below this noise level are not supervised")
-    p.add_argument("--opsd-guidance", type=float, default=2.0, help="Teacher token guidance (1: off)")
-    p.add_argument("--opsd-student-guidance", type=float, default=1.0, help="Token guidance of the rollout policy")
-    p.add_argument("--opsd-dilate", type=int, default=2, help="Teacher's allowed region: dilation in tokens")
-    p.add_argument("--opsd-feather", type=float, default=1.0, help="Teacher's allowed region: feather in tokens")
-    p.add_argument("--opsd-loss", choices=("mean", "split"), default="mean",
-                   help="OPSD loss: the mean over the whole latent, or inside and outside the allowed region normalised apart")
-    p.add_argument("--opsd-outside-weight", type=float, default=0.1, help="Split loss: weight of the outside part")
-    p.add_argument("--opsd-high-sigma", type=float, default=0.0,
-                   help="Supervised states at sigma >= this form a high band (0: states drawn uniformly)")
-    p.add_argument("--opsd-high-share", type=float, default=0.5, help="Expected share of supervised states from the high band")
-    p.add_argument("--opsd-teacher-ema", type=float, default=0.0,
-                   help="0: the teacher keeps the warm-start weights; in (0, 1): EMA of the student with this momentum")
     p.add_argument("--checkpoints", type=integers, default=(500, 1000, 1500, 2000))
     p.add_argument("--quick-eval", type=integers, default=(0, 500, 1000, 1500, 2000))
     p.add_argument("--quick-limit", type=int, default=999, help="Quick-eval items per rank (smoke tests)")
@@ -129,7 +112,6 @@ def main(argv=None):
     from samtok_edit21.models.codec import load_codec
     from samtok_edit21.models.pipeline import load_pipeline
     from samtok_edit21.models.adapters import add_adapter, load_adapter, save_adapter
-    from samtok_edit21.training.opsd import OpsdConfig, TeacherWeights, opsd_backward
     from samtok_edit21.training.round2 import Context, prepare_round2, round2_loss
     from samtok_edit21.training.routing import AttentionRouter
     from samtok_edit21.training.tracking import DistributedTracker
@@ -141,13 +123,6 @@ def main(argv=None):
     set_highlight_style(args.highlight_style)
     if args.updates < 1 or args.accumulation < 1:
         raise ValueError("--updates and --accumulation must be positive")
-    if not 0 <= args.opsd_teacher_ema < 1:
-        raise ValueError("--opsd-teacher-ema must be in [0, 1)")
-    opsd_config = OpsdConfig(steps=args.opsd_steps, states=args.opsd_states, min_sigma=args.opsd_min_sigma,
-                             guidance=args.opsd_guidance, student_guidance=args.opsd_student_guidance,
-                             dilate=args.opsd_dilate, feather=args.opsd_feather, loss=args.opsd_loss,
-                             outside_weight=args.opsd_outside_weight, high_sigma=args.opsd_high_sigma,
-                             high_share=args.opsd_high_share)
     dist.init_process_group("nccl", timeout=timedelta(hours=2))
     rank, world = dist.get_rank(), dist.get_world_size()
     local = int(os.environ["LOCAL_RANK"])
@@ -208,16 +183,13 @@ def main(argv=None):
     # load only the merged records of this rank's rows (twins name their partner): a large rows file uses nearly the
     # whole merged dataset, which every rank would otherwise hold in memory
     mine = (rows[(u * args.accumulation + s) * world + rank] for u in range(args.updates) for s in range(args.accumulation))
-    merged = [r for r in mine if r["kind"] in ("edit_merged", "opsd_merged")]
+    merged = [r for r in mine if r["kind"] == "edit_merged"]
     if merged:
         ctx.merged_ids = {r["id"] for r in merged} | {p for r in merged for p in r.get("partners", ())}
     items = json.load(open(data / args.eval_items))
     quick = [items[i] | {"idx": i} for i in json.load(open(data / args.quick_items))]
     quick = quick[rank::world][:args.quick_limit]
 
-    # the OPSD teacher's weights: the forward-acting trainable tensors (LoRA, code injector) as they start
-    teacher_parameters = lora + list(injector.proj.parameters())
-    teacher = None
     start, resume_path = 0, out / "resume.pt"
     if args.resume and resume_path.exists():
         state = torch.load(resume_path, map_location="cpu")
@@ -226,15 +198,9 @@ def main(argv=None):
                 p.copy_(value.to(p.device))
         optimizer.load_state_dict(state["opt"])
         start = state["update"]
-        if state.get("teacher") is not None:
-            teacher = TeacherWeights(teacher_parameters, state["teacher"])
         del state
     else:
         broadcast_parameters(parameters, dist)
-    if teacher is None and any(r["kind"] == "opsd_merged" for r in rows):
-        if start > 0:
-            raise ValueError("resume.pt holds no OPSD teacher; resume an OPSD run from its own checkpoint")
-        teacher = TeacherWeights(teacher_parameters)
     divergence = rank_divergence(parameters, dist, world)
     if divergence > 1e-6:
         raise RuntimeError(f"Ranks start from different weights (relative checksum gap {divergence:.3g})")
@@ -273,9 +239,8 @@ def main(argv=None):
 
     if start == 0 and 0 in quick_at:
         quick_eval(0)
-    # loss, rows, mse, region, distractor, write, rows with write, read, rows with read, skipped, OPSD loss, OPSD rows,
-    # OPSD error inside and outside the allowed region, + per kind counts
-    totals = torch.zeros(14 + len(KIND_INDEX), device=device)
+    # loss, rows, mse, region, distractor, write, rows with write, read, rows with read, skipped, + per kind counts
+    totals = torch.zeros(10 + len(KIND_INDEX), device=device)
     end = min(args.updates, args.stop_after) if args.stop_after else args.updates
     for update in range(start, end):
         for group in optimizer.param_groups:
@@ -284,15 +249,6 @@ def main(argv=None):
         for step in range(args.accumulation):
             row = rows[(update * args.accumulation + step) * world + rank]
             try:
-                if row["kind"] == "opsd_merged":
-                    result = opsd_backward(pipe, ctx, row, teacher, opsd_config,
-                                           scale=args.lambda_opsd / args.accumulation)
-                    totals[10] += result["opsd"]
-                    totals[11] += 1
-                    totals[12] += result["inside"]
-                    totals[13] += result["outside"]
-                    totals[14 + KIND_INDEX[row["kind"]]] += 1
-                    continue
                 sample = prepare_round2(pipe, ctx, row, max_pixels=args.max_pixels)
                 lambda_region = (args.lambda_region if args.lambda_region_hl is None or row["kind"] not in HL_KINDS
                                  else args.lambda_region_hl)
@@ -319,7 +275,7 @@ def main(argv=None):
                 if read is not None:
                     totals[7] += metrics["read"]
                     totals[8] += 1
-                totals[14 + KIND_INDEX[row["kind"]]] += 1
+                totals[10 + KIND_INDEX[row["kind"]]] += 1
             except Exception as error:   # counted and logged; a broken image must not end a long run
                 totals[9] += 1
                 print(f"[rank {rank}] skip {row['kind']} {row.get('id') or row.get('source_id')} {row.get('sample_id', '')}: {error!r}"[:400],
@@ -328,8 +284,6 @@ def main(argv=None):
                 router.disarm()          # only now: checkpointing re-runs the hooks during backward
         average_gradients(parameters, dist, world)
         optimizer.step()
-        if teacher is not None and args.opsd_teacher_ema > 0:
-            teacher.update_ema(args.opsd_teacher_ema)
         done = update + 1
         if done % 10 == 0 or done == args.updates:
             summed = totals.clone()
@@ -343,10 +297,7 @@ def main(argv=None):
                 "write": round(float(summed[5]) / max(float(summed[6]), 1.0), 5),
                 "read": round(float(summed[7]) / max(float(summed[8]), 1.0), 5),
                 "samples": int(summed[1]), "skipped": int(summed[9]),
-                "opsd": round(float(summed[10]) / max(float(summed[11]), 1.0), 5), "opsd_rows": int(summed[11]),
-                "opsd_in": round(float(summed[12]) / max(float(summed[11]), 1.0), 6),
-                "opsd_out": round(float(summed[13]) / max(float(summed[11]), 1.0), 6),
-                "kinds": {k: int(summed[14 + i]) for k, i in KIND_INDEX.items()},
+                "kinds": {k: int(summed[10 + i]) for k, i in KIND_INDEX.items()},
                 "sec": round(time.time() - started), "lr": optimizer.param_groups[0]["lr"], "inj_norm": round(norm, 4),
                 "affine": [round(float(x), 3) for x in router.affine.detach().flatten()[:2]],
                 "read_affine": [] if router.read_affine is None else [round(float(x), 3) for x in router.read_affine.detach().flatten()[:2]]}
@@ -371,7 +322,7 @@ def main(argv=None):
                                                               "read_affine": read_affine, "rank_divergence": divergence}})
                 save_code_injector(injector, folder)
                 torch.save({"params": [p.detach().cpu() for p in parameters], "opt": optimizer.state_dict(),
-                            "update": done, "teacher": None if teacher is None else teacher.state()},
+                            "update": done},
                            out / "resume.tmp")
                 os.replace(out / "resume.tmp", resume_path)
             dist.barrier()

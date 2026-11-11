@@ -13,7 +13,7 @@ Steps (outputs go to one data directory; nothing is written next to the sources)
     python -m samtok_edit21 round2-data rows-c2 --out <dir>     # stage B (C2)
     python -m samtok_edit21 round2-data rows-c3m --out <dir>    # stage C without new data (C3-M)
     python -m samtok_edit21 round2-data rows-c3d --out <dir>    # stage C with the extedit batch-1 data (D10, C3-D)
-    python -m samtok_edit21 round2-data rows-merged --out <dir> --spec <spec.json>   # merged data, OPSD rows too
+    python -m samtok_edit21 round2-data rows-merged --out <dir> --spec <spec.json>   # merged data
 
 ``pool`` encodes every usable dense mask (and every 50k source mask) with SAMTok and decodes the token again; the
 decoded region is what the token means and is the supervision target, exactly as in round 1.  ``rows`` writes the
@@ -738,38 +738,22 @@ def multi_group_adjacent(entry, rng, size):
 def place_in_slots(units, rng, updates, world, accumulation):
     """Rows in training order: global row (u * accumulation + s) * world + r is processed by rank r at step s of
     update u.  A pair occupies steps s, s + 1 (s even) of one rank, so both members share an update; singles fill
-    the remaining slots two by two.  OPSD rows (kind opsd_merged) cost several other rows each, and the ranks wait for
-    the slowest one at every gradient average: they fill whole step pairs, two rows on every rank, spread evenly over
-    the run; a remainder short of a step pair joins the other singles.  Without OPSD rows the placement (and the use
-    of ``rng``) is the one of the earlier rows files."""
+    the remaining slots two by two."""
     if accumulation % 2:
         raise ValueError("pairs need an even accumulation")
     pairs = [u for u in units if len(u) == 2]
-    singles = [u[0] for u in units if len(u) == 1 and u[0].get("kind") != "opsd_merged"]
-    heavy = [u[0] for u in units if len(u) == 1 and u[0].get("kind") == "opsd_merged"]
-    steps = []                                      # OPSD step pairs: rows 2r, 2r + 1 go to rank r
-    if heavy:
-        rng.shuffle(heavy)
-        full = len(heavy) - len(heavy) % (2 * world)
-        steps = [heavy[k:k + 2 * world] for k in range(0, full, 2 * world)]
-        singles += heavy[full:]
+    singles = [u[0] for u in units if len(u) == 1]
     rng.shuffle(singles)
     blocks = pairs + [singles[k:k + 2] for k in range(0, len(singles), 2)]
     rng.shuffle(blocks)
     groups = updates * accumulation // 2
-    if len(blocks) + len(steps) * world != groups * world or any(len(b) != 2 for b in blocks):
+    if len(blocks) != groups * world or any(len(b) != 2 for b in blocks):
         raise ValueError("units do not fill the slots exactly")
-    at = [g for g in range(groups) if (g + 1) * len(steps) // groups > g * len(steps) // groups]
-    opsd_at = {g: h for h, g in enumerate(at)}
     rows, k = [None] * (updates * world * accumulation), 0
     for u in range(updates):
         for r in range(world):
             for s in range(0, accumulation, 2):
-                g = (u * accumulation + s) // 2
-                if g in opsd_at:
-                    block = steps[opsd_at[g]][2 * r:2 * r + 2]
-                else:
-                    block, k = blocks[k], k + 1
+                block, k = blocks[k], k + 1
                 rows[(u * accumulation + s) * world + r], rows[(u * accumulation + s + 1) * world + r] = block
     return rows
 
@@ -1290,8 +1274,7 @@ def build_rows_c3(out, variant, seed=20261023, world=8, accumulation=4):
 # of highlight rows and of joined 50k multi-target rows; forms, the near negatives and twins of the SA-1B records as
 # in C2.  A draw: {"family": "D11" or [...], "op": "add" | "remove" | "replace" | "attribute" | "text" | "multi" |
 # "single", "text_role": "change" | "render" | "remove", and "rows": N or "share": fraction of all rows or "rest": true};
-# with "opsd": true its rows are on-policy self-distillation rows (kind opsd_merged, training/opsd.py: no target image
-# is read, no negatives or twins; place_in_slots gives them whole step pairs on every rank); "forms" gives the draw its
+# "forms" gives the draw its
 # own weights of the two forms for units with a blind sentence (default: the spec's "forms"); "area_max" keeps the
 # records whose every unit changes at most this share of the image (edited_region.area_frac); "pool_only" keeps the
 # SA-1B records whose source image is in the mask pool (so they get near negatives); "pairs": true draws D12 twins as
@@ -1445,7 +1428,7 @@ def build_rows_merged(out, spec_path):
         used |= {r["id"] for r in picks}
         report.append({"draw": draw, "rows": need, "available": len(options), "repeated": max(0, need - len(options))})
         for r in picks:
-            row = {"kind": "opsd_merged" if draw.get("opsd") else "edit_merged", "id": r["id"]}
+            row = {"kind": "edit_merged", "id": r["id"]}
             if len(r["units"]) > 1:
                 order = list(range(len(r["units"])))
                 rng.shuffle(order)
@@ -1453,9 +1436,6 @@ def build_rows_merged(out, spec_path):
                 units.append([row])
                 continue
             row["form"] = form(r["units"][0], draw.get("forms"))
-            if row["kind"] == "opsd_merged":
-                units.append([row])
-                continue
             found = negatives(r)
             if found is not None:
                 row["negatives"] = found
@@ -1520,7 +1500,6 @@ def build_rows_merged(out, spec_path):
              "merged_rows_by_family": dict(Counter(family[r["id"]] for r in merged_rows)),
              "merged_rows_multi": sum(1 for r in merged_rows if len(by_id[r["id"]]["units"]) > 1),
              "merged_units_by_op": dict(Counter(u["op"] for r in merged_rows for u in by_id[r["id"]]["units"])),
-             "opsd_rows_by_family": dict(Counter(family[r["id"]] for r in rows if r["kind"] == "opsd_merged")),
              "merged_records_distinct": len({r["id"] for r in merged_rows}),
              "twin_pairs": sum(1 for r in rows if r.get("pair_kind") == "twin") // 2,
              "twin_pairs_by_family": {f: n // 2 for f, n in Counter(family[r["id"]] for r in merged_rows if r.get("pair_kind") == "twin").items()},
