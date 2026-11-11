@@ -463,12 +463,12 @@
   - 第一次提交 `r2_run001` 在环境安装阶段被平台 SIGTERM，没有产出。
   - 有 `SUCCESS.json`；10,840 个请求全部生成成功，9 个判分失败（judge-failed），按失败计入。
   - 报告：`REPORT.json`（只含我方，未叠加配对统计）。
-- **九方法十种平均：**七个基线与 v4 取自 `SE/ifbench_merged_final_20261104/MERGED_REPORT.json`；R2 由它自己的 `REPORT.json` 计算。
+- **九方法十种平均：**七个基线与 v4 取自 `SE/ifbench_merged_final_20261104/MERGED_REPORT.json`；R2 取自补判后的合并报告 `SE/ifbench_merged_r2_20261111/MERGED_REPORT.json`（补判前由 `REPORT.json` 算得 80.3 / 49.9）。
 
 | 方法 | UnitPass % | JointPass % |
 |---|---:|---:|
 | v4（S2@16000） | 81.1 [80.1, 82.0] | 50.3 [48.2, 52.4] |
-| **SITEdit R2@1000** | **80.3** | **49.9** |
+| **SITEdit R2@1000**（补判后，合并报告） | **80.4 [79.3, 81.4]** | **49.9 [47.8, 52.0]** |
 | Qwen-Image-2.1 | 64.0 | 29.4 |
 | FLUX.3 Klein distilled | 42.6 | 15.9 |
 | MIRAGE（Qwen-2511） | 42.5 | 12.8 |
@@ -495,10 +495,10 @@
 | S4-noref | 77.7 / 45.4 | 78.7 / 44.9 | 46.7 / 10.6 | −0.8 [−2.1, +0.4] | +0.6 [−2.4, +3.4] |
 | S5 | 81.3 / 50.3 | 81.0 / 48.9 | 60.7 / 21.7 | +0.4 [−0.9, +1.6] | +1.4 [−1.8, +4.3] |
 
-- **待办：**
-  - 9 个判分失败请求的补判。按 v4 的规则，判两次都失败的计为失败（`scripts/ifbench/rejudge_overlay.py`）。
-  - R2 并入九方法合并报告，含配对区间：`ifbench_report.py merge`、`scripts/ifbench/paper_tables.py`。
-  - 两项都未做。
+- **补判与合并（11-11 已完成）：**
+  - 9 个判分失败请求的补判：`SE/ifbench_r2_full_20261110_rejudge1`。8 个有分；`v2-sa_4582303` 的 S3-point 判两次都失败，按 v4 的规则计为失败（`scripts/ifbench/rejudge_overlay.py`）。
+  - 九方法合并报告（含源图配对区间）：`SE/ifbench_merged_r2_20261111/MERGED_REPORT.{json,md}`，命令见 `QA/RESULTS_V5.md` §16.9。
+  - R2 十种平均：UP 80.4 [79.3, 81.4]，JP 49.9 [47.8, 52.0]；对 Qwen-Image-2.1 的配对差 UP +16.4 [+15.3, +17.5]，JP +20.5 [+18.5, +22.5]。论文主表用这份报告的数字。
 
 ### 9.2 MIRA-Bench 全量（`SE/external_mira/r2_20261110/`）
 
