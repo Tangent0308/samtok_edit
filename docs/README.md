@@ -1,26 +1,27 @@
-# SAMTokEdit Qwen-Image-2.1 文档（v4 分支）
-
-## Pass1：混合目标定位（10-31 由 `pass1` 分支合入）
-
-Pass1 的数字是定位指标，不等于 DiT 编辑成绩。
-
-| Pass1 文档 | 内容 |
-|---|---|
-| [方法与协议](pass1_localization.md) | 两轮架构图、字段含义、一次联合输出、NTP 损失 |
-| [代码实现](pass1_implementation.md) | 规范目录、关键路径/源码块、冻结和恢复 |
-| [正式数据](pass1_formal_data.md) | 来源、实际物化数量、筛选/隔离与覆盖缺口 |
-| [实验结果](pass1_experiments.md) | pilot、正式 test、benchmark 十种 setting；训练曲线和前后对比图 |
-| [问题分析](pass1_analysis.md) | 失败案例、根因证据、局限及尚未实施的改进 |
-| [运行与复现](pass1_reproduction.md) | 安装、CLI/API、训练恢复、评测与产物路径 |
-
-## v4 编辑方法
+# 文档（分支 `qwen-image-2.1-r2-delivery`，最终交付版本）
 
 | 文档 | 内容 |
 |---|---|
-| [01 数据](01_SAMTokEdit_Qwen21_v4数据.md) | 合板后的训练数据盘点（来源、格式、文字复查、默认视图、统计），训练行的构建（含 OPSD 行），评测数据 |
-| [02 方法](02_SAMTokEdit_Qwen21_v4方法.md) | 方法的设计与架构、各部件与损失、C3-D 配方、OPSD 算法设计与试训诊断；代码实现：基于 DiffSynth 和 SAMTok 的组织方式、模块、链路、正确性验证、运行方法 |
-| [03 实验](03_SAMTokEdit_Qwen21_v4实验.md) | 训练与评测实验的设置、结果、分析与结论，关键的可视化，产物路径 |
+| [METHOD.md](METHOD.md) | 最终方法 SITEdit（R2@1000）：设计、部件、损失、三阶段配方、推理、代码实现、权重路径与 SHA256、运行命令、局限 |
+| [EXPERIMENTS.md](EXPERIMENTS.md) | 从 v4 两阶段重训（10-30）到 R2 定稿与外部 benchmark 全量（11-11）的全部训练与评测实验，每项都附结果文件路径；末尾列出已更正的错误 |
+| [DATA.md](DATA.md) | 最终方法用到的数据：合板数据 D1–D15、区域池、S1/S2/R2 的训练行（逐行统计）、自蒸馏高质量目标池、Pass1 数据、评测数据 |
 
-- v4 图片在 `docs/assets/v4/`；Pass1 图片和汇总指标在 `docs/assets/pass1/`，manifest 记录原图路径与 SHA256。
-- 文档里的代码块由 `scripts/docs/sync_code_blocks.py` 从源码同步，测试会检查是否过时；文档里的路径用 `scripts/docs/check_paths.py` 检查。
-- v3 及更早的文档（v2 分析、四机运行指南、外部编辑数据打标管线等）留在 `qwen-image-2.1-v3` 分支。
+**Pass1（定位）**是最终方法的一部分，它的文档单独保留：
+
+| Pass1 文档 | 内容 |
+|---|---|
+| [方法与协议](pass1_localization.md) | 两轮架构、字段含义、一次联合输出、NTP 损失 |
+| [代码实现](pass1_implementation.md) | 目录、关键路径与源码块、冻结与恢复 |
+| [正式数据](pass1_formal_data.md) | 来源、实际物化数量、筛选、隔离与覆盖缺口 |
+| [实验结果](pass1_experiments.md) | pilot、正式 test、benchmark 十种 setting |
+| [问题分析](pass1_analysis.md) | 失败案例、根因、局限 |
+| [运行与复现](pass1_reproduction.md) | 安装、CLI/API、训练恢复、评测与产物路径 |
+
+**历史文档**放在 `archive/v4/`，只作追溯，不代表当前方法：
+- v4 的数据、方法、实验三份文档，覆盖 E-A、C1–C3、OPSD、S1/S2、IF-Bench 全量的过程记录；
+- v4 的交接说明 `HANDOFF_v4.md`。
+
+其他约定：
+- 图片在 `assets/`。
+- 文档里的代码块由 `scripts/docs/sync_code_blocks.py` 从源码同步（只检查 `docs/*.md`）。
+- CVPR 投稿的整体交接文档在开发机 `/opt/tiger/tanyue/CVPR2027_HANDOFF.md`。

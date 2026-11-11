@@ -287,7 +287,7 @@
      - 写法还是 v2 的 `this region <M>`。
 - **图：**
 
-![E-A1、E-A2 与原版在第一轮评测集上的对比](assets/v4/ea2_results.jpg)
+![E-A1、E-A2 与原版在第一轮评测集上的对比](../../assets/v4/ea2_results.jpg)
 
 图 1　左：只给 token 的指认 IoU 和成对跟随，原版、E-A1、E-A2；右：remove 探针的成对跟随，含 v2 的对照。原图：`V3/runs/ea2_local8_001/vis/fig_ea2_results.png`
 
@@ -405,11 +405,11 @@
   1. 定位依赖 token：C1b 去掉 token 后，输出和原来几乎不重合（0.059）；原版去不去 token 输出差不多（0.340）。
   2. 剩下的近邻失误约四分之一在读阶段就偏了，其余是读对了、在去噪过程中写偏：C1b 写方向偏向目标的比例从第 0 步的 71% 降到第 10 步的 55%。
 
-![同一句指令只换 token：原版和 C2 的指认结果](assets/v4/token_swap_highlight.jpg)
+![同一句指令只换 token：原版和 C2 的指认结果](../../assets/v4/token_swap_highlight.jpg)
 
 图 2　同一句指令只换 token（红框 = token A，蓝框 = token B）：原版两次输出几乎一样，说明它不读 token；C2 涂色的位置跟着 token 走（部件对整体、同图两个实例）。原图：`V3/reports/progress_20261020/figs/fig3a_token_swap_highlight.jpg`
 
-![注意力探针：原版与 C2 的读取图、写入图](assets/v4/attention_probe.jpg)
+![注意力探针：原版与 C2 的读取图、写入图](../../assets/v4/attention_probe.jpg)
 
 图 3　注意力探针：⟨M⟩ 在源图上看哪里（第 14 层）、生成图上哪些位置在读 ⟨M⟩（第 20 层、去噪第 10 步），原版对 C2@3522；C2 的热区集中在粉色轮廓内。原图：`V3/reports/progress_20261020/figs/fig3c_attention_probe.jpg`
 
@@ -476,7 +476,7 @@
 - **过程：**0 个样本被跳过，D4 全部用上；最后一次更新 loss 0.183、mse 0.0266、reg 0.118、dis 0.0052、write 0.273、read 0.352。
 - **计划与实际的出入：**计划 2,500 次更新、指认 15%、只有物体名的行 15%、10% 去掉 token；实际 3,522 次、指认约 10%、没有不带 token 的行、没有 token dropout。
 
-![C2 训练曲线](assets/v4/c2_training.jpg)
+![C2 训练曲线](../../assets/v4/c2_training.jpg)
 
 图 4　C2 训练曲线（每 10 次更新记一次，15 点滑动平均）：全图误差 mse、目标区域误差 reg、邻居误差 dis、读写路由损失；灰线为学习率。原图：`qwen-image-2.1-v3:docs/assets/v3_round2/fig_r2_c2_training.png`
 
@@ -521,7 +521,7 @@
 
 C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+0.7, +6.2]；replace 误差 −2.1 [−4.1, −0.3]；remove 强度 −13.8 [−28.3, −1.6]；attribute 强度 −7.2 [−12.4, −2.9]。
 
-![第二轮各阶段在开发集上的对比](assets/v4/dev_progression.jpg)
+![第二轮各阶段在开发集上的对比](../../assets/v4/dev_progression.jpg)
 
 图 5　第二轮各阶段在开发集上的对比：单 token 盲指代 IoU、同类成对跟随、remove 探针、编辑执行率（误差线为 bootstrap 95% 区间）。原图：`V3/reports/progress_20261020/figs/fig0_dev_progression.png`
 
@@ -559,7 +559,7 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
   3. C2 的失败主要有两种：小区域上不执行；改到旁边的同类物体或相邻部件上。
 - **图：**六张对比图 `V3/runs/c2_4n_002/cases/c2_vs_base_1.jpg` 到 `_6.jpg`，共 23 例，按主题挑选，不代表平均水平；判定见 `V3/runs/c2_4n_002/cases/cases.json`。图 1–3 是 C2 更好，图 4 打平，图 5 是 C2 没执行，图 6 是 C2 改到旁边。
 
-![原版 vs C2：只改选中的那一个](assets/v4/c2_vs_base_cases.jpg)
+![原版 vs C2：只改选中的那一个](../../assets/v4/c2_vs_base_cases.jpg)
 
 图 6　C2 只改选中的那一个，原版改错对象或改错位置（对比图 1 的第 1、3 例；列：原图、原版、C2、参考目标）。原图：`V3/runs/c2_4n_002/cases/c2_vs_base_1.jpg`
 
@@ -590,7 +590,7 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
      - 训练目标改得不弱：50k 强度 45–56，v1 61–72，强度 < 15 的只占 0%–10%，区域外漂移 ≤ 0.7（v3 文档；脚本 `V3/analysis/noexec_20261019/train_teacher.py`）；
      - 文本编码器：纯文字下不执行率官方 TE 42%、SAMTok TE 43%。
 
-![不执行诊断](assets/v4/c2_noexec.png)
+![不执行诊断](../../assets/v4/c2_noexec.png)
 
 图 7　左：C2 在 100 条开发集编辑上的执行率，换种子与写明物体名；右：区域损失里真正改动的像素所占的权重（中位数），50k 对 v1。原图：`qwen-image-2.1-v3:docs/assets/v3_round2/fig_r2_noexec.png`
 
@@ -673,7 +673,7 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
   4. **推理侧的选择：**一次联合生成好于或持平逐个单元编辑，保留联合生成；SAM2 转换点、框只带来小幅、不显著的损失；自动起名两种设置下结果不一致（+8.9 与 0），合并后不显著，不作默认。
   5. 只有 101 例，区间偏宽；正式结论要全量 1,084 例。点、框单元在我们的流程里多经过一次 SAM2，用到的信息与基线相同，写论文时要说明。
 
-![benchmark 101 例子集的主结果](assets/v4/bench101_main.jpg)
+![benchmark 101 例子集的主结果](../../assets/v4/bench101_main.jpg)
 
 图 8　benchmark 2.6.0 的 101 例子集（360 个单元，同一次判分）：整图全过、单元 E、单元 P；误差线为按 case 自助抽样的 95% 区间。最后一组"C2 + 第一步定位"见 §4.7。原图：`V3/reports/progress_20261020/figs/fig1_benchmark.png`
 
@@ -720,7 +720,7 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
   - 101 例整图全过 34.7% → 39.6%，+5.0 [−1.0, +10.9]，不显著。全量 benchmark 有 553 个只给文字的单元，占 14.3%，分布在 51% 的 case 里。
   - 结论：第一步定位补上了原因 3，C3 起设为默认。例图 `V3/analysis/bench_subset_20261019/sheets/ground_examples.jpg`。
 
-![C2 输在哪里](assets/v4/bench101_c2_losses.jpg)
+![C2 输在哪里](../../assets/v4/bench101_c2_losses.jpg)
 
 图 9　左：101 例子集上按切片的单元 E，星号是 C2 + 第一步定位；右：小目标（< 0.5%）替换中目标内被改动的比例和目标外一圈的改动，C2 改得少、不出界。原图：`V3/reports/progress_20261020/figs/fig2_where_c2_loses.png`
 
@@ -839,15 +839,15 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
   5. **还没解决的：**大目标改属性没有一个到 0.90；剩下的主要失败是盲指代单元改错部位或改到旁边的同类物体、替换做成了叠加、写字拼错（C3 对比图 5，路径见下）。
 - **图**（版式同 §4.6 的对比图：每例第一排是全图，下面每个编辑单元一排放大图，与判分模型看的局部相同，格子下标出判分模型的 E/P/Q；8 列：原图 + 定位、原版、FLUX.3、C2、C2 + 引导 2.0、C3-M、C3-D、C3-MD）：
 
-![C3 对比图 1：token 引导做到、C2 没做到](assets/v4/c3_cases_1.jpg)
+![C3 对比图 1：token 引导做到、C2 没做到](../../assets/v4/c3_cases_1.jpg)
 
 图 10　token 引导：C2 没做到、推理时加引导 2.0 后做到（换 polo 衫、换黑色连指手套），不用训练（C3 对比图 1 的前 2 例）。原图：`V3/analysis/c3_eval_20261023/sheets/c3_cases_1.jpg`
 
-![C3 对比图 2：改数据把替换做完](assets/v4/c3_cases_2.jpg)
+![C3 对比图 2：改数据把替换做完](../../assets/v4/c3_cases_2.jpg)
 
 图 11　改数据（C3-D）把替换做完：C2 和加引导只是在黑衬衫外面套了一件米色衬衫，C3 三个变体整件换掉；另一例只有 C3-D 换对了目标（C3 对比图 2 的前 2 例）。原图：`V3/analysis/c3_eval_20261023/sheets/c3_cases_2.jpg`
 
-![C3 对比图 4：改方法的代价](assets/v4/c3_cases_4.jpg)
+![C3 对比图 4：改方法的代价](../../assets/v4/c3_cases_4.jpg)
 
 图 12　改方法的代价：C3-M、C3-MD 把机头另一侧的条纹也改了（溢出，P 没过）；贴小鸟时 C3-M 在旁边多加了一朵云（P 没过），C3-MD 只加了云、没有鸟；C2、C3-D 没有这些问题（C3 对比图 4 的前 2 例）。原图：`V3/analysis/c3_eval_20261023/sheets/c3_cases_4.jpg`
 
@@ -934,11 +934,11 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
   7. **对 OPSD 的含义：**带特权的老师同时提高了编辑完成和保持，正是学生欠缺的；训练时老师的允许区域应按数据里的实际改动区域（`edited_region` ∪ 执行区域）放宽，避免 T1 那样的残留。benchmark 只有贴得紧的 GT mask，这里测出的回填副作用偏大。是否写训练代码由用户决定（v4 已实现训练器，见 §8；试训见 §7）。
 - **图**（7 列：原图 + 定位、C3-D、C3-D + 引导（都是本场重判）、T0、T1、T2、T3，所有判定来自同一次判分）：
 
-![老师测试对比图 1：老师逐级加机制后做到](assets/v4/teacher_cases_1.jpg)
+![老师测试对比图 1：老师逐级加机制后做到](../../assets/v4/teacher_cases_1.jpg)
 
 图 13　上次我们都没做到的例子，老师逐级加机制后做到：反光带 C3-D、T0 加到了另一根杆上，T1 起只能在允许区域里改，加对了；改大衣颜色 C3-D、T0 改成了裤子，T1 挡住了改裤子但大衣也没改，T2 写明物体名后改对（老师测试对比图 1 的前 2 例）。原图：`V3/analysis/opsd_teacher_20261025/sheets/teacher_cases_1.jpg`
 
-![老师测试对比图 3：回填的副作用](assets/v4/teacher_cases_3.jpg)
+![老师测试对比图 3：回填的副作用](../../assets/v4/teacher_cases_3.jpg)
 
 图 14　回填的副作用：GT mask 贴得太紧，删除留下残留，蓝色瓶盖悬在原处、UPS 标志留下盾牌形状的残影；T0 都删干净了（老师测试对比图 3 的前 2 例）。原图：`V3/analysis/opsd_teacher_20261025/sheets/teacher_cases_3.jpg`
 
@@ -1060,19 +1060,19 @@ C2 − C1b 按操作的显著差（4,000 次自助抽样）：add 强度 +3.2 [+
     5. **试训的问题在选行和损失，不在前提：**开发集编辑与 D1 训练行同源，操作比例和面积相近；试训的 8,000 行 OPSD 里 D1 只占 1,600 行，而 D1 的 A 中位只占格子的 1.6%，在整个 latent 上取平均的损失里几乎没有权重。
 - **图：**
 
-![OPSD 试训结果](assets/v4/opsd_pilot_results.png)
+![OPSD 试训结果](../../assets/v4/opsd_pilot_results.png)
 
 图 15　OPSD 试训结果（决策子集 300 例，同一次判分；(b) 第四行是第二场）：(a) 各系统的整图全过；(b) 配对差和 95% 区间。不加引导时 P1 与 P0 没有差别；加引导后 P1 最高，但对 C3-D + 引导、对 P0 + 引导都不显著。原图：`V3/analysis/opsd_pilot_20261026/figs/opsd_pilot_results.png`
 
-![OPSD 试训诊断](assets/v4/opsd_pilot_diagnosis.png)
+![OPSD 试训诊断](../../assets/v4/opsd_pilot_diagnosis.png)
 
 图 16　OPSD 试训诊断（76 条试训没用过的合板记录）：(a) 起点 C3-D 上，梯度里区域内那部分只占 7%–26%；(b) 区域内到老师目标的误差，P1 只在中低噪声段变小；(c) 区域外到源图 latent 的误差，P1 降到约 1/4；(d) 接管测试，老师在 σ ≥ 0.74 时接手还能救回小区域记录，但在这批数据上能救回的很少。原图：`V3/analysis/opsd_pilot_20261026/figs/opsd_pilot_diagnosis.png`
 
-![OPSD 试训对比图](assets/v4/pilot_cases_1.jpg)
+![OPSD 试训对比图](../../assets/v4/pilot_cases_1.jpg)
 
 图 17　老师做得到、学生（包括 P1）仍做不到的盲指代：反光带所有学生都加到了另一根杆上，只有 T3 加对；反光背心只有 P1 + 引导和 T3 改成了荧光黄，是 P1 + 引导少有的看得见的改善（试训对比图 1 的第 1、5 例）。原图：`V3/analysis/opsd_pilot_20261026/sheets/pilot_cases_1.jpg`
 
-![开发集上老师与学生的差距](assets/v4/dev_teacher_gap.png)
+![开发集上老师与学生的差距](../../assets/v4/dev_teacher_gap.png)
 
 图 18　第 1 步，开发集 100 条 SA-1B 编辑：(a) 逐项加上老师的特权，不执行 48 → 35（引导）→ 31（回填）→ 22（带名）；(b) 老师从第几步接手，学生先走 8 步就丢掉一半以上的差距；(c) 按操作，删除差距最大，替换几乎没有。原图：`V3/analysis/opsd_pilot_20261026/figs/dev_teacher_gap.png`
 
