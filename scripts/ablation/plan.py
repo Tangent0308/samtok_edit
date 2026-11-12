@@ -2,9 +2,11 @@
 
 Three blocks, all judged on IF-Bench in one Judge session (``judge_many.py``) and probed on the development set:
 
-* component arms (reduced protocol): from the pretrained DiT, Read 250 then Edit 750 updates x 32 rows, the first
-  rows of the formal ``rows_s1`` / ``rows_s2`` (so ``ref`` is the formal recipe, shortened); every other arm changes one
-  thing: its rows (``build_data.py``) or one option of the trainer;
+* component arms (reduced protocol v2): from the pretrained DiT, Read = the first 1,000 updates of the formal S1 run
+  (its rows and its 6,000-update schedule, stopped at 1,000), then Edit 750 updates on the first rows of the formal
+  ``rows_s2`` with its own schedule, 32 rows per update (so ``ref`` is the formal recipe, shortened); every other arm
+  changes one thing: its rows (``build_data.py``) or one option of the trainer.  v1 (Read 250 updates, run abl_001,
+  stopped 11-11) learnt too little token reading (quick probe single_noref 0.155 vs 0.31 for S1@1000);
 * data scale: the Edit stage from S1@6000 on 25 % / 50 % of the merged records (whole source-image groups, nested), the
   same draw shares and epochs as S2 (4,000 / 8,000 updates); 100 % is the formal S2@16000;
 * the final model (R2@1000) with its own diagnostics: Space Tokens removed from the prompt, token guidance off.
@@ -28,7 +30,8 @@ from pathlib import Path
 NAS = Path("/mnt/bn/strategy-mllm-train/user/tanyue")
 SE = NAS / "experiments2/SAMTokEdit"
 # ABL_ROOT / ABL_DATA / ABL_CASES / ABL_SMOKE exist only for the one-machine rehearsal (scripts/ablation/rehearse.sh).
-ROOT = Path(os.environ.get("ABL_ROOT", SE / "ablation_20261112"))
+# v2 writes under ablation_20261112/v2 (v1 = abl_001 stays in ablation_20261112/); data and cases are shared.
+ROOT = Path(os.environ.get("ABL_ROOT", SE / "ablation_20261112/v2"))
 DATA = Path(os.environ.get("ABL_DATA", SE / "ablation_20261112/data"))   # build_data.py: links to ORIG_DATA + rows
 ORIG_DATA = SE / "qwen21_v3/data/round2_scaleup_20261030"
 S1_ADAPTER = SE / "qwen21_v3/runs/s1_4n_001/train/adapter_6000"
@@ -47,16 +50,17 @@ SET10 = ["S1", "S2-point", "S2-box", "S2-mask", "S3-point", "S3-box", "S3-mask",
 # routing 0.05, hard negatives 8, one token of context around edit regions, overlay highlights.
 LOSS = ["--heavy-weight", "8", "--lambda-region", "1", "--lambda-distractor", "1", "--lambda-route", "0.05",
         "--lambda-read", "0.05", "--edit-region-dilate", "1", "--highlight-style", "overlay", "--rank", "32"]
+# "updates": trained updates; "schedule": the length of the learning-rate schedule (Read: S1's 6,000, stopped at 1,000).
 STAGES = {
-    "read": {"rows": "rows_s1.jsonl", "updates": 250, "warmup": 25, "lr": "1e-4", "lr_min": "1e-5"},
-    "edit": {"rows": "rows_s2.jsonl", "updates": 750, "warmup": 50, "lr": "5e-5", "lr_min": "5e-6"},
+    "read": {"rows": "rows_s1.jsonl", "updates": 1000, "schedule": 6000, "warmup": 50, "lr": "1e-4", "lr_min": "1e-5"},
+    "edit": {"rows": "rows_s2.jsonl", "updates": 750, "schedule": 750, "warmup": 50, "lr": "5e-5", "lr_min": "5e-6"},
 }
 # In training order: the reference first, then the arms of the main ablation table, then the rest.
 ARMS = {
     "ref": {},
-    "no_identification": {"rows": {"read": "rows_abl_noid_s1.jsonl", "edit": "rows_abl_noid_s2.jsonl"}},
+    "no_identification": {"rows": {"read": "rows_abl_noid_s1_r1000.jsonl", "edit": "rows_abl_noid_s2.jsonl"}},
     "no_attention": {"args": ["--lambda-route", "0", "--lambda-read", "0"]},
-    "no_twins": {"rows": {"read": "rows_abl_notwin_s1.jsonl", "edit": "rows_abl_notwin_s2.jsonl"}},
+    "no_twins": {"rows": {"read": "rows_abl_notwin_s1_r1000.jsonl", "edit": "rows_abl_notwin_s2.jsonl"}},
     "no_region": {"args": ["--lambda-region", "0", "--lambda-region-hl", "0"]},
     "no_injector": {"args": ["--no-code-injector"]},
     "no_multi": {"rows": {"edit": "rows_abl_nomulti_s2.jsonl"}},
@@ -69,8 +73,10 @@ SCALE = {
 SCALE_SCHEDULE = {"warmup": 100, "lr": "5e-5", "lr_min": "5e-6"}          # as S2
 CHECKPOINT_EVERY = {"read": 250, "edit": 250, "scale": 1000}             # resume points of an interrupted stage
 if SMOKE:                                                                  # rehearsal: two updates per stage
-    for _spec in list(STAGES.values()) + list(SCALE.values()):
-        _spec.update(updates=2, warmup=1)
+    STAGES["read"].update(updates=2, schedule=4, warmup=1)                 # still stopped before its schedule ends
+    STAGES["edit"].update(updates=2, schedule=2, warmup=1)
+    for _spec in SCALE.values():
+        _spec.update(updates=2)
     SCALE_SCHEDULE = dict(SCALE_SCHEDULE, warmup=1)
     CHECKPOINT_EVERY = {"read": 1, "edit": 1, "scale": 1}
 
@@ -93,18 +99,22 @@ def train_args(arm, stage, world):
     if stage == "scale":
         spec = SCALE[arm]
         rows, updates, schedule, init, extra = spec["rows"], spec["updates"], SCALE_SCHEDULE, S1_ADAPTER, []
+        length = updates
     else:
         config = ARMS[arm]
         rows = config.get("rows", {}).get(stage, STAGES[stage]["rows"])
         updates, schedule, extra = STAGES[stage]["updates"], STAGES[stage], config.get("args", [])
+        length = STAGES[stage]["schedule"]
         init = adapter_of(arm, "read") if stage == "edit" else None
     every = CHECKPOINT_EVERY[stage]
     checkpoints = ",".join(str(u) for u in range(every, updates + 1, every))
     args = ["--data", str(DATA), "--output", str(train_dir(arm, stage)), "--rows", rows,
-            "--quick-items", "eval_c2_quick_idx.json", "--updates", str(updates), "--accumulation", str(32 // world),
+            "--quick-items", "eval_c2_quick_idx.json", "--updates", str(length), "--accumulation", str(32 // world),
             "--warmup", str(schedule["warmup"]), "--lr", schedule["lr"], "--lr-schedule", "cosine",
             "--lr-min", schedule["lr_min"], "--checkpoints", checkpoints, "--quick-eval", str(updates),
             "--wandb-mode", "disabled", *LOSS, *extra]
+    if length != updates:
+        args += ["--stop-after", str(updates)]
     if SMOKE:
         args += ["--quick-limit", "1"]
     if init is not None:
@@ -209,10 +219,10 @@ def check_inputs(stage):
                                      "dev_split.json")]
     need += [S1_ADAPTER / "adapter.safetensors", S2_ADAPTER / "adapter.safetensors", FINAL_ADAPTER / "adapter.safetensors",
              IFBENCH_BUNDLE / "configuration.json", R2_RUN / "pass1", CASES]
-    rows = {STAGES[s]["rows"]: STAGES[s]["updates"] * 32 for s in STAGES}
+    rows = {STAGES[s]["rows"]: STAGES[s]["schedule"] * 32 for s in STAGES}     # the trainer needs the whole schedule
     for arm in ARMS.values():
         for s, name in arm.get("rows", {}).items():
-            rows[name] = STAGES[s]["updates"] * 32
+            rows[name] = STAGES[s]["schedule"] * 32
     if stage in ("start", "scale"):
         rows.update({spec["rows"]: spec["updates"] * 32 for spec in SCALE.values()})
     for path in need:

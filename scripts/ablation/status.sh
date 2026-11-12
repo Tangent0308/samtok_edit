@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 消融四机作业的进度（只读）：每台机器当前步骤、已完成的步骤、正在训练的臂的最新指标、失败记录。
 #   bash status.sh [ABL_RUN_ID，默认最新的一次提交]
-ROOT=${ABL_ROOT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ablation_20261112}
+ROOT=${ABL_ROOT:-/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ablation_20261112/v2}   # v1 (abl_001): ABL_ROOT=<上一级>
 RUN=${1:-$(ls -t "$ROOT/submissions" 2>/dev/null | head -1)}
 SUB=$ROOT/submissions/$RUN
 [[ -d "$SUB" ]] || { echo "No submission $SUB"; exit 1; }

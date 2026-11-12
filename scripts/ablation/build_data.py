@@ -3,8 +3,10 @@
 ``plan.DATA`` links every entry of the formal S1/S2 data directory (pool, token caches, development items, rows_s1 /
 rows_s2) and adds:
 
-* component rows, made from the prefix a reduced stage reads (Read: rows_s1[:8000], Edit: rows_s2[:24000]) by replacing
-  rows in place, so every update keeps its other rows and every pair stays within its update:
+* component rows, made from the prefix a reduced stage trains on (Read: rows_s1[:32000], the first 1,000 updates of S1;
+  Edit: rows_s2[:24000]) by replacing rows in place, so every update keeps its other rows and every pair stays within
+  its update.  A Read file keeps the untouched rest of rows_s1 behind the prefix (the trainer checks that the rows
+  cover the whole 6,000-update schedule; training stops at 1,000).  v1's 8,000-row Read files stay as they were:
   - ``rows_abl_noid_s{1,2}``: every target-identification row (hl, hl_ref, hlm, highlight pairs) -> an edit row
     (not a twin) from the unused rest of the same file: editing only, no target identification;
   - ``rows_abl_notwin_s{1,2}``: both members of every twin edit pair -> single-target edit rows (not twins);
@@ -59,16 +61,17 @@ def link_data():
             raise ValueError(f"{target} exists and is not a link to {entry}")
 
 
-def replaced(rows, prefix, drop, keep):
+def replaced(rows, prefix, drop, keep, cycle=False):
     """``rows[:prefix]`` with every row matching ``drop`` replaced, in place, by the next row of ``rows[prefix:]``
-    matching ``keep``."""
-    out, pool, used = list(rows[:prefix]), (r for r in rows[prefix:] if keep(r)), 0
+    matching ``keep``.  ``cycle``: when those run out, start again from the first of them (rows seen twice), so the
+    replacements stay of the same kind instead of coming from another file."""
+    out, pool, used = list(rows[:prefix]), [r for r in rows[prefix:] if keep(r)], 0
+    need = sum(1 for r in out if drop(r))
+    if need > len(pool) and not cycle:
+        raise RuntimeError(f"{need} replacements needed, {len(pool)} replacement rows")
     for i, row in enumerate(out):
         if drop(row):
-            try:
-                out[i] = next(pool)
-            except StopIteration:
-                raise RuntimeError(f"not enough replacement rows after {used} replacements") from None
+            out[i] = pool[used % len(pool)]
             used += 1
     return out, used
 
@@ -83,11 +86,17 @@ def stats(name, rows, replaced_rows, source, prefix):
 
 
 def write_rows(name, rows, info):
+    """Write a rows file and its statistics; an existing file with the same content is left untouched (a running job may
+    be reading it)."""
     path = plan.DATA / f"{name}.jsonl"
+    text = "".join(json.dumps(row) + "\n" for row in rows)
+    if path.exists():
+        if path.read_text() != text:
+            raise SystemExit(f"{path} exists with different rows; use a new name")
+        print(json.dumps({"name": name, "unchanged": True}))
+        return
     tmp = path.with_name(path.name + ".tmp")
-    with open(tmp, "w") as f:
-        for row in rows:
-            f.write(json.dumps(row) + "\n")
+    tmp.write_text(text)
     os.replace(tmp, path)
     (plan.DATA / f"{name}_stats.json").write_text(json.dumps(info, indent=1))
     print(json.dumps({k: info[k] for k in ("name", "rows", "replaced", "twin_rows", "multi_rows", "highlight_rows")}))
@@ -101,21 +110,26 @@ def component_rows():
                "nomulti": (is_multi, is_single)}
     for arm in plan.ARMS.values():
         for stage, name in arm.get("rows", {}).items():
-            recipe = name[len("rows_abl_"):].rsplit("_", 1)[0]
+            recipe = name.split("_")[2]                      # rows_abl_<recipe>_<stage>[_<variant>].jsonl
             prefix = plan.STAGES[stage]["updates"] * 32
-            rows, count = replaced(files[stage], prefix, *recipes[recipe])
+            rows, count = replaced(files[stage], prefix, *recipes[recipe], cycle=recipe == "noid")
+            trained = rows
+            rows = rows + files[stage][prefix:plan.STAGES[stage]["schedule"] * 32]   # never trained (stop-after)
             if recipe == "noid":
-                assert not any(r["kind"] in HIGHLIGHT for r in rows)
+                assert not any(r["kind"] in HIGHLIGHT for r in trained)
             elif recipe == "notwin":
-                assert not any(map(is_twin, rows))
+                assert not any(map(is_twin, trained))
             else:
-                assert not any(map(is_multi, rows))
-            write_rows(name[:-len(".jsonl")], rows,
-                       stats(name, rows, count, plan.STAGES[stage]["rows"], prefix))
+                assert not any(map(is_multi, trained))
+            info = stats(name, trained, count, plan.STAGES[stage]["rows"], prefix)
+            info["file_rows"] = len(rows)
+            ids = Counter(json.dumps(r, sort_keys=True) for r in trained)
+            info["rows_seen_twice"] = sum(n - 1 for n in ids.values() if n > 1)
+            write_rows(name[:-len(".jsonl")], rows, info)
     for stage, spec in plan.STAGES.items():   # reference statistics of the unchanged prefixes
         prefix = spec["updates"] * 32
         info = stats(spec["rows"], files[stage][:prefix], 0, spec["rows"], prefix)
-        (plan.DATA / f"prefix_{stage}_stats.json").write_text(json.dumps(info, indent=1))
+        (plan.DATA / f"prefix_{stage}_{prefix // 32}_stats.json").write_text(json.dumps(info, indent=1))
 
 
 def group_value(group):

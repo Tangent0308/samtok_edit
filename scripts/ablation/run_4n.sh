@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# 论文消融实验的四机入口（2026-11-12）：整段原样粘贴成 ARNOLD 四个 worker（4 × 8 卡）的启动命令，一次串行跑完。
+# 论文消融实验的四机入口（2026-11-12，v2）：四个 worker（4 × 8 卡）都 bash 这一个文件，一次串行跑完。
+# v2 与 v1（abl_001，11-11 停止）的区别只有组件消融的 Read 阶段：250 次更新 -> 正式 S1 的前 1,000 次更新
+# （同样的行、同样按 6,000 次的学习率日程，在第 1,000 次停下）。v1 的参照臂读 token 太弱（快速探针 0.155，S1@1000 为 0.31）。
+# 输出写在 ablation_20261112/v2/（v1 的输出留在 ablation_20261112/，不覆盖）；数据与 200 张评测图共用。
 #
 # 内容（全部定义在 scripts/ablation/plan.py；数据与评测图在本地已备好：build_data.py、select_cases.py）：
-#  1. 组件消融 8 臂（缩减协议：从原版起训，Read 250 + Edit 750 次更新 × 32 行，取正式 rows_s1 / rows_s2 的前面部分）：
+#  1. 组件消融 8 臂（缩减协议：从原版起训，Read 1,000 + Edit 750 次更新 × 32 行，取正式 rows_s1 / rows_s2 的前面部分）：
 #     完整配方、无目标识别、无注意力监督、无孪生、无区域均衡项、无 CodeInjector、无多目标、无近邻保持项
 #  2. 开发集探针（1,320 项，判分无关）：原版、最终模型、8 臂
 #  3. IF-Bench 生成（200 张图；Pass1 复用 R2 全量评测的记录）：最终模型、最终模型去掉 token（S1、S2-mask）、
@@ -10,7 +13,8 @@
 #  4. 数据规模 2 臂：从 S1@6000 起，25% / 50% 记录，S2 配方、相同 epoch 数（4,000 / 8,000 次更新）
 #  5. 规模三点（含 100% = S2@16000）的探针与 IF-Bench 生成（十个 setting）
 #  6. 所有系统一次判分（scripts/ablation/judge_many.py，每台机器一个 Judge 引擎），然后出表 REPORT/ABLATION.md
-# 预计（按 S1/S2/R2 实测速度）：组件训练约 11.5 h，规模训练约 14.5 h，探针约 1.5 h，生成约 4.5 h，判分约 3.5 h，共约 36 h。
+# 预计（按 S1/S2 与 v1 的实测速度，4.24 s 一次更新）：组件训练约 18.5 h，规模训练约 14.6 h，探针约 1.5 h，生成约 4.5 h，
+# 判分约 3.5 h，共约 43 h。
 #
 # 中断后重新提交：只把 ABL_RUN_ID 换成新的值（四个 worker 相同）。已完成的步骤按结果文件跳过
 # （TRAIN_DONE、EVAL_DONE、state/*.done），训练从最近的检查点续训，生成从未完成的请求继续。
@@ -18,7 +22,7 @@ set -Eeuo pipefail
 exec 2>&1
 
 # ===== 运行设置（重新提交时只改 ABL_RUN_ID）=====
-export ABL_RUN_ID="${ABL_RUN_ID:-abl_001}"
+export ABL_RUN_ID="${ABL_RUN_ID:-abl_v2_001}"
 export ABL_ROOT_DEFAULT=/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/ablation_20261112
 export ABL_COMMIT="${ABL_COMMIT:-__ABL_COMMIT__}"
 export ABL_BUNDLE="${ABL_BUNDLE:-$ABL_ROOT_DEFAULT/code/ablation-__ABL_COMMIT__.bundle}"
@@ -28,7 +32,7 @@ export IFBENCH_BUNDLE=/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-m
 # 只用于本机预演（scripts/ablation/rehearse.sh），ARNOLD 上不要设置：
 #   ABL_ROOT ABL_DATA ABL_CASES ABL_SMOKE=1 ABL_ENV（已有环境，跳过建环境） ABL_JUDGE_PY（已有 Judge 运行时）
 #   ABL_JUDGE_DRYRUN=1（不加载 Judge 引擎） ABL_REPO（直接用本地 checkout）
-export ABL_ROOT="${ABL_ROOT:-$ABL_ROOT_DEFAULT}"
+export ABL_ROOT="${ABL_ROOT:-$ABL_ROOT_DEFAULT/v2}"     # outputs of v2; code bundles stay in $ABL_ROOT_DEFAULT/code
 
 # ===== ARNOLD 与输入检查 =====
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the worker host list}"
