@@ -61,16 +61,17 @@ STAGES = {
     "read": {"rows": "rows_s1.jsonl", "updates": 1000, "schedule": 6000, "warmup": 50, "lr": "1e-4", "lr_min": "1e-5"},
     "edit": {"rows": "rows_s2.jsonl", "updates": 750, "schedule": 750, "warmup": 50, "lr": "5e-5", "lr_min": "5e-6"},
 }
-# In training order: the reference first, then the arms of the main ablation table, then the rest.
+# In training order.  One arm per purpose (user, 11-12: 8 arms merged into 5), following the paper's groups:
+#   Space Token -- no_identification (the task that teaches reading tokens), no_injector (how tokens enter the DiT);
+#   data pipeline -- no_pipeline (its structured data: twin edit pairs and multi-target records -> ordinary singles);
+#   loss -- no_aux_losses (region-balanced, neighbour-preservation and both attention-supervision terms off: plain FM).
 ARMS = {
     "ref": {},
     "no_identification": {"rows": {"read": "rows_abl_noid_s1_r1000.jsonl", "edit": "rows_abl_noid_s2.jsonl"}},
-    "no_attention": {"args": ["--lambda-route", "0", "--lambda-read", "0"]},
-    "no_twins": {"rows": {"read": "rows_abl_notwin_s1_r1000.jsonl", "edit": "rows_abl_notwin_s2.jsonl"}},
-    "no_region": {"args": ["--lambda-region", "0", "--lambda-region-hl", "0"]},
+    "no_aux_losses": {"args": ["--lambda-region", "0", "--lambda-region-hl", "0", "--lambda-distractor", "0",
+                               "--lambda-route", "0", "--lambda-read", "0"]},
+    "no_pipeline": {"rows": {"read": "rows_abl_notwin_s1_r1000.jsonl", "edit": "rows_abl_nopipe_s2.jsonl"}},
     "no_injector": {"args": ["--no-code-injector"]},
-    "no_multi": {"rows": {"edit": "rows_abl_nomulti_s2.jsonl"}},
-    "no_neighbor": {"args": ["--lambda-distractor", "0"]},
 }
 SCALE = {
     "s25": {"fraction": 0.25, "updates": 4000, "rows": "rows_abl_s25.jsonl"},

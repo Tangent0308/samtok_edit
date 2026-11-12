@@ -33,16 +33,17 @@ def test_every_arm_has_both_stages_with_32_rows_per_update():
             assert value(edit, "--init-adapter").endswith("/read/adapter_1000")
     ref = plan.train_args("ref", "edit", 32)
     assert value(ref, "--rows") == "rows_s2.jsonl" and value(ref, "--lambda-region") == "1"
-    assert value(plan.train_args("no_region", "edit", 32), "--lambda-region") == "0"
-    assert value(plan.train_args("no_region", "read", 32), "--lambda-region-hl") == "0"
-    assert value(plan.train_args("no_attention", "read", 32), "--lambda-read") == "0"
-    assert value(plan.train_args("no_neighbor", "edit", 32), "--lambda-distractor") == "0"
+    assert list(plan.ARMS) == ["ref", "no_identification", "no_aux_losses", "no_pipeline", "no_injector"]
+    for stage in ("read", "edit"):
+        aux = plan.train_args("no_aux_losses", stage, 32)
+        for flag in ("--lambda-region", "--lambda-region-hl", "--lambda-distractor", "--lambda-route", "--lambda-read"):
+            assert value(aux, flag) == "0", flag
+        assert value(aux, "--rows") == plan.STAGES[stage]["rows"]
     assert "--no-code-injector" in plan.train_args("no_injector", "read", 32)
-    assert value(plan.train_args("no_multi", "read", 32), "--rows") == "rows_s1.jsonl"
     assert value(plan.train_args("no_identification", "read", 32), "--rows") == "rows_abl_noid_s1_r1000.jsonl"
-    assert value(plan.train_args("no_twins", "read", 32), "--rows") == "rows_abl_notwin_s1_r1000.jsonl"
+    assert value(plan.train_args("no_pipeline", "read", 32), "--rows") == "rows_abl_notwin_s1_r1000.jsonl"
+    assert value(plan.train_args("no_pipeline", "edit", 32), "--rows") == "rows_abl_nopipe_s2.jsonl"
     assert str(plan.ROOT).endswith("ablation_20261112/v2") and plan.DATA.name == "data"
-    assert value(plan.train_args("no_multi", "edit", 32), "--rows") == "rows_abl_nomulti_s2.jsonl"
     scale = plan.train_args("s50", "scale", 32)
     assert value(scale, "--init-adapter") == str(plan.S1_ADAPTER) and value(scale, "--updates") == "8000"
     assert value(scale, "--checkpoints").split(",")[-1] == "8000"

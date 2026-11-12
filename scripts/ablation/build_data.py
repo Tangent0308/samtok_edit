@@ -11,6 +11,8 @@ rows_s2) and adds:
     (not a twin) from the unused rest of the same file: editing only, no target identification;
   - ``rows_abl_notwin_s{1,2}``: both members of every twin edit pair -> single-target edit rows (not twins);
   - ``rows_abl_nomulti_s2``: every multi-target edit row -> a single-target edit row (rows_s1 has none);
+  - ``rows_abl_nopipe_s2``: twins and multi-target rows -> single-target edit rows (the no_pipeline arm; its Read
+    stage uses ``rows_abl_notwin_s1_r1000``, rows_s1 having no multi-target rows);
 * data-scale rows ``rows_abl_s{25,50}``: the S2 spec (scripts/round2/specs/rows_s2.json, same seed, shares and
   epochs) at 4,000 / 8,000 updates, drawn only from the merged records of 25 % / 50 % of the source-image groups
   (``group``; nested: one hash decides both), so twins and multi-target records stay whole.
@@ -107,7 +109,8 @@ def component_rows():
              "edit": [json.loads(line) for line in open(plan.ORIG_DATA / plan.STAGES["edit"]["rows"])]}
     recipes = {"noid": (lambda r: r["kind"] in HIGHLIGHT, is_edit_not_twin),
                "notwin": (is_twin, is_single),
-               "nomulti": (is_multi, is_single)}
+               "nomulti": (is_multi, is_single),
+               "nopipe": (lambda r: is_twin(r) or is_multi(r), is_single)}
     for arm in plan.ARMS.values():
         for stage, name in arm.get("rows", {}).items():
             recipe = name.split("_")[2]                      # rows_abl_<recipe>_<stage>[_<variant>].jsonl
@@ -117,9 +120,9 @@ def component_rows():
             rows = rows + files[stage][prefix:plan.STAGES[stage]["schedule"] * 32]   # never trained (stop-after)
             if recipe == "noid":
                 assert not any(r["kind"] in HIGHLIGHT for r in trained)
-            elif recipe == "notwin":
+            if recipe in ("notwin", "nopipe"):
                 assert not any(map(is_twin, trained))
-            else:
+            if recipe in ("nomulti", "nopipe"):
                 assert not any(map(is_multi, trained))
             info = stats(name, trained, count, plan.STAGES[stage]["rows"], prefix)
             info["file_rows"] = len(rows)

@@ -20,13 +20,10 @@
 | 块 | 系统 | 改动 | 评测 setting | 参照 |
 |---|---|---|---|---|
 | 组件（缩减协议） | `abl_ref` | 完整配方 | S1、S2-mask、S3-mask、S4-noref | — |
-| | `abl_no_identification` | 目标识别行全部换成编辑行（只用编辑对训练） | 同上 | `abl_ref` |
-| | `abl_no_attention` | `--lambda-route 0 --lambda-read 0`（前向不挂路由器） | 同上 | `abl_ref` |
-| | `abl_no_twins` | 孪生编辑对两成员都换成普通单目标编辑行 | 同上 | `abl_ref` |
-| | `abl_no_region` | `--lambda-region 0 --lambda-region-hl 0` | 同上 | `abl_ref` |
-| | `abl_no_injector` | `--no-code-injector`（token 只作为文本编码器词表进入 DiT） | 同上 | `abl_ref` |
-| | `abl_no_multi` | Edit 阶段多目标编辑行换成单目标编辑行（Read 阶段本来没有） | 同上 | `abl_ref` |
-| | `abl_no_neighbor` | `--lambda-distractor 0` | 同上 | `abl_ref` |
+| | `abl_no_identification` | Space Token：目标识别行全部换成编辑行（只用编辑对训练） | 同上 | `abl_ref` |
+| | `abl_no_aux_losses` | Loss：区域均衡、近邻保持、写/读注意力监督全关（`--lambda-region 0 --lambda-region-hl 0 --lambda-distractor 0 --lambda-route 0 --lambda-read 0`），只剩整图 flow matching | 同上 | `abl_ref` |
+| | `abl_no_pipeline` | 数据管线：孪生编辑对与多目标记录换成普通单目标编辑行 | 同上 | `abl_ref` |
+| | `abl_no_injector` | Space Token：`--no-code-injector`（token 只作为文本编码器词表进入 DiT） | 同上 | `abl_ref` |
 | 最终模型诊断 | `final` | R2@1000，正式推理配置 | S1、S2-mask、S3-mask、S4-noref | — |
 | | `final_notoken` | 推理时提示中不写 Space Token（也就没有 token 引导） | S1、S2-mask | `final` |
 | | `final_g1` | γ = 1（关闭 token 引导） | 四个 setting | `final` |
@@ -34,6 +31,7 @@
 | | `s50` | 50% 记录，8,000 次更新 | 十个 setting | `s100` |
 | | `s100` | 正式 S2@16000（100% 记录，16,000 次更新） | 十个 setting | — |
 
+- 组件臂按目的合并（用户 11-12）：原来的 8 臂里，无注意力监督、无区域项、无近邻项合并为 `abl_no_aux_losses`；无孪生、无多目标合并为 `abl_no_pipeline`。合并后的一行看不出组内哪一部分起作用，需要时可在补充材料里再拆。
 - `final_notoken` 只评 S1、S2-mask：盲指代 setting 去掉 token 后指令中没有目标。S1 去掉 token 等于不用第一遍定位。
 - 开发集探针（`round2-eval`，1,320 项，20 步，判分无关）评：原版、`final`、8 个组件臂、`s25`、`s50`、`s100`。其中 paired following 即"同一张图换成另一个实例的 token，输出是否跟着走"。
 
@@ -74,7 +72,8 @@
 | `rows_abl_noid_s2.jsonl` | 24,000 | 2,387 | 目标识别行 → 非孪生编辑行（两版共用） |
 | `rows_abl_notwin_s1.jsonl`（v1） | 8,000 | 726 | v1 的 Read 文件，v2 不用 |
 | `rows_abl_notwin_s2.jsonl` | 24,000 | 2,412 | 同上 |
-| `rows_abl_nomulti_s2.jsonl` | 24,000 | 5,987 | 多目标编辑行 → 普通单目标编辑行 |
+| `rows_abl_nomulti_s2.jsonl` | 24,000 | 5,987 | 多目标编辑行 → 普通单目标编辑行（合并前的臂，现在不用） |
+| `rows_abl_nopipe_s2.jsonl` | 24,000 | 8,399 | 孪生（2,412）与多目标（5,987）编辑行 → 普通单目标编辑行（`abl_no_pipeline` 的 Edit；其 Read 用 `rows_abl_notwin_s1_r1000`，`rows_s1` 没有多目标行） |
 | `rows_abl_s25.jsonl` | 128,000 | — | 25% 记录：可用默认记录 95,211 / 384,533，行中不同记录 87,632（S2 为 353,601），孪生 6,410 对，多目标 32,000 行 |
 | `rows_abl_s50.jsonl` | 256,000 | — | 50% 记录：可用默认记录 192,516，行中不同记录 177,238，孪生 13,129 对，多目标 64,000 行 |
 
@@ -95,11 +94,15 @@
 
 ## 6. 运行
 
-- **四机入口（v2）：**`ABLATION_ROOT/launch/run_4n_v2.sh`，四个 worker（4 × 8 卡）都 `bash` 这一个文件；进度 `bash ABLATION_ROOT/launch/status_v2.sh`。
+- **四机入口（v2，两个四机作业并行，用户 11-12 要求）：**
+  - 组件块：`ABLATION_ROOT/launch/run_4n_v2_component.sh`（默认运行编号 `abl_v2c_001`）：5 个组件臂的训练、探针、生成、判分，约 14.5 h。
+  - 规模块：`ABLATION_ROOT/launch/run_4n_v2_scale.sh`（`abl_v2s_001`）：原版与最终模型探针、最终模型 3 个诊断的生成、规模 2 臂训练、3 个规模点的探针与生成、判分，约 20 h。
+  - 每个作业的四个 worker 都 `bash` 自己的文件；进度 `bash ABLATION_ROOT/launch/status_v2.sh`。
+  - 分块由 `ABL_BLOCK`（`component` / `scale` / `all`）决定，定义在 `plan.lists()`。每块只判自己的系统，块内比较不跨判分会话；两块都完成后 `REPORT/ABLATION.md` 包含全部三块。
   - 代码来自 `ABLATION_ROOT/code/` 下的单提交快照 bundle，按提交号检出（本机仓库是浅克隆，带历史的 bundle 无法 clone）。v2 快照与对应分支提交的代码树逐字节相同。
   - v1 的入口 `launch/run_4n.sh`（快照 `b264fca` = 分支 `5782a36`）保留不动。
-- **执行顺序：**组件 8 臂训练 → 探针（原版、最终模型、8 臂）→ IF-Bench 生成（最终模型三个、8 臂）→ 规模 2 臂训练 → 规模三点的探针与生成 → 所有系统一次判分 → `REPORT/ABLATION.md`。
-- **预计时长**（按 v1 实测 4.24 s 一次更新）：组件训练约 18.5 h（每臂约 2.3 h），规模训练约 14.6 h，探针约 1.5 h，生成约 4.5 h，判分约 3.5 h，共约 43 h。
+- **执行顺序**（`ABL_BLOCK=all` 时一个作业跑全部，顺序如下；分块时每块跳过不属于自己的步骤）：组件 8 臂训练 → 探针（原版、最终模型、8 臂）→ IF-Bench 生成（最终模型三个、8 臂）→ 规模 2 臂训练 → 规模三点的探针与生成 → 判分 → `REPORT/ABLATION.md`。
+- **预计时长**（按 v1 实测 4.24 s 一次更新）：组件块约 14.5 h（5 臂，训练 11.6 h，每臂约 2.3 h）；规模块约 20 h（训练 14.6 h）。
 - **中断后：**把 `ABL_RUN_ID` 换成新值重新提交。已完成的步骤按结果文件跳过（`TRAIN_DONE`、`EVAL_DONE`、`state/*.done`），训练从最近检查点续训，生成从未完成的请求继续（上一次提交遗留的认领会记录到 `RELEASES.jsonl` 后释放）。
 - **输出**（v2 都在 `ABLATION_ROOT/v2/` 下）：
   - 训练 `train/<臂>/{read,edit}/`、`scale/<臂>/train/`
@@ -136,4 +139,4 @@
 - 结论：Read 太短（目标识别行约 8,800 行），读 token 只学到正式 S1@1000 的一半，多 token 几乎没学到；读 token 相关的组件臂可能和参照拉不开差距。用户选择把 Read 延长为正式 S1 的前 1,000 次后重启（v2）。
 - v1 的输出（`ABLATION_ROOT/train/ref/`、`train/no_identification/read` 的部分结果、`submissions/abl_001/`）保留，不用于论文。
 
-**v2：** 见 §6；启动后在此补记。
+**v2：**11-12 下午由用户分两个四机作业提交（`abl_v2c_001`、`abl_v2s_001`），快照 `81de09f`（= `0ed8852`）。启动后在此补记。

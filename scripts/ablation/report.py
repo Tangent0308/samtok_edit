@@ -28,6 +28,8 @@ TITLES = {
     "abl_no_attention": "无注意力监督（λ_route = λ_read = 0）", "abl_no_twins": "无孪生编辑对",
     "abl_no_region": "无区域均衡项（λ_region = 0）", "abl_no_injector": "无 CodeInjector",
     "abl_no_multi": "无多目标记录", "abl_no_neighbor": "无近邻保持项（λ_distractor = 0）",
+    "abl_no_aux_losses": "无辅助损失（区域、近邻、注意力监督全关）",
+    "abl_no_pipeline": "无管线结构数据（孪生、多目标换成单目标）",
     "final": "最终模型", "final_notoken": "最终模型，推理时去掉 Space Token", "final_g1": "最终模型，γ = 1（无 token 引导）",
     "s25": "25% 记录", "s50": "50% 记录", "s100": "100% 记录（S2@16000）", "base": "原版 Qwen-Image-2.1",
 }
