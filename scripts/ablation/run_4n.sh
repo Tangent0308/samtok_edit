@@ -33,6 +33,9 @@ export IFBENCH_BUNDLE=/mnt/bn/strategy-mllm-train/user/tanyue/.ifbench-tmp/one-m
 #   ABL_ROOT ABL_DATA ABL_CASES ABL_SMOKE=1 ABL_ENV（已有环境，跳过建环境） ABL_JUDGE_PY（已有 Judge 运行时）
 #   ABL_JUDGE_DRYRUN=1（不加载 Judge 引擎） ABL_REPO（直接用本地 checkout）
 export ABL_ROOT="${ABL_ROOT:-$ABL_ROOT_DEFAULT/v2}"     # outputs of v2; code bundles stay in $ABL_ROOT_DEFAULT/code
+# 两个四机作业并行（11-12）：component = 8 个组件臂（训练、探针、生成、判分）；scale = 数据规模 2 臂 + 最终模型诊断 +
+# 原版 / 最终模型探针。各自判自己的系统，块内比较不跨判分会话。all = 一个作业跑全部。
+export ABL_BLOCK="${ABL_BLOCK:-all}"
 
 # ===== ARNOLD 与输入检查 =====
 : "${ARNOLD_WORKER_HOSTS:?ARNOLD must inject the worker host list}"
@@ -76,7 +79,7 @@ failed() {
 trap failed ERR
 trap 'failed 143' TERM
 trap 'failed 130' INT
-echo "[$(date -u +%FT%TZ)] node $NODE of $NODES: submission $ABL_RUN_ID, world $WORLD, root $ABL_ROOT"
+echo "[$(date -u +%FT%TZ)] node $NODE of $NODES: submission $ABL_RUN_ID, block $ABL_BLOCK, world $WORLD, root $ABL_ROOT"
 
 # ===== 代码与环境 =====
 phase checkout
@@ -273,8 +276,9 @@ PY
 
 judge_step() {  # every system in one Judge session: one engine per machine for all runs
   local line runs
-  if [[ -f "$STATE/judged.done" ]]; then echo "[$(date -u +%FT%TZ)] node $NODE: Judge already done"; return 0; fi
+  if [[ -f "$STATE/judged_$ABL_BLOCK.done" ]]; then echo "[$(date -u +%FT%TZ)] node $NODE: Judge already done"; return 0; fi
   line=$("${PLAN[@]}" runs)
+  [[ -n "$line" ]] || { echo "No IF-Bench system in block $ABL_BLOCK" >&2; return 1; }
   read -ra runs <<< "$line"
   phase judge
   cards_free
@@ -286,22 +290,22 @@ judge_step() {  # every system in one Judge session: one engine per machine for 
       "$REPO/scripts/ablation/judge_many.py" --runs "${runs[@]}" --node "$NODE" --nodes "$NODES" >> "$LOGS/judge.log" 2>&1) &
   fi
   watch_processes judge $!
-  mark judged
-  barrier judged
+  mark "judged-$ABL_BLOCK"
+  barrier "judged-$ABL_BLOCK"
   if [[ "$NODE" == 0 ]]; then
     phase report
     sleep 30                          # the other machines' last records on the shared disk
     (cd / && env -u PYTHONPATH "$JUDGE_PY" "$REPO/scripts/ablation/judge_many.py" --runs "${runs[@]}" --report-only) \
       | tee -a "$LOGS/report.log"
     "$PY" -B "$REPO/scripts/ablation/report.py" | tee -a "$LOGS/report.log"
-    date -u +%FT%TZ > "$STATE/judged.done"
-    mark reported
+    date -u +%FT%TZ > "$STATE/judged_$ABL_BLOCK.done"
+    mark "reported-$ABL_BLOCK"
   fi
-  barrier reported 1
+  barrier "reported-$ABL_BLOCK" 1
 }
 
 # ===== 串行执行 =====
-listed() { local line; line=$("${PLAN[@]}" list "$1"); read -ra LISTED <<< "$line"; ((${#LISTED[@]})); }
+listed() { local line; line=$("${PLAN[@]}" list "$1"); LISTED=(); [[ -z "$line" ]] || read -ra LISTED <<< "$line"; }
 listed train-arms; ARMS=("${LISTED[@]}")
 listed scale-arms; SCALES=("${LISTED[@]}")
 listed probe-first; PROBES=("${LISTED[@]}")
@@ -319,8 +323,8 @@ for name in "${LATER[@]}"; do generate_step "$name"; done
 judge_step
 
 if [[ "$NODE" == 0 ]]; then
-  printf '{"time":"%s","submission":"%s","commit":"%s","report":"%s"}\n' "$(date -u +%FT%TZ)" "$ABL_RUN_ID" \
-    "$(git -C "$REPO" rev-parse HEAD)" "$ABL_ROOT/REPORT/ABLATION.md" > "$SUB/SUCCESS.json"
+  printf '{"time":"%s","submission":"%s","block":"%s","commit":"%s","report":"%s"}\n' "$(date -u +%FT%TZ)" "$ABL_RUN_ID" \
+    "$ABL_BLOCK" "$(git -C "$REPO" rev-parse HEAD)" "$ABL_ROOT/REPORT/ABLATION.md" > "$SUB/SUCCESS.json"
 fi
 phase done
 [[ -n "${ABL_REPO:-}" ]] || rm -rf "$WORK"

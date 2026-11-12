@@ -83,3 +83,25 @@ def test_replaced_keeps_positions_and_pairs():
     assert count == 2 and not any(r["kind"] == "hl" for r in out) and out[2:] == rows[2:6]
     out, _ = build.replaced(rows, 6, build.is_multi, build.is_single)
     assert out[4]["id"] == "t0" and not any(map(build.is_multi, out))
+
+
+def test_blocks_split_the_work_without_overlap():
+    import os
+    seen = {}
+    for block in ("component", "scale"):
+        os.environ["ABL_BLOCK"] = block
+        try:
+            plan = load("plan")
+            seen[block] = plan.lists()
+        finally:
+            del os.environ["ABL_BLOCK"]
+    full = load("plan").lists()
+    for key in ("train-arms", "scale-arms", "probe-first", "probe-scale", "ifbench-all"):
+        a, b = seen["component"][key], seen["scale"][key]
+        assert not set(a) & set(b), key
+        assert sorted(a + b) == sorted(full[key] + (full["probe-scale"] if key == "probe-first" else [])
+                                       ) or key in ("probe-first", "probe-scale"), key
+    assert seen["component"]["ifbench-all"] == [f"abl_{a}" for a in full["train-arms"]]
+    assert seen["scale"]["ifbench-all"] == ["final", "final_notoken", "final_g1", "s25", "s50", "s100"]
+    probes = seen["component"]["probe-first"] + seen["scale"]["probe-first"] + seen["scale"]["probe-scale"]
+    assert sorted(probes) == sorted(full["probe-first"] + full["probe-scale"])

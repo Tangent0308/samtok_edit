@@ -42,6 +42,12 @@ R2_RUN = SE / "ifbench_r2_full_20261110"                  # Pass1 records reused
 DEV_CASES = SE / "quality_anchor_20261104/ifbench_cases80.txt"
 CASES = Path(os.environ.get("ABL_CASES", SE / "ablation_20261112/cases200.txt"))   # select_cases.py
 SMOKE = os.environ.get("ABL_SMOKE") == "1"
+# Two four-machine jobs in parallel (11-12): "component" (the 8 component arms: train, probe, generate, judge) and
+# "scale" (the data-scale arms, the final model's diagnostics, the base/final probes).  Each block is judged in its own
+# session; every comparison stays inside a block.  "all" runs everything in one job.
+BLOCK = os.environ.get("ABL_BLOCK", "all")
+if BLOCK not in ("all", "component", "scale"):
+    raise SystemExit(f"Unknown ABL_BLOCK {BLOCK!r}")
 SET4 = ["S1", "S2-mask", "S3-mask", "S4-noref"]
 SET10 = ["S1", "S2-point", "S2-box", "S2-mask", "S3-point", "S3-box", "S3-mask", "S4-ref", "S4-noref", "S5"]
 
@@ -149,6 +155,21 @@ FIRST = ["final", "final_notoken", "final_g1"] + [f"abl_{arm}" for arm in ARMS]
 LATER = list(SCALE) + ["s100"]
 
 
+def lists():
+    """The steps of this job (``BLOCK``), in execution order; an empty list skips its step."""
+    component = [f"abl_{arm}" for arm in ARMS]
+    out = {"train-arms": list(ARMS), "scale-arms": list(SCALE), "probe-first": ["base", "final"] + component,
+           "probe-scale": list(LATER), "ifbench-first": list(FIRST), "ifbench-scale": list(LATER)}
+    if BLOCK == "component":
+        out.update({"scale-arms": [], "probe-first": component, "probe-scale": [], "ifbench-first": component,
+                    "ifbench-scale": []})
+    elif BLOCK == "scale":
+        out.update({"train-arms": [], "probe-first": ["base", "final"],
+                    "ifbench-first": ["final", "final_notoken", "final_g1"]})
+    out["ifbench-all"] = out["ifbench-first"] + out["ifbench-scale"]
+    return out
+
+
 def probe_args(name):
     adapter = probes()[name]
     args = ["--data", str(DATA), "--output", str(ROOT / "probe" / name), "--steps", "20"]
@@ -177,8 +198,9 @@ def copy_pass1(item, shared):
     for path in sorted(src.iterdir()):
         if path.is_file() and path.name != "result.json":
             shutil.copy2(path, dst / path.name)
-    shutil.copy2(src / "result.json", dst / "result.json.tmp")
-    (dst / "result.json.tmp").replace(dst / "result.json")       # last: a partial copy is never terminal
+    tmp = dst / f"result.json.tmp{os.getpid()}"                    # the two jobs may copy the same record at once
+    shutil.copy2(src / "result.json", tmp)
+    tmp.replace(dst / "result.json")                               # last: a partial copy is never terminal
     return record["status"]
 
 
@@ -260,13 +282,10 @@ def main(argv=None):
     elif a.action == "train-dir":
         print(train_dir(a.names[0], a.names[1]))
     elif a.action == "runs":
-        print(" ".join(str(ROOT / "ifbench" / name) for name in FIRST + LATER))
+        block = lists()
+        print(" ".join(str(ROOT / "ifbench" / name) for name in block["ifbench-first"] + block["ifbench-scale"]))
     elif a.action == "list":
-        what = a.names[0]
-        values = {"train-arms": list(ARMS), "scale-arms": list(SCALE), "probe-first": ["base", "final"] +
-                  [f"abl_{arm}" for arm in ARMS], "probe-scale": LATER, "ifbench-first": FIRST,
-                  "ifbench-scale": LATER, "ifbench-all": FIRST + LATER}[what]
-        print(" ".join(values))
+        print(" ".join(lists()[a.names[0]]))
     elif a.action == "probe-args":
         print(" ".join(probe_args(a.names[0])))
     elif a.action == "prepare-run":
