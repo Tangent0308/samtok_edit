@@ -24,4 +24,4 @@
 其他约定：
 - 图片在 `assets/`。
 - 文档里的代码块由 `scripts/docs/sync_code_blocks.py` 从源码同步（只检查 `docs/*.md`）。
-- CVPR 投稿的整体交接文档在开发机 `/opt/tiger/tanyue/CVPR2027_HANDOFF.md`。
+- CVPR 投稿的整体交接文档在 NAS：`/mnt/bn/strategy-mllm-train/user/tanyue/experiments2/SAMTokEdit/CVPR2027_HANDOFF.md`（11-12 起只在 NAS 上更新）。
